@@ -16,6 +16,14 @@ from askanu_rag.models.contracts import (
     PartialResponse,
     Source,
 )
+from askanu_rag.models.records import (
+    CourseMetadata,
+    CourseProgramMetadata,
+    CourseProgramRecord,
+    IndexStatus,
+    ProgramMetadata,
+    RecordStatus,
+)
 
 __all__ = [
     "AskRequest",
@@ -23,13 +31,19 @@ __all__ = [
     "Clarification",
     "ClarificationOption",
     "ConversationState",
+    "CourseMetadata",
+    "CourseProgramMetadata",
+    "CourseProgramRecord",
     "ErrorResponse",
     "HealthResponse",
     "HistoryTurn",
     "InsufficientEvidenceResponse",
+    "IndexStatus",
     "NeedsClarificationResponse",
     "OffTopicResponse",
     "OkResponse",
     "PartialResponse",
+    "ProgramMetadata",
+    "RecordStatus",
     "Source",
 ]
