@@ -1,4 +1,4 @@
-"""Minimal Day 1 HTTP service for the frozen AskANU contracts."""
+"""AskANU HTTP service with the deterministic Day 3 course slice."""
 
 from collections.abc import Sequence
 from typing import Any
@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from askanu_rag.course_queries import CourseQueryService
 from askanu_rag.models import (
     AskRequest,
     AskResponse,
@@ -18,6 +19,10 @@ from askanu_rag.models import (
     NeedsClarificationResponse,
     OkResponse,
     Source,
+)
+from askanu_rag.retrieval import (
+    CourseProgramReader,
+    create_default_course_program_repository,
 )
 
 MOCK_CLARIFICATION_TRIGGER = "mock:needs_clarification"
@@ -50,8 +55,13 @@ def _is_oversized_input(errors: Sequence[dict[str, Any]]) -> bool:
     return False
 
 
-def create_app() -> FastAPI:
+def create_app(repository: CourseProgramReader | None = None) -> FastAPI:
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
+    course_queries = CourseQueryService(
+        repository
+        if repository is not None
+        else create_default_course_program_repository()
+    )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -90,6 +100,11 @@ def create_app() -> FastAPI:
                 request_id=new_request_id(),
             )
 
+        request_id = new_request_id()
+        course_response = course_queries.answer(request.question, request_id)
+        if course_response is not None:
+            return course_response
+
         return OkResponse(
             answer="Mock response only. Retrieval and generation are not implemented.",
             sources=[
@@ -101,7 +116,7 @@ def create_app() -> FastAPI:
                     domain="courses",
                 )
             ],
-            request_id=new_request_id(),
+            request_id=request_id,
         )
 
     return app
