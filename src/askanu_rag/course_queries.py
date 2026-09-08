@@ -1,5 +1,6 @@
 """Deterministic Day 3 handling for standalone course prerequisite questions."""
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Final
@@ -16,6 +17,12 @@ from askanu_rag.models import (
     Source,
 )
 from askanu_rag.retrieval import CourseProgramReader, normalize_course_code
+from askanu_rag.synthesis import (
+    SynthesisClient,
+    SynthesisError,
+    assemble_context,
+    validate_synthesis,
+)
 
 COURSE_CODE_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9])([A-Za-z]{4}\s*\d{4}[A-Za-z]?)(?![A-Za-z0-9])",
@@ -64,6 +71,9 @@ def classify_course_prerequisites_query(
             for course_start, course_end in course_spans
         )
     }
+    if len(years) > 1:
+        # Do not erase conflicting explicit years and answer a different scope.
+        return None
     academic_year = next(iter(years)) if len(years) == 1 else None
     return CoursePrerequisitesQuery(
         course_code=next(iter(normalized_codes)),
@@ -85,10 +95,17 @@ def _source_from_record(record: CourseProgramRecord) -> Source:
 class CourseQueryService:
     """Resolve supported course requests using exact structured evidence only."""
 
-    def __init__(self, repository: CourseProgramReader) -> None:
+    def __init__(
+        self,
+        repository: CourseProgramReader,
+        synthesis_client: SynthesisClient | None = None,
+        timeout_seconds: float = 30,
+    ) -> None:
         self._repository = repository
+        self._synthesis_client = synthesis_client
+        self._timeout_seconds = timeout_seconds
 
-    def answer(self, question: str, request_id: str) -> AskResponse | None:
+    async def answer(self, question: str, request_id: str) -> AskResponse | None:
         """Return a Day 3 response, or None when the question is outside its slice."""
 
         query = classify_course_prerequisites_query(question)
@@ -133,7 +150,7 @@ class CourseQueryService:
             raise ValueError("Course lookup returned a non-course record.")
 
         source = _source_from_record(result)
-        if metadata.prerequisites is None:
+        if metadata.prerequisites is None or not metadata.prerequisites.strip():
             return InsufficientEvidenceResponse(
                 answer=(
                     f"The stored evidence for {metadata.course_code} "
@@ -144,11 +161,20 @@ class CourseQueryService:
                 request_id=request_id,
             )
 
+        context = assemble_context(result, question)
+        answer = context.allowed_answers[0]
+        if self._synthesis_client is not None:
+            try:
+                raw = await asyncio.wait_for(
+                    self._synthesis_client.synthesize(context),
+                    timeout=self._timeout_seconds,
+                )
+                answer = validate_synthesis(raw, context)
+            except Exception:
+                raise SynthesisError() from None
+
         return OkResponse(
-            answer=(
-                f"The prerequisites for {metadata.course_code} "
-                f"({metadata.academic_year}) are: {metadata.prerequisites}"
-            ),
+            answer=answer,
             sources=[source],
             request_id=request_id,
         )

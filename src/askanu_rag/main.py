@@ -1,6 +1,7 @@
-"""AskANU HTTP service with the deterministic Day 3 course slice."""
+"""AskANU HTTP service with exact-first, grounded Day 4 synthesis."""
 
 from collections.abc import Sequence
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -8,7 +9,10 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from askanu_rag.course_queries import CourseQueryService
+from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, CourseQueryService
+from askanu_rag.config import Settings
+from askanu_rag.gemini import GeminiSynthesisClient
+from askanu_rag.synthesis import SynthesisClient, SynthesisError
 from askanu_rag.models import (
     AskRequest,
     AskResponse,
@@ -17,12 +21,15 @@ from askanu_rag.models import (
     ErrorResponse,
     HealthResponse,
     NeedsClarificationResponse,
-    OkResponse,
-    Source,
+    InsufficientEvidenceResponse,
+    OffTopicResponse,
 )
 from askanu_rag.retrieval import (
     CourseProgramReader,
     create_default_course_program_repository,
+    CourseProgramRepository,
+    load_course_program_record_file,
+    load_course_program_records_directory,
 )
 
 MOCK_CLARIFICATION_TRIGGER = "mock:needs_clarification"
@@ -55,12 +62,20 @@ def _is_oversized_input(errors: Sequence[dict[str, Any]]) -> bool:
     return False
 
 
-def create_app(repository: CourseProgramReader | None = None) -> FastAPI:
+def create_app(
+    repository: CourseProgramReader | None = None,
+    synthesis_client: SynthesisClient | None = None,
+    *,
+    timeout_seconds: float = 30,
+) -> FastAPI:
+    """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
     course_queries = CourseQueryService(
         repository
         if repository is not None
-        else create_default_course_program_repository()
+        else create_default_course_program_repository(),
+        synthesis_client=synthesis_client,
+        timeout_seconds=timeout_seconds,
     )
 
     @app.exception_handler(RequestValidationError)
@@ -73,6 +88,13 @@ def create_app(repository: CourseProgramReader | None = None) -> FastAPI:
     @app.exception_handler(Exception)
     async def internal_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
         return controlled_error_response(500)
+
+    @app.exception_handler(SynthesisError)
+    async def synthesis_error_handler(
+        _request: Request, _exc: SynthesisError
+    ) -> JSONResponse:
+        # Handled explicitly so ASGI does not log provider exception tracebacks.
+        return controlled_error_response(502)
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -101,25 +123,55 @@ def create_app(repository: CourseProgramReader | None = None) -> FastAPI:
             )
 
         request_id = new_request_id()
-        course_response = course_queries.answer(request.question, request_id)
+        course_response = await course_queries.answer(request.question, request_id)
         if course_response is not None:
             return course_response
 
-        return OkResponse(
-            answer="Mock response only. Retrieval and generation are not implemented.",
-            sources=[
-                Source(
-                    record_id="course:COMP1110:2026",
-                    source_id="programs-and-courses",
-                    title="COMP1110 (mock contract data)",
-                    url="https://programsandcourses.anu.edu.au/",
-                    domain="courses",
-                )
-            ],
+        # Unsupported ANU/follow-up questions abstain rather than claiming facts.
+        # No broad planner/history resolver is introduced in this Day 4 slice.
+        if (
+            COURSE_CODE_CANDIDATE_PATTERN.search(request.question)
+            or re.search(
+                r"\b(?:ANU|course|courses|program|prerequisites?|requisites?|"
+                r"scholarships?|accommodation|jobs?|events?|support)\b",
+                request.question,
+                re.IGNORECASE,
+            )
+            or request.conversation_state.pending_clarification is not None
+        ):
+            return InsufficientEvidenceResponse(
+                answer="I do not have retrieved evidence to answer that question. "
+                "Please ask a standalone course prerequisite question with a course code.",
+                request_id=request_id,
+            )
+        return OffTopicResponse(
+            answer="I can help with ANU course prerequisite questions. "
+            "Please include a course code.",
             request_id=request_id,
         )
 
     return app
 
 
+def create_configured_app() -> FastAPI:
+    """Runtime entrypoint: explicit local data path and environment-based Gemini."""
+    settings = Settings.from_environment()
+    repository = None
+    if settings.course_records_path is not None:
+        path = settings.course_records_path
+        records = (
+            load_course_program_records_directory(path)
+            if path.is_dir()
+            else (load_course_program_record_file(path),)
+        )
+        repository = CourseProgramRepository(records)
+    return create_app(
+        repository,
+        GeminiSynthesisClient(settings),
+        timeout_seconds=settings.timeout_seconds,
+    )
+
+
+# Legacy deterministic entrypoint. The Day 4 CLI uses create_configured_app.
+# Importing this module/tests never reads .env or constructs a real SDK client.
 app = create_app()
