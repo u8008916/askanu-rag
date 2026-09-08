@@ -34,7 +34,7 @@ python -m venv .venv
 Run the Day 4 service from the repository root:
 
 ```text
-.venv\Scripts\python -m uvicorn askanu_rag.main:create_configured_app --factory --app-dir src --host 127.0.0.1 --port 8000
+.venv\Scripts\python -m uvicorn askanu_rag.main:create_configured_app --factory --app-dir src --host 127.0.0.1 --port 8081
 ```
 
 Run the contract tests:
@@ -107,7 +107,7 @@ pages, rewriting URLs, or recomputing hashes.
 
 ## Day 4 configuration and grounding
 
-Place the local key in ignored `D:\gdg_project\askanu-rag\.env` under
+Place the local key in an ignored `.env` file in the repository root under
 `GEMINI_API_KEY`. Never paste the value into source, tests, logs or a PR.
 The configured factory reads only `.env` in the current working directory;
 process environment variables take precedence. `python-dotenv` handles this file
