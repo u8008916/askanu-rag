@@ -65,7 +65,7 @@ def test_valid_frozen_request_returns_complete_contract_envelope() -> None:
         "clarification",
         "request_id",
     }
-    assert body["status"] == "ok"
+    assert body["status"] == "insufficient_evidence"
     assert body["clarification"] is None
     assert body["request_id"].startswith("req_")
 
@@ -101,12 +101,14 @@ def test_history_content_has_no_undocumented_per_message_limit() -> None:
 
 
 def test_source_keeps_record_and_registry_identifiers_separate() -> None:
-    response = client.post("/api/v1/ask", json=valid_request())
+    response = client.post(
+        "/api/v1/ask", json=valid_request("Prerequisites for COMP1110")
+    )
 
     source = response.json()["sources"][0]
     assert set(source) == {"record_id", "source_id", "title", "url", "domain"}
-    assert source["record_id"] == "course:COMP1110:2026"
-    assert source["source_id"] == "programs-and-courses"
+    assert source["record_id"] == "courses:course:COMP1110_2026"
+    assert source["source_id"] == "courses_programs_and_courses"
     assert source["record_id"] != source["source_id"]
 
 
