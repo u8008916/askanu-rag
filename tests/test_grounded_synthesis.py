@@ -245,9 +245,9 @@ def test_multiple_years_clarify_before_model_and_explicit_year_is_preserved():
 
 def test_unsupported_on_topic_question_abstains_without_model():
     fake = FakeSynthesisClient()
-    body = ask(fake, question="Tell me about COMP1110").json()
+    body = ask(fake, question="What are the fees for COMP1110?").json()
     assert body["status"] == "insufficient_evidence"
-    assert body["sources"] == []
+    assert len(body["sources"]) == 1
     assert fake.calls == []
 
 

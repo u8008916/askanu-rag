@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, CourseQueryService
 from askanu_rag.config import Settings
 from askanu_rag.gemini import GeminiSynthesisClient
+from askanu_rag.hybrid_queries import HybridQueryService
+from askanu_rag.retrieval.catalog import CatalogReader
 from askanu_rag.synthesis import SynthesisClient, SynthesisError
 from askanu_rag.models import (
     AskRequest,
@@ -67,16 +69,18 @@ def create_app(
     synthesis_client: SynthesisClient | None = None,
     *,
     timeout_seconds: float = 30,
+    semantic_retriever=None,
+    semantic_top_k: int = 3,
+    semantic_min_score: float = 0.2,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
-    course_queries = CourseQueryService(
-        repository
-        if repository is not None
-        else create_default_course_program_repository(),
-        synthesis_client=synthesis_client,
-        timeout_seconds=timeout_seconds,
-    )
+    repository = repository if repository is not None else create_default_course_program_repository()
+    if isinstance(repository, CatalogReader):
+        course_queries = HybridQueryService(repository, synthesis_client, semantic_retriever,
+            timeout_seconds=timeout_seconds, top_k=semantic_top_k, min_score=semantic_min_score)
+    else:
+        course_queries = CourseQueryService(repository, synthesis_client, timeout_seconds)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -169,6 +173,8 @@ def create_configured_app() -> FastAPI:
         repository,
         GeminiSynthesisClient(settings),
         timeout_seconds=settings.timeout_seconds,
+        semantic_top_k=settings.semantic_top_k,
+        semantic_min_score=settings.semantic_min_score,
     )
 
 

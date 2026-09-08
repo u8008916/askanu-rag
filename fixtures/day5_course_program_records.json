@@ -1,0 +1,198 @@
+[
+  {
+    "record_id": "courses:course:COMP1110_2026",
+    "source_id": "courses_programs_and_courses",
+    "entity_id": "COMP1110_2026",
+    "domain": "courses",
+    "title": "Structured Programming",
+    "content": "Structured programming and programming fundamentals using object-oriented design.",
+    "canonical_url": "https://programsandcourses.anu.edu.au/2026/course/COMP1110",
+    "status": "NEW",
+    "effective_from": null,
+    "effective_to": null,
+    "collected_at": "2026-09-09T00:00:00+00:00",
+    "last_seen_at": "2026-09-09T00:00:00+00:00",
+    "content_hash": "27b12cdbb5ee5bf1fca802e7b5986c962c2fef2d86a9a21ff728e8ba23496737",
+    "embedding_version": null,
+    "index_status": "PENDING",
+    "metadata_json": {
+      "entity_type": "course",
+      "course_code": "COMP1110",
+      "academic_year": "2026",
+      "career": null,
+      "units": null,
+      "delivery_mode": null,
+      "prerequisites": "COMP1100 OR COMP1130 OR COMP1730",
+      "incompatibilities": null,
+      "assumed_knowledge": null,
+      "offerings": [
+        {
+          "session": "First Semester, 2026",
+          "mode": "In Person"
+        },
+        {
+          "session": "Second Semester, 2026",
+          "mode": "In Person"
+        }
+      ]
+    }
+  },
+  {
+    "record_id": "courses:course:COMP1100_2026",
+    "source_id": "courses_programs_and_courses",
+    "entity_id": "COMP1100_2026",
+    "domain": "courses",
+    "title": "Programming as Problem Solving",
+    "content": "Functional programming and computational problem solving.",
+    "canonical_url": "https://programsandcourses.anu.edu.au/2026/course/COMP1100",
+    "status": "NEW",
+    "effective_from": null,
+    "effective_to": null,
+    "collected_at": "2026-09-09T00:00:00+00:00",
+    "last_seen_at": "2026-09-09T00:00:00+00:00",
+    "content_hash": "c400759ddee67d13c81ab7c72daac1e3c6766c0a4076147c0823ead1d7e4e7c4",
+    "embedding_version": null,
+    "index_status": "PENDING",
+    "metadata_json": {
+      "entity_type": "course",
+      "course_code": "COMP1100",
+      "academic_year": "2026",
+      "career": null,
+      "units": null,
+      "delivery_mode": null,
+      "prerequisites": null,
+      "incompatibilities": null,
+      "assumed_knowledge": null,
+      "offerings": [
+        {
+          "session": "First Semester, 2026",
+          "mode": "In Person"
+        }
+      ]
+    }
+  },
+  {
+    "record_id": "courses:course:COMP1100_2027",
+    "source_id": "courses_programs_and_courses",
+    "entity_id": "COMP1100_2027",
+    "domain": "courses",
+    "title": "Programming as Problem Solving",
+    "content": "Functional programming and computational problem solving.",
+    "canonical_url": "https://programsandcourses.anu.edu.au/2027/course/COMP1100",
+    "status": "NEW",
+    "effective_from": null,
+    "effective_to": null,
+    "collected_at": "2026-09-09T00:00:00+00:00",
+    "last_seen_at": "2026-09-09T00:00:00+00:00",
+    "content_hash": "c400759ddee67d13c81ab7c72daac1e3c6766c0a4076147c0823ead1d7e4e7c4",
+    "embedding_version": null,
+    "index_status": "PENDING",
+    "metadata_json": {
+      "entity_type": "course",
+      "course_code": "COMP1100",
+      "academic_year": "2027",
+      "career": null,
+      "units": null,
+      "delivery_mode": null,
+      "prerequisites": null,
+      "incompatibilities": null,
+      "assumed_knowledge": null,
+      "offerings": [
+        {
+          "session": "Second Semester, 2027",
+          "mode": "In Person"
+        }
+      ]
+    }
+  },
+  {
+    "record_id": "courses:course:COMP2200_2026",
+    "source_id": "courses_programs_and_courses",
+    "entity_id": "COMP2200_2026",
+    "domain": "courses",
+    "title": "Algorithms",
+    "content": "Algorithms, graph theory and complexity analysis.",
+    "canonical_url": "https://programsandcourses.anu.edu.au/2026/course/COMP2200",
+    "status": "NEW",
+    "effective_from": null,
+    "effective_to": null,
+    "collected_at": "2026-09-09T00:00:00+00:00",
+    "last_seen_at": "2026-09-09T00:00:00+00:00",
+    "content_hash": "c870b235ffc02c15430cea468f93498d8a1568529e8e903079a65f2a968b19c3",
+    "embedding_version": null,
+    "index_status": "PENDING",
+    "metadata_json": {
+      "entity_type": "course",
+      "course_code": "COMP2200",
+      "academic_year": "2026",
+      "career": null,
+      "units": null,
+      "delivery_mode": null,
+      "prerequisites": null,
+      "incompatibilities": null,
+      "assumed_knowledge": null,
+      "offerings": [
+        {
+          "session": "Second Semester, 2026",
+          "mode": "In Person"
+        }
+      ]
+    }
+  },
+  {
+    "record_id": "courses:course:BIOL9001P_2026",
+    "source_id": "courses_programs_and_courses",
+    "entity_id": "BIOL9001P_2026",
+    "domain": "courses",
+    "title": "Marine Ecology",
+    "content": "Marine ecosystems and biodiversity field research.",
+    "canonical_url": "https://programsandcourses.anu.edu.au/2026/course/BIOL9001P",
+    "status": "NEW",
+    "effective_from": null,
+    "effective_to": null,
+    "collected_at": "2026-09-09T00:00:00+00:00",
+    "last_seen_at": "2026-09-09T00:00:00+00:00",
+    "content_hash": "20572752ac3be842a6388c07187fe4a16914bcb444be318039ceb5b84583acb9",
+    "embedding_version": null,
+    "index_status": "PENDING",
+    "metadata_json": {
+      "entity_type": "course",
+      "course_code": "BIOL9001P",
+      "academic_year": "2026",
+      "career": null,
+      "units": null,
+      "delivery_mode": null,
+      "prerequisites": null,
+      "incompatibilities": null,
+      "assumed_knowledge": null,
+      "offerings": null
+    }
+  },
+  {
+    "record_id": "courses:program:BACCT_2026",
+    "source_id": "courses_programs_and_courses",
+    "entity_id": "BACCT_2026",
+    "domain": "courses",
+    "title": "Bachelor of Accounting",
+    "content": "Accounting, financial reporting and auditing.",
+    "canonical_url": "https://programsandcourses.anu.edu.au/2026/program/BACCT",
+    "status": "NEW",
+    "effective_from": null,
+    "effective_to": null,
+    "collected_at": "2026-09-09T00:00:00+00:00",
+    "last_seen_at": "2026-09-09T00:00:00+00:00",
+    "content_hash": "930272b6426eb1c2735265f572e448b78fdfa4d52386b3d48050ee7e2d95e5ea",
+    "embedding_version": null,
+    "index_status": "PENDING",
+    "metadata_json": {
+      "entity_type": "program",
+      "program_code": "BACCT",
+      "academic_year": "2026",
+      "career": null,
+      "units": null,
+      "duration": null,
+      "delivery_mode": null,
+      "learning_outcomes": null
+    }
+  }
+]
