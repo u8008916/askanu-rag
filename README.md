@@ -137,6 +137,102 @@ factory above for Gemini. Missing credentials do not trigger a knowledge fallbac
 supported requests fail with controlled HTTP 502, while missing evidence abstains
 before the provider is called.
 
+## Day 5 deterministic-first course/program planner
+
+The configured factory above now enables Day 5 planning on the same canonical
+RAG port **8081**. No extra dependency, external embedding key, database or
+deployment is required. Existing single-file/directory handoff loading is unchanged.
+
+Routing order is enforced in code:
+
+1. Explicit course/program identifier -> exact lookup, then hard metadata filters.
+   A missing code/year never falls back to a similar entity or another year.
+2. Exact normalized title -> deterministic name and metadata lookup. Case and
+   whitespace normalize; fuzzy name replacement is not performed.
+3. Metadata-only course/program lists -> deterministic filtering.
+4. Descriptive course/program questions -> prefiltered, bounded local vector ranking.
+
+The internal `QueryPlan` records route, identities, normalized title, entity type,
+explicit year/session, requested fact, list shape and whether semantic retrieval
+is allowed. No planner fields or similarity scores are added to the public API.
+`CatalogReader` extends the internal reader with program lookup and a catalog
+snapshot; minimal Day 3 course-only injected readers remain supported.
+
+Examples include `comp 1110`, `Tell me about COMP1110 2026`, `BACCT`,
+`Structured Programming`, `Is COMP1110 offered in First Semester 2026?`,
+`List courses in First Semester 2026`, and
+`Which course teaches structured programming and programming fundamentals?`.
+Known program codes use stored identity matching. For an unknown program code,
+use an explicit form such as `program code ZZZZZ`; no stricter program schema
+grammar has been introduced. Bare uppercase unknown code tokens also abstain.
+Exact names can be bare titles, `Tell me about <title>` or `course/program named <title>`.
+
+Years are hard four-digit constraints, never derived from the clock, URL or IDs.
+Conflicting/relative years or sessions abstain. Multiple years remain visible and
+produce clarification; vector top-k cannot choose an arbitrary year. Supported
+session forms are First/Second Semester (also semester 1/2), Summer Session and
+Winter Session. They match explicit stored `offerings[].session` values; dates do
+not supply missing session evidence. Null/unmatched offerings abstain, not “not offered”.
+
+`SemanticRetriever.search(query, candidates, top_k, min_score)` returns only
+record IDs and scores. Entity type, year and session filter candidates **before**
+ranking. Candidates are validated stored records from the approved Courses source
+with its official HTTPS host. Returned IDs are rehydrated exclusively from that
+prefiltered snapshot; foreign IDs, wrong-year/type results and invalid/low scores
+cannot supply facts or URLs.
+
+The default `LocalTfidfRetriever` uses in-memory sparse TF-IDF vectors and cosine
+similarity over stored title + normalized content. It is a **lexical vector
+baseline**, not a pretrained semantic embedding model: synonyms/paraphrases with
+no lexical overlap can yield insufficient evidence. It performs no network calls,
+does not index history or model answers, and does not persist/change source hashes
+or index status. The small interface permits a future provider-backed replacement
+without changing identity/filter ownership. It is not a production pgvector deployment.
+
+Optional environment settings, using the existing configuration path:
+
+```dotenv
+SEMANTIC_TOP_K=3
+SEMANTIC_MIN_SCORE=0.2
+```
+
+Top-k is bounded to 1–3; score threshold is greater than 0 and at most 1. These
+are local operational defaults, not public contract/confidence guarantees.
+No eligible candidate means no vector/provider call; no usable evidence means
+no Gemini call. Broader-catalog tests use the explicit synthetic Day 5 fixture:
+
+```python
+from askanu_rag.retrieval import CourseProgramRepository, load_course_program_records
+from askanu_rag.main import create_app
+
+repository = CourseProgramRepository(
+    load_course_program_records("fixtures/day5_course_program_records.json")
+)
+app = create_app(repository)  # Explicit deterministic/no-Gemini test mode.
+```
+
+Day 4 prerequisite handling remains unchanged. Additional stored-field responses
+cover overviews, incompatibilities, assumed knowledge and offering sessions.
+Overview/descriptive results return labelled stored content excerpts (at most
+600 characters each), not invented explanations of suitability or equivalence.
+Set/list requests can return up to three stored summaries and programmatic sources
+inside the existing answer/sources fields; `items` stays empty. This is not a new
+comparison schema or a claim to perform qualitative comparison. Missing members
+of an explicit set cause abstention; ambiguous or broader sets require narrowing.
+Clarification options are bounded to 20, with no silent latest-year selection.
+
+The Gemini provider and strict `{answer, supported}` validation are reused.
+Day 5 projects only retrieved identity/title plus the requested field or labelled
+excerpt, with complete evidence-derived answer choices. URLs/record IDs, history
+and unrelated metadata are excluded from Gemini; sources/status remain RAG-owned.
+Unsafe/unsupported answers, extra fields, URLs and provider failures remain controlled.
+
+The Day 5 real smoke on localhost:8081 passed for exact prerequisites, explicit-year
+overview, exact title and local-vector descriptive lookup, all with real Gemini and
+the external COMP1110 handoff. See `docs/DAY5_IMPLEMENTATION_REPORT.md` for evidence,
+test results, limitations and the PR draft. Qasim's reviewer-owned gate is not a
+dependency for Carmen's Day 5 implementation.
+
 The provider interface is `async synthesize(context) -> str` (untrusted JSON).
 Only the standalone question and three evidence fields are sent: course code,
 academic year and prerequisites. Full record content, title, URLs, IDs, history,

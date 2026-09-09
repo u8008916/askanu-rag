@@ -153,6 +153,10 @@ class CourseProgramRepository:
             return None
         return self._find("program", canonical, academic_year)
 
+    def all_records(self) -> tuple[CourseProgramRecord, ...]:
+        """Read-only catalog snapshot for bounded Day 5 name/metadata planning."""
+        return tuple(sorted(self._records.values(), key=lambda record: record.record_id))
+
 
 def create_default_course_program_repository() -> CourseProgramRepository:
     """Load today's approved local fixture behind the repository boundary."""

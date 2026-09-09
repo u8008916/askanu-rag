@@ -4,14 +4,14 @@ from google import genai
 from google.genai import types
 
 from askanu_rag.config import Settings
-from askanu_rag.synthesis import SYSTEM_INSTRUCTION, SynthesisContext, SynthesisError
+from askanu_rag.synthesis import SYSTEM_INSTRUCTION, RecordSynthesisContext, SynthesisContext, SynthesisError
 
 
 class GeminiSynthesisClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    async def synthesize(self, context: SynthesisContext) -> str:
+    async def synthesize(self, context: SynthesisContext | RecordSynthesisContext) -> str:
         try:
             if not self._settings.api_key.get_secret_value():
                 raise SynthesisError()
