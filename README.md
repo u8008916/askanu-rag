@@ -53,6 +53,11 @@ docker run --rm --name askanu-rag-day6 -p 8081:8081 --env ASKANU_ENV=production 
 curl http://127.0.0.1:8081/health
 ```
 
+These commands have completed successfully on Docker Desktop: the image built,
+the container started, and `/health` returned HTTP 200 with exact body
+`{"status":"ok"}`. This is local evidence; the image has not been pushed and the
+service has not been deployed to Cloud Run.
+
 The expected health body is exactly `{"status":"ok"}`. It deliberately does
 not report environment names, dependency state, credentials or configuration.
 The image runs as a non-root user and the build context allowlist excludes local
@@ -72,6 +77,14 @@ GCP authentication interface. Qasim's confirmed foundation uses project
 name/user and final RAG image name remain unknown. See `docs/DEPLOYMENT.md` for
 the explicit-image strategy, deployment pattern, Day 6/Day 7 boundary and planned
 migration entrypoint.
+
+The deployed RAG Cloud Run service must remain private with
+`--no-allow-unauthenticated`; Browser/Firebase clients must not invoke it directly.
+App Cloud Run is the authenticated caller boundary. The App-to-RAG identity-token
+flow and resource-level Cloud Run Invoker binding are Day 7 integration work.
+Day 6 health-only deployment does not bind the Gemini secret. Add
+`askanu-gemini-api-key:latest` only in the later Gemini-enabled stage, after a real
+secret version exists.
 
 Run the contract tests:
 
