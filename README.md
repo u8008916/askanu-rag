@@ -37,6 +37,42 @@ Run the Day 4 service from the repository root:
 .venv\Scripts\python -m uvicorn askanu_rag.main:create_configured_app --factory --app-dir src --host 127.0.0.1 --port 8081
 ```
 
+For the Cloud Run-compatible production entrypoint, use:
+
+```text
+.venv\Scripts\python -m askanu_rag.server
+```
+
+It binds to `0.0.0.0` and reads `PORT`. Cloud Run's supplied value always wins;
+when `PORT` is absent, the canonical local RAG default remains `8081`. Build and
+smoke-test the same production path locally with:
+
+```text
+docker build --tag askanu-rag:day6 .
+docker run --rm --name askanu-rag-day6 -p 8081:8081 --env ASKANU_ENV=production --env PORT=8081 askanu-rag:day6
+curl http://127.0.0.1:8081/health
+```
+
+The expected health body is exactly `{"status":"ok"}`. It deliberately does
+not report environment names, dependency state, credentials or configuration.
+The image runs as a non-root user and the build context allowlist excludes local
+environment files, credentials, tests, caches and handoff data.
+
+For Cloud Run, set non-secret environment configuration directly and inject
+`GEMINI_API_KEY` and the future `DB_PASSWORD` from Secret Manager as environment
+variables. A complete `DATABASE_URL` remains an optional protected interface only
+if a corresponding DSN secret is created later. Do not bake secret values into
+the image or pass a service-account key
+file. The runtime service identity and Application Default Credentials are the
+GCP authentication interface. Qasim's confirmed foundation uses project
+`askanu-dev-gdg`, region `australia-southeast1`, dedicated RAG identity
+`askanu-rag-runtime@askanu-dev-gdg.iam.gserviceaccount.com`, secrets
+`askanu-gemini-api-key` and `askanu-db-password`, and Artifact Registry repository
+`askanu-containers`. The Cloud Run service/URL, Cloud SQL connection name, DB
+name/user and final RAG image name remain unknown. See `docs/DEPLOYMENT.md` for
+the explicit-image strategy, deployment pattern, Day 6/Day 7 boundary and planned
+migration entrypoint.
+
 Run the contract tests:
 
 ```text

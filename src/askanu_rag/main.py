@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, CourseQueryService
 from askanu_rag.config import Settings
@@ -88,6 +89,12 @@ def create_app(
     ) -> JSONResponse:
         status_code = 413 if _is_oversized_input(exc.errors()) else 400
         return controlled_error_response(status_code)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error_handler(
+        _request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        return controlled_error_response(exc.status_code)
 
     @app.exception_handler(Exception)
     async def internal_error_handler(_request: Request, _exc: Exception) -> JSONResponse:

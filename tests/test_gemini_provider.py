@@ -11,7 +11,7 @@ from google import genai
 from google.genai import types
 from pydantic import SecretStr, ValidationError
 
-from askanu_rag.config import DEFAULT_GEMINI_MODEL, Settings
+from askanu_rag.config import DEFAULT_GEMINI_MODEL, DEFAULT_PORT, Settings
 from askanu_rag.gemini import GeminiSynthesisClient
 from askanu_rag.synthesis import SYSTEM_INSTRUCTION, SynthesisError, assemble_context
 from test_grounded_synthesis import QUESTION, record
@@ -113,25 +113,82 @@ def test_settings_read_only_explicit_dotenv_and_environment_wins(tmp_path, monke
     env_file = tmp_path / ".env"
     env_file.write_text(
         "GEMINI_API_KEY=unit-test-placeholder\nGEMINI_MODEL=file-model\n"
-        "REQUEST_TIMEOUT_SECONDS=12\nMAX_OUTPUT_TOKENS=400\nCOURSE_RECORDS_PATH=records\n",
+        "DATABASE_URL=postgresql://file-secret\n"
+        "DB_PASSWORD=db-password-secret\nDB_NAME=askanu\nDB_USER=rag-user\n"
+        "REQUEST_TIMEOUT_SECONDS=12\nMAX_OUTPUT_TOKENS=400\nCOURSE_RECORDS_PATH=records\n"
+        "GOOGLE_CLOUD_PROJECT=file-project\n"
+        "CLOUD_SQL_INSTANCE_CONNECTION_NAME=file-project:region:instance\n"
+        "PORT=9090\nLOG_LEVEL=warning\n",
         encoding="utf-8",
     )
-    for name in ["GEMINI_API_KEY", "REQUEST_TIMEOUT_SECONDS", "MAX_OUTPUT_TOKENS", "COURSE_RECORDS_PATH"]:
+    for name in [
+        "ASKANU_ENV", "GEMINI_API_KEY", "DATABASE_URL", "DB_PASSWORD",
+        "DB_NAME", "DB_USER", "REQUEST_TIMEOUT_SECONDS", "MAX_OUTPUT_TOKENS",
+        "COURSE_RECORDS_PATH", "GOOGLE_CLOUD_PROJECT",
+        "CLOUD_SQL_INSTANCE_CONNECTION_NAME", "PORT", "LOG_LEVEL",
+    ]:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("GEMINI_MODEL", "environment-model")
     settings = Settings.from_environment(env_file)
     assert settings.model == "environment-model"
     assert settings.api_key.get_secret_value() == "unit-test-placeholder"
-    assert "unit-test-placeholder" not in repr(settings)
-    assert "unit-test-placeholder" not in settings.model_dump_json()
+    assert settings.database_url.get_secret_value() == "postgresql://file-secret"
+    assert settings.database_password.get_secret_value() == "db-password-secret"
+    assert settings.database_name == "askanu"
+    assert settings.database_user == "rag-user"
     assert settings.timeout_seconds == 12
     assert settings.max_output_tokens == 400
     assert str(settings.course_records_path) == "records"
+    assert settings.google_cloud_project == "file-project"
+    assert settings.cloud_sql_instance_connection_name == "file-project:region:instance"
+    assert settings.port == 9090
+    assert settings.log_level == "warning"
+    serialized = repr(settings) + settings.model_dump_json()
+    assert "unit-test-placeholder" not in serialized
+    assert "postgresql://file-secret" not in serialized
+    assert "db-password-secret" not in serialized
+
+
+def test_production_configuration_ignores_dotenv(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "GEMINI_API_KEY=file-secret\nDATABASE_URL=file-db-secret\n"
+        "DB_PASSWORD=file-db-password\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ASKANU_ENV", "production")
+    monkeypatch.setenv("GEMINI_API_KEY", "environment-secret")
+    monkeypatch.setenv("DB_PASSWORD", "environment-db-password")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    settings = Settings.from_environment(env_file)
+    assert settings.api_key.get_secret_value() == "environment-secret"
+    assert settings.database_url.get_secret_value() == ""
+    assert settings.database_password.get_secret_value() == "environment-db-password"
+
+
+def test_local_default_port_is_canonical_rag_port(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASKANU_ENV", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+
+    settings = Settings.from_environment(tmp_path / ".env")
+
+    assert DEFAULT_PORT == 8081
+    assert settings.port == 8081
+
+
+def test_cloud_run_supplied_port_is_honoured(monkeypatch):
+    monkeypatch.setenv("ASKANU_ENV", "production")
+    monkeypatch.setenv("PORT", "8096")
+
+    settings = Settings.from_environment()
+
+    assert settings.port == 8096
 
 
 @pytest.mark.parametrize("values", [
     {"timeout_seconds": 0}, {"timeout_seconds": 31},
     {"max_output_tokens": 0}, {"max_output_tokens": 801}, {"model": ""},
+    {"port": 0}, {"port": 65_536}, {"log_level": "verbose"},
 ])
 def test_settings_reject_unbounded_or_empty_config(values):
     with pytest.raises(ValidationError):

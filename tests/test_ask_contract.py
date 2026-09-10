@@ -207,12 +207,22 @@ def test_rate_limit_error_uses_the_frozen_envelope() -> None:
     assert body["status"] == "error"
 
 
+def test_unknown_route_returns_controlled_json_error() -> None:
+    response = client.get("/not-a-real-route")
+
+    assert response.headers["content-type"].startswith("application/json")
+    assert_error_envelope(response, 404)
+
+
 def test_internal_failure_is_controlled_and_does_not_leak_diagnostics() -> None:
     test_app = create_app()
 
     @test_app.get("/_test/internal-failure")
     async def fail_for_test() -> None:
-        raise RuntimeError("SECRET_TOKEN system prompt database.example.internal traceback")
+        raise RuntimeError(
+            "SECRET_TOKEN system prompt database.example.internal traceback "
+            "C:\\private\\service.py"
+        )
 
     test_client = TestClient(test_app, raise_server_exceptions=False)
     response = test_client.get("/_test/internal-failure")
@@ -224,5 +234,6 @@ def test_internal_failure_is_controlled_and_does_not_leak_diagnostics() -> None:
         "system prompt",
         "database.example.internal",
         "traceback",
+        "c:\\private\\service.py",
     ):
         assert forbidden not in serialized

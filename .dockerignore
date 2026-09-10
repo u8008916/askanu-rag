@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!README.md
+!src/
+!src/**
+!fixtures/
+!fixtures/day2_course_program_records.json
+
+# Keep the build context explicit: local env files, credentials, VCS data,
+# tests, caches, logs and external handoff data are never sent to the daemon.
