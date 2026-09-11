@@ -73,18 +73,90 @@ GCP authentication interface. Qasim's confirmed foundation uses project
 `askanu-dev-gdg`, region `australia-southeast1`, dedicated RAG identity
 `askanu-rag-runtime@askanu-dev-gdg.iam.gserviceaccount.com`, secrets
 `askanu-gemini-api-key` and `askanu-db-password`, and Artifact Registry repository
-`askanu-containers`. The Cloud Run service/URL, Cloud SQL connection name, DB
-name/user and final RAG image name remain unknown. See `docs/DEPLOYMENT.md` for
+`askanu-containers`. The frozen Day 7 contract uses private service `askanu-rag`,
+Cloud SQL connection
+`askanu-dev-gdg:australia-southeast1:askanu-postgres-dev`, database `askanu` and
+user `askanu_backend`; the final RAG image name/SHA/digest remain unknown until
+the coordinated build. See `docs/DEPLOYMENT.md` for
 the explicit-image strategy, deployment pattern, Day 6/Day 7 boundary and planned
 migration entrypoint.
 
 The deployed RAG Cloud Run service must remain private with
 `--no-allow-unauthenticated`; Browser/Firebase clients must not invoke it directly.
 App Cloud Run is the authenticated caller boundary. The App-to-RAG identity-token
-flow and resource-level Cloud Run Invoker binding are Day 7 integration work.
-Day 6 health-only deployment does not bind the Gemini secret. Add
-`askanu-gemini-api-key:latest` only in the later Gemini-enabled stage, after a real
-secret version exists.
+flow and resource-level Cloud Run Invoker binding have been confirmed by Qasim;
+this repository does not change IAM.
+The existing Day 6 health-only revision does not bind Gemini or DB secrets. The
+reviewed Day 7 revision is expected to bind explicit confirmed versions
+`askanu-gemini-api-key:1` and `askanu-db-password:1`; do not independently use
+`:latest`, read payloads, run the live migration or update the service.
+
+## Day 7 PostgreSQL path
+
+Production now selects the PostgreSQL implementation of the existing course and
+program repository interface. It connects with psycopg through the Cloud SQL Unix
+socket assembled from `CLOUD_SQL_INSTANCE_CONNECTION_NAME`, `DB_NAME`, `DB_USER`
+and Secret Manager-injected `DB_PASSWORD`. Missing production DB configuration
+does not fall back to fixture data: `/api/v1/ask` returns controlled JSON while the
+shallow `/health` response remains unchanged.
+
+The versioned one-shot migration entrypoint is:
+
+```text
+python -m alembic upgrade head
+```
+
+Revision `20260911_0001` creates the canonical 16-field schema-v1
+`course_program_records` table and the minimal durable `ingestion_runs` audit
+table. The record table retains JSONB metadata, timezone-aware timestamps,
+identity/check constraints and lookup indexes. The run table stores bounded source
+run status and persisted NEW/CHANGED/UNCHANGED/MISSING counts using the frozen
+ingestion-run field names. The container includes the Alembic configuration and
+migration files, but normal web startup never runs migrations.
+
+No pgvector extension, embedding model, dense-vector column or dense retrieval
+path was added. The Day 5 fallback remains bounded in-memory TF-IDF/cosine. See
+`docs/DEPLOYMENT.md` for the disposable local PostgreSQL verification pattern and
+the live steps that remain pending Qasim's coordinated review/deployment.
+
+The RAG repository owns the shared migration, while Will's scraper owns record
+upsert, change detection and ingestion-run writes. `NEW` and `CHANGED` records
+handoff as `PENDING` with a null `embedding_version`; `UNCHANGED` records update
+`last_seen_at` while preserving their current index state and version. `PENDING`
+is the downstream indexing signal. Missing or failed source runs preserve
+last-known-good records and do not trigger deletion or re-embedding.
+`ingestion_runs` is operational audit state only and is not queried by RAG or sent
+to Gemini.
+
+When App Cloud Run supplies `X-Request-Id`, RAG validates the optional header and
+logs it separately as `upstream_request_id`. RAG always generates its own
+`request_id` for the frozen API response; the upstream value never replaces or
+changes it. Invalid header values are not logged verbatim and do not change the
+response contract.
+
+Local Day 7 acceptance completed successfully on Docker Desktop:
+
+- A disposable `postgres:18` container reported PostgreSQL 18.6, used the
+  `askanu_test` database and was bound only to `127.0.0.1:55433`.
+- The first `python -m alembic upgrade head` applied revision `20260911_0001`;
+  `python -m alembic current` returned `20260911_0001 (head)`, and a repeated
+  upgrade completed as a safe no-op.
+- The opt-in real PostgreSQL integration test passed with `1 passed` using only
+  `ASKANU_TEST_DATABASE_URL` and the disposable `_test` database. It persisted
+  and read back an ingestion-run count row before confirming the existing
+  COMP1110 repository/API path remained unchanged.
+- `docker build --tag askanu-rag:day7 .` passed. The image started locally in
+  production mode, and `/health` returned HTTP 200 with exact body
+  `{"status":"ok"}`.
+- `python -m alembic heads` inside `askanu-rag:day7` returned
+  `20260911_0001 (head)`.
+
+The disposable PostgreSQL 18 container and Day 7 application container were
+stopped and removed after verification. The earlier localhost-only PostgreSQL 12
+compatibility smoke remains supplementary evidence, not the target-version proof.
+No image was pushed, no live Cloud SQL migration or write was performed, and no
+Cloud Run revision was deployed. Those live steps remain part of Qasim's
+coordinated deployment and are not a blocker for Carmen's local Day 7 PR.
 
 Run the contract tests:
 

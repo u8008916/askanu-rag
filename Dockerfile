@@ -7,16 +7,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md alembic.ini ./
 COPY src ./src
+COPY migrations ./migrations
 
 RUN python -m pip install --no-cache-dir --disable-pip-version-check \
         --target /app/runtime . \
     && python -m pip check \
     && find /app/runtime -type d -name __pycache__ -prune -exec rm -rf '{}' +
 
-# Preserve the existing deterministic fallback used when no external handoff
-# path is configured. Day 7 will replace this runtime path with Cloud SQL.
+# Preserve the existing deterministic local/test fallback. Production selection
+# fails closed unless Cloud SQL is configured; it never serves this fixture.
 COPY fixtures/day2_course_program_records.json ./fixtures/day2_course_program_records.json
 
 # Cloud Run invokes the container as a non-root user and supplies PORT.

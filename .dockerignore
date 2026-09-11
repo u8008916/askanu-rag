@@ -3,8 +3,11 @@
 !.dockerignore
 !pyproject.toml
 !README.md
+!alembic.ini
 !src/
 !src/**
+!migrations/
+!migrations/**
 !fixtures/
 !fixtures/day2_course_program_records.json
 
