@@ -44,6 +44,7 @@ MOCK_CLARIFICATION_TRIGGER = "mock:needs_clarification"
 SAFE_ERROR_ANSWER = "The request could not be completed."
 # Child of Uvicorn's configured operational logger; access logging stays disabled.
 REQUEST_LOGGER = logging.getLogger("uvicorn.error.askanu_rag.requests")
+UPSTREAM_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def new_request_id() -> str:
@@ -65,6 +66,17 @@ def controlled_error_response(
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", None) or new_request_id()
+
+
+def _validated_upstream_request_id(request: Request) -> str:
+    """Return a safe log value without trusting or echoing an invalid header."""
+
+    value = request.headers.get("x-request-id")
+    if value is None:
+        return "none"
+    if UPSTREAM_REQUEST_ID_PATTERN.fullmatch(value):
+        return value
+    return "invalid"
 
 
 def _mark_response(request: Request, response: AskResponse) -> AskResponse:
@@ -106,6 +118,7 @@ def create_app(
     @app.middleware("http")
     async def request_metrics(request: Request, call_next):
         request.state.request_id = new_request_id()
+        request.state.upstream_request_id = _validated_upstream_request_id(request)
         started = perf_counter()
         status_code = 500
         try:
@@ -115,9 +128,11 @@ def create_app(
         finally:
             latency_ms = (perf_counter() - started) * 1000
             REQUEST_LOGGER.info(
-                "request_complete request_id=%s method=%s path=%s "
+                "request_complete request_id=%s upstream_request_id=%s "
+                "method=%s path=%s "
                 "http_status=%s response_status=%s latency_ms=%.2f",
                 request.state.request_id,
+                request.state.upstream_request_id,
                 request.method,
                 request.url.path,
                 status_code,

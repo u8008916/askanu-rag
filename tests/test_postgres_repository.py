@@ -348,17 +348,46 @@ def test_db_failure_is_controlled_and_logs_no_diagnostics(caplog):
     assert "latency_ms=" in caplog.text
 
 
-def test_request_metrics_do_not_log_raw_question(caplog):
+def test_request_metrics_log_valid_upstream_id_separately_without_raw_question(
+    caplog,
+):
     sentinel = "raw-question-sentinel"
+    upstream_request_id = "app-7f8a02d4-4c71-4fe1-a23c"
     caplog.set_level(logging.INFO, logger="uvicorn.error.askanu_rag.requests")
     client = TestClient(create_app())
 
-    response = client.post("/api/v1/ask", json=ask_payload(sentinel))
+    response = client.post(
+        "/api/v1/ask",
+        json=ask_payload(sentinel),
+        headers={"X-Request-Id": upstream_request_id},
+    )
 
     assert response.status_code == 200
-    assert "request_id=" in caplog.text
+    api_request_id = response.json()["request_id"]
+    assert api_request_id.startswith("req_")
+    assert api_request_id != upstream_request_id
+    assert f"request_id={api_request_id}" in caplog.text
+    assert f"upstream_request_id={upstream_request_id}" in caplog.text
     assert "path=/api/v1/ask" in caplog.text
     assert "http_status=200" in caplog.text
     assert "response_status=off_topic" in caplog.text
     assert "latency_ms=" in caplog.text
     assert sentinel not in caplog.text
+
+
+def test_invalid_upstream_request_id_is_not_logged_or_used_as_api_id(caplog):
+    unsafe_header = "invalid/request-id-secret-sentinel"
+    caplog.set_level(logging.INFO, logger="uvicorn.error.askanu_rag.requests")
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/ask",
+        json=ask_payload("hello"),
+        headers={"X-Request-Id": unsafe_header},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["request_id"].startswith("req_")
+    assert response.json()["request_id"] != unsafe_header
+    assert "upstream_request_id=invalid" in caplog.text
+    assert unsafe_header not in caplog.text

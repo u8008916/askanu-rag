@@ -135,6 +135,10 @@ Fetch/parser failures preserve last-known-good data.
 A suspicious many-to-zero result MUST fail/review the run rather than mark all
 records missing or delete them.
 
+The scraper owns record upsert, `content_hash` comparison and assignment of these
+change states. The indexing side consumes the resulting `index_status`; it does
+not independently re-detect `NEW` or `CHANGED`.
+
 ---
 
 # 5. Index status
@@ -157,6 +161,29 @@ DB success plus embedding failure MUST NOT appear as `INDEXED`.
 
 Day 2 deterministic exact retrieval does not need to use this field for lookup
 yet, but it MUST be able to accept/preserve it.
+
+The approved scraper-to-indexing handoff is:
+
+- `NEW` -> `index_status = PENDING` and `embedding_version = null`.
+- `CHANGED` -> `index_status = PENDING` and `embedding_version = null`.
+- `UNCHANGED` -> update `last_seen_at`, preserve the existing `index_status` and
+  `embedding_version`, and emit no new indexing signal.
+- indexing success -> `index_status = INDEXED` and set `embedding_version`.
+- indexing failure -> `index_status = FAILED`; do not claim the current content
+  is embedded.
+
+`PENDING` is the downstream indexing handoff signal. If an `UNCHANGED` record is
+already `PENDING` or `FAILED`, the scraper preserves that exact state and its
+existing `embedding_version`; it does not reset the state or create a second
+change signal. The indexing/retry owner may retry it independently.
+
+`MISSING`, fetch failure and parser failure preserve the last-known-good record.
+They do not delete it and do not create a re-embedding signal.
+
+The scraper may clear `embedding_version` for `NEW` or `CHANGED`, but it never
+sets a new successful embedding version. The indexing side owns that successful
+update. This contract does not imply that dense embeddings or pgvector are
+implemented in the current Day 7 runtime.
 
 ---
 
@@ -703,6 +730,12 @@ Rules:
 
 # 19. Ingestion run
 
+The shared database contains a durable `ingestion_runs` table for bounded scraper
+run audit, persisted counts and operational traceability. Cloud Run structured
+logs are supplementary; they are not the durable count store. These rows are not
+RAG evidence and are never included in retrieval, Gemini context or the public
+API.
+
 Ingestion-run fields remain:
 
 ```text
@@ -728,6 +761,16 @@ FAILED
 SUSPICIOUS_ZERO
 ```
 
+`records_added` is the persisted `NEW` count. `records_changed` and
+`records_unchanged` are the corresponding `CHANGED` and `UNCHANGED` counts.
+`records_missing` records bounded missing observations; it is not permission to
+delete records. Run failure is represented by `status` plus the nullable `error`
+field rather than by adding a second, incompatible count contract.
+
+The table stores no raw scraped payload, prompt, history or credential. Carmen's
+RAG repository owns its shared migration; Will's scraper owns inserting and
+updating ingestion-run rows.
+
 On fetch/parser failure:
 
 ```text
@@ -751,13 +794,15 @@ For the first Courses/Programs vertical slice:
 **Carmen — RAG/backend**
 
 - owns the RAG-side DB model/data-access implementation,
-- owns the first migration code required by RAG retrieval,
+- owns the shared migration/schema for course/program records and ingestion runs,
 - owns deterministic course/program read/query behaviour.
 
 **Will — Scraper/data**
 
 - owns normalized record production,
-- owns scraper-side write/handoff integration against this contract,
+- owns scraper-side record upsert, `content_hash` change detection and
+  `NEW`/`CHANGED`/`UNCHANGED` assignment,
+- owns record and ingestion-run writes against this shared schema,
 - does not independently redefine shared field semantics.
 
 **Qasim — PM/integration/contracts/GCP**

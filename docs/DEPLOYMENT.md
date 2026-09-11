@@ -165,6 +165,25 @@ Carmen's Day 7 implementation does not read either payload and does not change
 the existing private service. The live migration, revision update and smoke test
 remain Qasim-coordinated steps after review.
 
+The reviewed Stage B deployment must explicitly attach the Cloud SQL instance;
+IAM alone does not create the `/cloudsql/...` Unix socket inside the Cloud Run
+revision. The coordinated command shape is:
+
+```text
+gcloud run deploy askanu-rag \
+  --project askanu-dev-gdg \
+  --region australia-southeast1 \
+  --image australia-southeast1-docker.pkg.dev/askanu-dev-gdg/askanu-containers/<RAG_IMAGE>:<GIT_COMMIT_SHA> \
+  --service-account askanu-rag-runtime@askanu-dev-gdg.iam.gserviceaccount.com \
+  --add-cloudsql-instances askanu-dev-gdg:australia-southeast1:askanu-postgres-dev \
+  --set-env-vars ASKANU_ENV=production,GOOGLE_CLOUD_PROJECT=askanu-dev-gdg,GOOGLE_CLOUD_LOCATION=australia-southeast1,CLOUD_SQL_INSTANCE_CONNECTION_NAME=askanu-dev-gdg:australia-southeast1:askanu-postgres-dev,DB_NAME=askanu,DB_USER=askanu_backend \
+  --set-secrets GEMINI_API_KEY=askanu-gemini-api-key:1,DB_PASSWORD=askanu-db-password:1 \
+  --no-allow-unauthenticated
+```
+
+This is documentation for Qasim's authorised deployment workflow, not a command
+run by Carmen in this follow-up.
+
 Qasim reports that the dedicated RAG identity can access the two named secret
 resources and has Cloud SQL Client access. Carmen does not alter or independently
 re-audit those bindings in this implementation. Secret Manager bindings inject
@@ -263,11 +282,20 @@ The Day 7 one-shot entrypoint is:
 python -m alembic upgrade head
 ```
 
+Qasim approved extending this existing Day 7 revision because it has not been
+applied to live Cloud SQL. A disposable local database that was stamped with an
+earlier draft of `20260911_0001` must be recreated before verification; Alembic
+will not rerun an already stamped revision. Do not use this local reset guidance
+against any shared or live database.
+
 Revision `20260911_0001` creates `course_program_records` with the 16 frozen
 top-level fields, JSONB metadata, timezone-aware timestamps, stable `record_id`
 primary key, schema checks, a unique `(entity_type, normalized_code,
-academic_year)` expression index, plus title and `last_seen_at` indexes. It does
-not auto-run at web startup and does not silently destroy data.
+academic_year)` expression index, plus title and `last_seen_at` indexes. It also
+creates the frozen minimal `ingestion_runs` audit table with a stable run ID,
+source ID, timezone-aware start/completion timestamps, bounded run status,
+non-negative persisted record counts and an optional error. It does not auto-run
+at web startup and does not silently destroy data.
 
 Current Day 5 retrieval is local sparse TF-IDF/cosine, not dense embeddings.
 Accordingly this migration does **not** enable pgvector and the runtime does not
@@ -279,6 +307,38 @@ run the command twice; the second invocation should report that the database is
 already at head. Do not use production credentials. The same command is intended
 for a dedicated reviewed migration job before a service revision depends on the
 schema. It is never part of the web-container startup command.
+
+### Shared ingestion and indexing ownership
+
+The RAG repository owns the shared migration/schema. Will's scraper owns record
+upsert, `content_hash` comparison, change detection and writes to both shared
+tables. Carmen does not implement scraper persistence or ingestion-run writer
+logic here. `ingestion_runs` is durable audit/run state only; RAG retrieval does
+not query it, add it to Gemini context or expose it through the public API.
+
+The approved handoff uses the existing uppercase stored values:
+
+- `NEW` and `CHANGED` -> `PENDING`, with `embedding_version = NULL`.
+- `UNCHANGED` -> update `last_seen_at` and preserve `index_status` plus
+  `embedding_version`; do not emit another indexing signal.
+- `PENDING` is the downstream indexing signal. Indexing does not re-detect source
+  changes.
+- successful indexing -> `INDEXED` and set `embedding_version`.
+- failed indexing -> `FAILED`; do not claim the current content is embedded.
+- an unchanged row already `PENDING` or `FAILED` remains in that state, including
+  its existing embedding version.
+- `MISSING` or a failed source run preserves last-known-good data and triggers
+  neither deletion nor re-embedding.
+
+No scraper writer, dense embedding call, pgvector workflow or live indexing
+worker is introduced by this schema follow-up.
+
+App Cloud Run may send `X-Request-Id` for cross-service correlation. RAG accepts
+only a bounded safe-character value for logging and records it as
+`upstream_request_id`, separately from the RAG-generated API `request_id`. Missing
+or invalid upstream values are represented by fixed safe markers; invalid raw
+values are not logged. The upstream header never replaces the six-field response
+`request_id`.
 
 ### Locally verified Day 7 acceptance
 
@@ -294,7 +354,8 @@ Desktop:
   completed successfully without reapplying the migration.
 - `python -m pytest tests/test_postgres_integration.py -v` completed with
   `1 passed`. The test used the explicit `ASKANU_TEST_DATABASE_URL` safety
-  interface against the disposable local database.
+  interface against the disposable local database, persisted and read back one
+  ingestion-run count row, and then exercised the unchanged COMP1110 DB/API path.
 - `docker build --tag askanu-rag:day7 .` completed successfully.
 - The Day 7 image started locally with `ASKANU_ENV=production` and `PORT=8081`.
   `GET http://127.0.0.1:8081/health` returned HTTP 200 and exact body
@@ -324,7 +385,9 @@ These coordinated live steps are not a blocker for Carmen's local Day 7 PR.
 5. Run revision `20260911_0001` against Cloud SQL as an explicit reviewed step.
 6. Bind `DB_PASSWORD=askanu-db-password:1` and
    `GEMINI_API_KEY=askanu-gemini-api-key:1` with the confirmed non-secret DB config.
-7. Update the private `askanu-rag` service using the dedicated RAG identity.
+7. Update the private `askanu-rag` service using the dedicated RAG identity and
+   explicitly attach
+   `askanu-dev-gdg:australia-southeast1:askanu-postgres-dev` to the revision.
 8. Verify authenticated `/health`, exact Cloud SQL retrieval and real
    `/api/v1/ask` while recording request ID, HTTP/response status and latency.
 

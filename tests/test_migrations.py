@@ -25,13 +25,13 @@ def load_revision():
 
 class OperationRecorder:
     def __init__(self):
-        self.created = None
+        self.created = []
         self.executed = []
         self.indexes = []
         self.dropped = []
 
     def create_table(self, name, *items):
-        self.created = (name, items)
+        self.created.append((name, items))
 
     def execute(self, statement):
         self.executed.append(statement)
@@ -70,7 +70,9 @@ def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
     )
     sql = result.stdout
     assert "CREATE TABLE course_program_records" in sql
+    assert "CREATE TABLE ingestion_runs" in sql
     assert "CREATE UNIQUE INDEX uq_course_program_records_identity" in sql
+    assert "CREATE INDEX ix_ingestion_runs_source_started_at" in sql
     assert "INSERT INTO alembic_version" in sql
     assert "CREATE EXTENSION" not in sql
 
@@ -84,9 +86,8 @@ def test_migration_creates_frozen_schema_and_identity_guards(monkeypatch):
 
     assert revision.revision == "20260911_0001"
     assert revision.down_revision is None
-    assert recorder.created is not None
-    table_name, items = recorder.created
-    assert table_name == "course_program_records"
+    tables = dict(recorder.created)
+    items = tables["course_program_records"]
     columns = {item.name: item for item in items if isinstance(item, sa.Column)}
     assert set(columns) == {
         "record_id", "source_id", "entity_id", "domain", "title", "content",
@@ -112,7 +113,56 @@ def test_migration_creates_frozen_schema_and_identity_guards(monkeypatch):
     assert {index[0] for index in recorder.indexes} == {
         "ix_course_program_records_title",
         "ix_course_program_records_last_seen_at",
+        "ix_ingestion_runs_source_started_at",
     }
+
+
+def test_migration_creates_durable_ingestion_run_audit_table(monkeypatch):
+    revision = load_revision()
+    recorder = OperationRecorder()
+    monkeypatch.setattr(revision, "op", recorder)
+
+    revision.upgrade()
+
+    tables = dict(recorder.created)
+    assert set(tables) == {"course_program_records", "ingestion_runs"}
+    items = tables["ingestion_runs"]
+    columns = {item.name: item for item in items if isinstance(item, sa.Column)}
+    assert set(columns) == {
+        "run_id", "source_id", "started_at", "completed_at", "records_seen",
+        "records_added", "records_changed", "records_unchanged",
+        "records_missing", "status", "error",
+    }
+    assert columns["run_id"].primary_key
+    assert isinstance(columns["started_at"].type, sa.DateTime)
+    assert columns["started_at"].type.timezone
+    assert isinstance(columns["completed_at"].type, sa.DateTime)
+    assert columns["completed_at"].type.timezone
+    assert columns["completed_at"].nullable
+    assert columns["error"].nullable
+    count_names = {
+        "records_seen", "records_added", "records_changed",
+        "records_unchanged", "records_missing",
+    }
+    for name in count_names:
+        assert isinstance(columns[name].type, sa.Integer)
+        assert not columns[name].nullable
+        assert str(columns[name].server_default.arg) == "0"
+    checks = " ".join(
+        str(item.sqltext) for item in items if isinstance(item, sa.CheckConstraint)
+    )
+    for required in (
+        "RUNNING", "SUCCESS", "FAILED", "SUSPICIOUS_ZERO", "records_seen",
+        "records_added", "records_changed", "records_unchanged",
+        "records_missing", "completed_at", "started_at",
+    ):
+        assert required in checks
+    assert (
+        "ix_ingestion_runs_source_started_at",
+        "ingestion_runs",
+        ["source_id", "started_at"],
+        False,
+    ) in recorder.indexes
 
 
 def test_migration_downgrade_is_explicit(monkeypatch):
@@ -122,7 +172,7 @@ def test_migration_downgrade_is_explicit(monkeypatch):
 
     revision.downgrade()
 
-    assert recorder.dropped == ["course_program_records"]
+    assert recorder.dropped == ["ingestion_runs", "course_program_records"]
 
 
 def test_pgvector_is_not_claimed_or_enabled_by_current_migration():

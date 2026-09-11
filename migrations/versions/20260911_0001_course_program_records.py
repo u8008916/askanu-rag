@@ -1,4 +1,4 @@
-"""Create the canonical schema-v1 course/program record table.
+"""Create the shared course/program record and ingestion-run tables.
 
 Revision ID: 20260911_0001
 Revises: None
@@ -119,7 +119,72 @@ def upgrade() -> None:
         ["last_seen_at"],
         unique=False,
     )
+    op.create_table(
+        "ingestion_runs",
+        sa.Column("run_id", sa.Text(), primary_key=True),
+        sa.Column("source_id", sa.Text(), nullable=False),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "records_seen",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
+            "records_added",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
+            "records_changed",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
+            "records_unchanged",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
+            "records_missing",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column("status", sa.Text(), nullable=False),
+        sa.Column("error", sa.Text(), nullable=True),
+        sa.CheckConstraint(
+            "char_length(btrim(run_id)) > 0 "
+            "AND char_length(btrim(source_id)) > 0",
+            name="ck_ingestion_runs_required_identity",
+        ),
+        sa.CheckConstraint(
+            "status IN ('RUNNING', 'SUCCESS', 'FAILED', 'SUSPICIOUS_ZERO')",
+            name="ck_ingestion_runs_status",
+        ),
+        sa.CheckConstraint(
+            "records_seen >= 0 AND records_added >= 0 "
+            "AND records_changed >= 0 AND records_unchanged >= 0 "
+            "AND records_missing >= 0",
+            name="ck_ingestion_runs_non_negative_counts",
+        ),
+        sa.CheckConstraint(
+            "completed_at IS NULL OR completed_at >= started_at",
+            name="ck_ingestion_runs_timestamp_order",
+        ),
+    )
+    op.create_index(
+        "ix_ingestion_runs_source_started_at",
+        "ingestion_runs",
+        ["source_id", "started_at"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("ingestion_runs")
     op.drop_table("course_program_records")

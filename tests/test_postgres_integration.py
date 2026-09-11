@@ -2,6 +2,7 @@
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 import pytest
@@ -63,11 +64,51 @@ def test_real_local_migration_repository_and_api_path(caplog):
     )
     record_2025 = make_record(year="2025")
     record_2026 = make_record(year="2026")
+    started_at = datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc)
 
     with psycopg.connect(database_url) as connection:
-        connection.execute("TRUNCATE TABLE course_program_records")
+        connection.execute(
+            "TRUNCATE TABLE course_program_records, ingestion_runs"
+        )
+        connection.execute(
+            """
+            INSERT INTO ingestion_runs (
+                run_id, source_id, started_at, completed_at, records_seen,
+                records_added, records_changed, records_unchanged,
+                records_missing, status, error
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                "run:local-day7-contract",
+                "courses_programs_and_courses",
+                started_at,
+                started_at + timedelta(seconds=12),
+                3,
+                1,
+                1,
+                1,
+                0,
+                "SUCCESS",
+                None,
+            ),
+        )
         _insert_record(connection, record_2025)
         _insert_record(connection, record_2026)
+
+    with psycopg.connect(database_url) as connection:
+        run = connection.execute(
+            """
+            SELECT source_id, records_seen, records_added, records_changed,
+                   records_unchanged, records_missing, status, error
+            FROM ingestion_runs
+            WHERE run_id = %s
+            """,
+            ("run:local-day7-contract",),
+        ).fetchone()
+    assert run == (
+        "courses_programs_and_courses", 3, 1, 1, 1, 0, "SUCCESS", None
+    )
 
     with psycopg.connect(database_url) as connection:
         assert _insert_record(
@@ -102,14 +143,17 @@ def test_real_local_migration_repository_and_api_path(caplog):
         response = client.post(
             "/api/v1/ask",
             json=ask_payload("What are the prerequisites for COMP1110 in 2026?"),
+            headers={"X-Request-Id": "app-day7-postgres-smoke"},
         )
     body = response.json()
     assert response.status_code == 200
     assert body["status"] == "ok"
     assert body["request_id"].startswith("req_")
+    assert body["request_id"] != "app-day7-postgres-smoke"
     assert body["sources"][0]["url"] == str(record_2026.canonical_url)
     assert body["answer"].endswith("COMP1100 OR COMP1130 OR COMP1730")
     assert f"request_id={body['request_id']}" in caplog.text
+    assert "upstream_request_id=app-day7-postgres-smoke" in caplog.text
     assert "http_status=200" in caplog.text
     assert "response_status=ok" in caplog.text
     assert "latency_ms=" in caplog.text

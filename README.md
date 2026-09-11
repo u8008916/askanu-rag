@@ -107,14 +107,32 @@ python -m alembic upgrade head
 ```
 
 Revision `20260911_0001` creates the canonical 16-field schema-v1
-`course_program_records` table with JSONB metadata, timezone-aware timestamps,
-identity/check constraints and lookup indexes. The container includes the Alembic
-configuration and migration files, but normal web startup never runs migrations.
+`course_program_records` table and the minimal durable `ingestion_runs` audit
+table. The record table retains JSONB metadata, timezone-aware timestamps,
+identity/check constraints and lookup indexes. The run table stores bounded source
+run status and persisted NEW/CHANGED/UNCHANGED/MISSING counts using the frozen
+ingestion-run field names. The container includes the Alembic configuration and
+migration files, but normal web startup never runs migrations.
 
 No pgvector extension, embedding model, dense-vector column or dense retrieval
 path was added. The Day 5 fallback remains bounded in-memory TF-IDF/cosine. See
 `docs/DEPLOYMENT.md` for the disposable local PostgreSQL verification pattern and
 the live steps that remain pending Qasim's coordinated review/deployment.
+
+The RAG repository owns the shared migration, while Will's scraper owns record
+upsert, change detection and ingestion-run writes. `NEW` and `CHANGED` records
+handoff as `PENDING` with a null `embedding_version`; `UNCHANGED` records update
+`last_seen_at` while preserving their current index state and version. `PENDING`
+is the downstream indexing signal. Missing or failed source runs preserve
+last-known-good records and do not trigger deletion or re-embedding.
+`ingestion_runs` is operational audit state only and is not queried by RAG or sent
+to Gemini.
+
+When App Cloud Run supplies `X-Request-Id`, RAG validates the optional header and
+logs it separately as `upstream_request_id`. RAG always generates its own
+`request_id` for the frozen API response; the upstream value never replaces or
+changes it. Invalid header values are not logged verbatim and do not change the
+response contract.
 
 Local Day 7 acceptance completed successfully on Docker Desktop:
 
@@ -124,7 +142,9 @@ Local Day 7 acceptance completed successfully on Docker Desktop:
   `python -m alembic current` returned `20260911_0001 (head)`, and a repeated
   upgrade completed as a safe no-op.
 - The opt-in real PostgreSQL integration test passed with `1 passed` using only
-  `ASKANU_TEST_DATABASE_URL` and the disposable `_test` database.
+  `ASKANU_TEST_DATABASE_URL` and the disposable `_test` database. It persisted
+  and read back an ingestion-run count row before confirming the existing
+  COMP1110 repository/API path remained unchanged.
 - `docker build --tag askanu-rag:day7 .` passed. The image started locally in
   production mode, and `/health` returned HTTP 200 with exact body
   `{"status":"ok"}`.
