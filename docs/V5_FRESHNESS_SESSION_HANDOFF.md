@@ -113,14 +113,16 @@ repository, so a changed stored prerequisite is returned on the next turn.
 
 Guided cards generate ordinary user-visible questions and valid existing
 `/api/v1/ask` payloads. They do not carry hidden authoritative facts and do not
-bypass retrieval. On later turns the App appends only the bounded visible turns
-needed for current-chat meaning and copies the latest response `clarification`
-object into `conversation_state.pending_clarification`. After resolution,
-correction, topic switch or Clear Chat, it sends `null`.
+bypass retrieval. From a new session, each current App card below returns
+`needs_clarification` for only its missing identity before any unsupported
+answer. On later turns the App appends only the bounded visible turns needed for
+current-chat meaning and copies the latest response `clarification` object into
+`conversation_state.pending_clarification`. After resolution, correction, topic
+switch or Clear Chat, it sends `null`.
 
 ### Card 1: Plan degree
 
-Visible card: **Plan my degree**
+Current App question: **What courses do I need for my degree?**
 
 Purpose: start from an explicit stored program/year, without promising a degree
 audit.
@@ -130,20 +132,22 @@ grades in the URL.
 
 ```json
 {
-  "question": "Tell me about the BACCT program in 2026 so I can start planning my degree.",
+  "question": "What courses do I need for my degree?",
   "history": [],
   "conversation_state": {"pending_clarification": null}
 }
 ```
 
-Current support: exact stored program overview and metadata when available.
+New-session response: `needs_clarification` — `Which program or degree do you
+mean?` Current support after a specific selection is exact stored program
+overview and metadata when available.
 Not supported: a complete rule engine, remaining-requirements audit, timetable
 or authoritative completion plan. Missing/ambiguous evidence must clarify or
 return `insufficient_evidence`.
 
 ### Card 2: Prerequisite
 
-Visible card: **Check a prerequisite**
+Current App question: **What are the prerequisites for this course?**
 
 Purpose: retrieve the course's stored prerequisite text.
 
@@ -151,19 +155,20 @@ Collect: course code and, when known, academic year.
 
 ```json
 {
-  "question": "What are the prerequisites for COMP1110 in 2026?",
+  "question": "What are the prerequisites for this course?",
   "history": [],
   "conversation_state": {"pending_clarification": null}
 }
 ```
 
-Current support: implemented exact course/year retrieval with fresh stored
-evidence. If the year is omitted and several exist, show the backend
-clarification and carry it on the next request.
+New-session response: `needs_clarification` — `Which course do you mean?`
+Current support after selection is implemented exact course/year retrieval with
+fresh stored evidence. If the selected code has several years, show the backend
+year clarification and carry it on the next request.
 
 ### Card 3: Can I take this course?
 
-Visible card: **Can I take this course?**
+Current App question: **Can I take this course in my study plan?**
 
 Purpose: show source-grounded requisites while clearly separating them from
 permission to enrol.
@@ -173,26 +178,21 @@ to provide. Treat that background as unverified context, not a student record.
 
 ```json
 {
-  "question": "Can I take COMP1110 in 2026? Please show its stored prerequisites; do not treat this as enrolment approval.",
-  "history": [
-    {
-      "turn_id": "card-can-take-1",
-      "role": "user",
-      "content": "For this chat only, I have completed COMP1100."
-    }
-  ],
+  "question": "Can I take this course in my study plan?",
+  "history": [],
   "conversation_state": {"pending_clarification": null}
 }
 ```
 
-Current support is conservative: the backend can return stored prerequisite
-evidence but does not verify the user's completion, waivers, program rules or
+New-session response: `needs_clarification` — `Which course do you mean?`
+Current support after selection is conservative: the backend can return stored
+prerequisite evidence but does not verify completion, waivers, program rules or
 permission to enrol. It must not equate satisfying one prerequisite statement
 with approval. Unsupported conclusions return `insufficient_evidence`.
 
 ### Card 4: Honours
 
-Visible card: **Explore honours**
+Current App question: **Can I still qualify for honours?**
 
 Purpose: start an honours information question without implying an eligibility
 decision.
@@ -201,16 +201,21 @@ Collect: subject/discipline and optionally an explicit academic year.
 
 ```json
 {
-  "question": "What official ANU information is available about honours in computer science for 2026?",
+  "question": "Can I still qualify for honours?",
   "history": [],
   "conversation_state": {"pending_clarification": null}
 }
 ```
 
-Current support: request validation and honest `insufficient_evidence` when the
-Courses/Programs evidence set cannot establish the answer. Honours discovery or
-eligibility is not a completed vertical slice; the App must not label it as an
-eligibility checker.
+New-session response: `needs_clarification` — `I can help find official honours
+information, but I cannot assess eligibility. Which program or discipline are
+you exploring?`
+
+**App copy needs correction.** The current copy, `Check your eligibility and
+what you need to apply.`, promises an eligibility check beyond the backend's
+capability. Replace it with `Explore honours requirements and official ANU
+information.` or `Find official information about honours requirements and
+applying.` Honours discovery or eligibility is not a completed vertical slice.
 
 ### Continuation payload
 
@@ -383,9 +388,11 @@ Day / task: **V5 — 12 Sep 2026: Freshness/index lifecycle + session conversati
 - Added lifecycle, conversation, freshness, isolation, security and documentation
   payload validation tests.
 
-No request/response field, status, schema-v1 field/enum, migration, source or
-cloud configuration changed. No embedding worker, queue, pgvector workflow,
-deployment, commit or PR was created.
+No API request/response field, status, schema-v1 field/enum, migration, source
+or cloud configuration changed. The existing conversation contract is clarified
+for V5 current-session and empty-session guided-card behavior, with Qasim's
+approval recorded in `docs/DECISION_LOG.md`. No embedding worker, queue,
+pgvector workflow, deployment, commit or PR was created.
 
 ## Acceptance criteria / verification
 
@@ -413,12 +420,14 @@ scan all pass.
 
 ## Contracts / architecture
 
-- [x] No shared contract changed
-- [x] No decision-log entry required; no approval is claimed
+- [x] No API field/schema/status contract changed
+- [x] Existing conversation contract clarified for V5 current-session and
+  empty-session guided-card behavior; Qasim approval recorded in the decision log
 
 The frozen Browser -> App -> private RAG -> Cloud SQL/Gemini architecture,
 response envelope/statuses, request fields, schema v1 and migration head remain
-unchanged. Qasim review is still required before the integration gate can pass.
+unchanged. The conversation behavior clarification is approved for this PR;
+remaining Qasim integration checks still apply.
 
 ## Security / data
 

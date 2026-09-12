@@ -32,6 +32,24 @@ OTHER_DOMAIN_PATTERN = re.compile(
     r"\b(?:scholarships?|accommodation|jobs?|events?|support|honours|degree plan)\b",
     re.IGNORECASE,
 )
+GUIDED_CARD_PROMPTS = {
+    "what courses do i need for my degree?": (
+        "clar-guided-degree-program",
+        "program",
+        "Which program or degree do you mean?",
+    ),
+    "what are the prerequisites for this course?": (
+        "clar-guided-prerequisite-course",
+        "course",
+        "Which course do you mean?",
+    ),
+    "can i take this course in my study plan?": (
+        "clar-guided-study-plan-course",
+        "course",
+        "Which course do you mean?",
+    ),
+}
+HONOURS_GUIDED_PROMPT = "can i still qualify for honours?"
 
 
 @dataclass(frozen=True)
@@ -88,14 +106,18 @@ def _question_for(records, intent: str) -> str:
 
 
 def _clarification(
-    records, *, allow_multiple: bool, minimum_options: int = 2
+    records,
+    *,
+    allow_multiple: bool,
+    minimum_options: int = 2,
+    clarification_id: str = "clar-current-session-course-selection",
 ) -> Clarification | None:
     unique = {record.record_id: record for record in records}
     if len(unique) < minimum_options:
         return None
     ordered = tuple(sorted(unique.values(), key=lambda item: item.record_id))
     return Clarification(
-        id="clar-current-session-course-selection",
+        id=clarification_id,
         type="entity_selection",
         options=[
             ClarificationOption(
@@ -109,6 +131,49 @@ def _clarification(
         ],
         allow_multiple=allow_multiple,
     )
+
+
+def _guided_card_resolution(
+    question: str, catalog: CatalogReader
+) -> ConversationResolution | None:
+    """Ask only for the identity missing from an App guided-card prompt."""
+
+    normalized = " ".join(question.split()).casefold()
+    if normalized == HONOURS_GUIDED_PROMPT:
+        return ConversationResolution(
+            question,
+            Clarification(
+                id="clar-guided-honours-scope",
+                type="honours_information",
+                options=[],
+                allow_multiple=False,
+            ),
+            "I can help find official honours information, but I cannot assess "
+            "eligibility. Which program or discipline are you exploring?",
+        )
+    definition = GUIDED_CARD_PROMPTS.get(normalized)
+    if definition is None:
+        return None
+    clarification_id, entity_type, answer = definition
+    records = tuple(
+        record
+        for record in catalog.all_records()
+        if record.metadata_json.entity_type == entity_type
+    )
+    clarification = _clarification(
+        records,
+        allow_multiple=False,
+        minimum_options=1,
+        clarification_id=clarification_id,
+    )
+    if clarification is None:
+        clarification = Clarification(
+            id=clarification_id,
+            type="entity_selection",
+            options=[],
+            allow_multiple=False,
+        )
+    return ConversationResolution(question, clarification, answer)
 
 
 def _records_for_codes(catalog: CatalogReader, codes, years=()):
@@ -193,9 +258,13 @@ def _resolve_pending(payload: AskRequest, catalog: CatalogReader):
     history_text = tuple(
         turn.content for turn in reversed(payload.history) if turn.role == "user"
     )
-    return ConversationResolution(
-        _question_for(selected, _intent((payload.question,) + history_text))
-    )
+    intent = _intent((payload.question,) + history_text)
+    if pending.id in {
+        "clar-guided-prerequisite-course",
+        "clar-guided-study-plan-course",
+    }:
+        intent = "prerequisites"
+    return ConversationResolution(_question_for(selected, intent))
 
 
 def resolve_current_session(
@@ -206,6 +275,24 @@ def resolve_current_session(
     question = payload.question
     current_codes = _course_refs(question)
     current_years = _years(question)
+    pending_clarification = payload.conversation_state.pending_clarification
+
+    # A guided-card option may itself include a course code (for example,
+    # ``COMP1110 (2026)``). Treat an exact option selection as the answer to
+    # the outstanding card clarification before applying the general rule that
+    # an explicit current-turn course code starts a new lookup.
+    if current_codes and pending_clarification is not None and pending_clarification.id in {
+        "clar-guided-degree-program",
+        "clar-guided-prerequisite-course",
+        "clar-guided-study-plan-course",
+    }:
+        guided_pending = _resolve_pending(payload, catalog)
+        if guided_pending is not None:
+            return guided_pending
+
+    guided_resolution = _guided_card_resolution(question, catalog)
+    if guided_resolution is not None:
+        return guided_resolution
 
     # A current explicit entity, correction or topic switch always defeats stale
     # pending/history. Multiple requested years remain visible as clarification.

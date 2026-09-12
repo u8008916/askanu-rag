@@ -27,6 +27,12 @@ other public field is added. For each request the RAG backend applies:
 5. clarify rather than guess when multiple entities or academic years remain;
 6. run the normal planner and retrieve current stored evidence.
 
+An empty-session guided-card prompt with no required identity returns
+`needs_clarification` before retrieval. It asks only for the missing course or
+program/degree; it does not create session storage or add a public intent field.
+The honours guided prompt asks for official-information scope and states that the
+backend cannot assess eligibility.
+
 Pending option labels are display/selection context, not evidence. The backend
 validates option record IDs against the current catalog and rebuilds response
 labels from stored records before returning them. Invalid, stale or conflicting

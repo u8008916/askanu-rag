@@ -75,6 +75,74 @@ def test_every_documented_guided_payload_validates_against_frozen_request_model(
     assert all(AskRequest.model_validate(example) for example in request_examples)
 
 
+@pytest.mark.parametrize(
+    ("question", "clarification_id", "answer_fragment", "option_count"),
+    [
+        (
+            "What courses do I need for my degree?",
+            "clar-guided-degree-program",
+            "Which program or degree do you mean?",
+            1,
+        ),
+        (
+            "What are the prerequisites for this course?",
+            "clar-guided-prerequisite-course",
+            "Which course do you mean?",
+            1,
+        ),
+        (
+            "Can I still qualify for honours?",
+            "clar-guided-honours-scope",
+            "cannot assess eligibility",
+            0,
+        ),
+        (
+            "Can I take this course in my study plan?",
+            "clar-guided-study-plan-course",
+            "Which course do you mean?",
+            1,
+        ),
+    ],
+)
+def test_merged_app_guided_cards_from_empty_session_request_minimum_detail(
+    repo, question, clarification_id, answer_fragment, option_count
+):
+    body = post(repo, question, history=(), pending=None)
+
+    assert body["status"] == "needs_clarification"
+    assert body["answer"] == answer_fragment or answer_fragment in body["answer"]
+    assert body["clarification"]["id"] == clarification_id
+    assert body["clarification"]["allow_multiple"] is False
+    assert len(body["clarification"]["options"]) >= option_count
+
+
+def test_guided_prerequisite_selection_reuses_existing_pending_contract(repo):
+    first = post(
+        repo,
+        "What are the prerequisites for this course?",
+        history=(),
+        pending=None,
+    )
+    comp1110 = next(
+        option
+        for option in first["clarification"]["options"]
+        if option["id"] == "courses:course:COMP1110_2026"
+    )
+    body = post(
+        repo,
+        comp1110["label"],
+        history=(
+            turn("t1", "user", "What are the prerequisites for this course?"),
+            turn("t2", "assistant", first["answer"]),
+        ),
+        pending=first["clarification"],
+    )
+
+    assert body["status"] == "ok"
+    assert "prerequisites" in body["answer"].lower()
+    assert body["sources"][0]["record_id"].startswith("courses:course:")
+
+
 def test_first_question_then_adjacent_prerequisite_follow_up(repo):
     first = post(repo, "Tell me about COMP1110 in 2026")
     history = (
