@@ -12,12 +12,49 @@ History is used to resolve meaning; every factual answer retrieves fresh approve
 - clear topic switch
 - pending clarification cleared when resolved/corrected/switched/cleared
 
+## V5 backend resolution order
+
+The existing request envelope is sufficient; no `session_id`, profile, intent or
+other public field is added. For each request the RAG backend applies:
+
+1. validate `question`, bounded `history`, and `pending_clarification`;
+2. prefer an explicit entity/year/correction or clear topic switch in the current
+   question;
+3. otherwise resolve a valid pending selection (`first`, `second`, a direct
+   option, or `both` only when `allow_multiple` is true);
+4. otherwise resolve a course follow-up from the most recent unambiguous course
+   reference, or a unique non-adjacent current-chat reference;
+5. clarify rather than guess when multiple entities or academic years remain;
+6. run the normal planner and retrieve current stored evidence.
+
+An empty-session guided-card prompt with no required identity returns
+`needs_clarification` before retrieval. It asks only for the missing course or
+program/degree; it does not create session storage or add a public intent field.
+The honours guided prompt asks for official-information scope and states that the
+backend cannot assess eligibility.
+
+Pending option labels are display/selection context, not evidence. The backend
+validates option record IDs against the current catalog and rebuilds response
+labels from stored records before returning them. Invalid, stale or conflicting
+pending state cannot provide facts or URLs. A new explicit question, correction
+or topic switch takes priority over old pending state.
+
+History contributes only constrained entity/year/intent meaning. It is never
+copied wholesale into the Gemini prompt, never treated as a source of course
+requirements or URLs, and is not written to default request logs. Every factual
+follow-up uses a new repository read.
+
 ## Clear Chat
 Clears:
 - visible chat
 - current-session context
 - pending clarification
 - restores `Try asking`
+
+The App performs those UI/request-state actions. It sends the next request with
+empty `history` and `pending_clarification: null`. The RAG service is stateless:
+it has no reset endpoint, session dictionary or persistent chat table, so that
+request cannot see the previous conversation.
 
 Does not:
 - delete source data
