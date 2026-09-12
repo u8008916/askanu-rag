@@ -5,6 +5,7 @@ import math
 from collections import Counter
 
 from askanu_rag.course_queries import CourseQueryService, _source_from_record, classify_course_prerequisites_query
+from askanu_rag.index_lifecycle import index_is_stale
 from askanu_rag.models import Clarification, ClarificationOption, InsufficientEvidenceResponse, NeedsClarificationResponse, OkResponse
 from askanu_rag.query_planner import QueryPlan, plan_query
 from askanu_rag.retrieval.catalog import filter_records, normalize_title, record_code
@@ -58,6 +59,13 @@ class HybridQueryService:
             return candidates
         # Hard filter BEFORE constructing/ranking vectors; rehydrate from this set.
         candidates = tuple(r for r in candidates if _approved(r))
+        if getattr(self.semantic, "uses_persistent_index", False):
+            target_version = getattr(self.semantic, "target_version", None)
+            candidates = tuple(
+                record
+                for record in candidates
+                if not index_is_stale(record, target_version=target_version)
+            )
         if not candidates or not plan.semantic_allowed:
             return ()
         try:

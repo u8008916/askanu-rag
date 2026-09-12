@@ -35,6 +35,8 @@ class LocalTfidfRetriever:
     Lexical vectors are a transparent Day 5 local fallback, not synonym inference.
     """
 
+    uses_persistent_index = False
+
     def search(self, query, candidates, *, top_k, min_score):
         if not candidates:
             return ()

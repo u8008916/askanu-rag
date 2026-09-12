@@ -14,7 +14,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, CourseQueryService
 from askanu_rag.config import Settings
-from askanu_rag.database import DatabaseConfigurationError
+from askanu_rag.conversation import resolve_current_session
+from askanu_rag.database import DatabaseConfigurationError, RepositoryUnavailableError
 from askanu_rag.gemini import GeminiSynthesisClient
 from askanu_rag.hybrid_queries import HybridQueryService
 from askanu_rag.retrieval.catalog import CatalogReader
@@ -172,6 +173,15 @@ def create_app(
         _request.state.response_status = "error"
         return controlled_error_response(502, _request_id(_request))
 
+    @app.exception_handler(RepositoryUnavailableError)
+    async def repository_error_handler(
+        _request: Request, _exc: RepositoryUnavailableError
+    ) -> JSONResponse:
+        # A known dependency failure is handled below ServerErrorMiddleware so
+        # Uvicorn does not print a redundant exception traceback.
+        _request.state.response_status = "error"
+        return controlled_error_response(500, _request_id(_request))
+
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         return HealthResponse()
@@ -202,12 +212,28 @@ def create_app(
             )
 
         request_id = _request_id(request)
-        course_response = await course_queries.answer(payload.question, request_id)
+        if isinstance(repository, CatalogReader):
+            resolution = resolve_current_session(payload, repository)
+            if resolution.clarification is not None:
+                return _mark_response(
+                    request,
+                    NeedsClarificationResponse(
+                        answer=resolution.clarification_answer
+                        or "Please choose a current option.",
+                        clarification=resolution.clarification,
+                        request_id=request_id,
+                    ),
+                )
+            resolved_question = resolution.question
+        else:
+            resolved_question = payload.question
+
+        course_response = await course_queries.answer(resolved_question, request_id)
         if course_response is not None:
             return _mark_response(request, course_response)
 
         # Unsupported ANU/follow-up questions abstain rather than claiming facts.
-        # No broad planner/history resolver is introduced in this Day 4 slice.
+        # The resolver may identify a referent, but never supplies factual evidence.
         if (
             COURSE_CODE_CANDIDATE_PATTERN.search(payload.question)
             or re.search(
