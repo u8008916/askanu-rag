@@ -6,13 +6,15 @@ Branch: `carmen/day-9-scholarships-rag`
 
 Starting SHA: `13fc637`
 
+Final contract-alignment follow-up base SHA: `718317b8e52ca4c51e5cae14538d52eb41925fc9`
+
 Candidate migration: `20260913_0002` after deployed `20260911_0001`
 
-This is a local implementation candidate. It does not claim approval, a live
+This is a local implementation candidate. It records Qasim's final contract
+alignment approval relayed after Will's cross-repository review. It does not claim a live
 Cloud SQL migration, a production write, deployment, IAM/secret/Scheduler work,
-or write-gate enablement. The shared name, constraints, transaction contract,
-and release sequence remain subject to Carmen/Qasim review, with Will included
-where scraper write semantics are affected.
+or write-gate enablement. Physical naming, live permissions, migration execution,
+and the release sequence remain live integration gates.
 
 ## Qasim implementation handoff — 20 explicit items
 
@@ -41,14 +43,15 @@ unchanged. The new revision:
 - replaces the original unqualified Courses identity index with a Courses
   partial identity index and adds a Scholarship `(source_id, entity_id)`
   partial unique index;
-- adds the exact 13-key Scholarship metadata checks and URL-slug identity
-  check; and
+- adds the exact 13-key Scholarship metadata checks, exact canonical URL and
+  slug-grammar identity checks, and the Scholarship null effective-date check; and
 - leaves `ingestion_runs` unchanged.
 
-The Scholarship URL rule uses a constant regex only for the HTTPS ANU host/path
-shape. It obtains the final path segment with PostgreSQL string operations and
-compares it to `entity_id` using literal `=`. Record data is never concatenated
-into a regex. No new slug character-set policy is introduced.
+The Scholarship boundary is exactly
+`https://study.anu.edu.au/scholarships/find-scholarship/<slug>`, where `<slug>`
+matches `^[a-z0-9]+(?:-[a-z0-9]+)*$`. The database compares the entire literal
+URL to the constant prefix plus `entity_id`, and also compares the final segment
+to `entity_id` with literal `=`. Record data is never concatenated into a regex.
 
 Downgrade first refuses if any non-Courses row exists. With only Courses rows it
 drops the view/shared checks, restores the original Courses checks/index names,
@@ -70,9 +73,9 @@ nullability, default, or stored value from `0001`.
 | `content` | `TEXT` | NOT NULL | none | Non-empty shared CHECK | Unchanged |
 | `canonical_url` | `TEXT` | NOT NULL | none | Non-empty shared CHECK; Scholarship ANU canonical URL and literal slug CHECK | Stored value unchanged |
 | `status` | `TEXT` | NOT NULL | none | CHECK: `NEW`, `CHANGED`, `UNCHANGED`, `MISSING` | Unchanged |
-| `effective_from` | `TIMESTAMP WITH TIME ZONE` | nullable | none | No index/default; only source-supported values | Unchanged |
-| `effective_to` | `TIMESTAMP WITH TIME ZONE` | nullable | none | No index/default; only source-supported values | Unchanged |
-| `collected_at` | `TIMESTAMP WITH TIME ZONE` | NOT NULL | none | Required observation/version timestamp | Unchanged |
+| `effective_from` | `TIMESTAMP WITH TIME ZONE` | nullable | none | Must be `NULL` for Scholarships | Unchanged |
+| `effective_to` | `TIMESTAMP WITH TIME ZONE` | nullable | none | Must be `NULL` for Scholarships | Unchanged |
+| `collected_at` | `TIMESTAMP WITH TIME ZONE` | NOT NULL | none | First accepted collection time; preserved after `NEW` | Unchanged |
 | `last_seen_at` | `TIMESTAMP WITH TIME ZONE` | NOT NULL | none | Required; non-unique index | Unchanged |
 | `content_hash` | `VARCHAR(64)` | NOT NULL | none | CHECK for lowercase 64-character SHA-256 hex | Unchanged |
 | `embedding_version` | `TEXT` | nullable | none | Lifecycle-controlled; no standalone index | Unchanged |
@@ -95,8 +98,8 @@ table generalisation.
 The view exists for read compatibility by contract. An ordinary PostgreSQL
 single-table view may be automatically updatable, so read-only behavior is not
 currently enforced by this migration. No current RAG path writes the view.
-Whether to enforce read-only permissions and how long the view remains are
-Qasim decisions. Old-runtime access also depends on verified view grants.
+The exact live-role `SELECT`/write permissions are a mandatory pre-migration
+gate. Old-runtime access also depends on verified view grants.
 
 ### 5. Persisted RAG model structure
 
@@ -131,23 +134,23 @@ and code before any such rows are accepted.
 - Unknown Scholarship metadata keys are rejected (`extra="forbid"`).
 - No null, list, date, value, deadline, status or eligibility fact is inferred.
 
-Strict extra-key rejection is an implemented candidate policy and still
-requires Qasim approval for cross-repository evolution.
+Strict extra-key rejection is part of the approved bounded v1 contract;
+cross-repository evolution still requires a new shared decision.
 
 ### 7. Scholarship identity and provenance fields
 
 ```text
 domain = scholarships
 source_id = scholarships_anu_finder
-entity_id = <literal final path segment of canonical_url>
+entity_id = <slug matching ^[a-z0-9]+(?:-[a-z0-9]+)*$>
 record_id = scholarships:scholarship:<entity_id>
+canonical_url = https://study.anu.edu.au/scholarships/find-scholarship/<entity_id>
 ```
 
-`canonical_url` stays top-level. It must be HTTPS on `anu.edu.au` or a subdomain
-with no query, fragment or trailing slash. Neither title nor changing fields
-such as year, value, status or deadline enter identity. The current contract has
-no separately frozen slug character whitelist, so the migration enforces exact
-literal final-segment equality without inventing one.
+`canonical_url` stays top-level and must equal the frozen constant prefix plus
+the literal `entity_id`; alternate hosts, paths, query strings, fragments,
+trailing slashes and nonconforming slugs are invalid. Neither title nor changing
+fields such as year, value, status or deadline enter identity.
 
 ### 8. PENDING deterministic retrieval rule
 
@@ -174,10 +177,16 @@ that its embedding is current. `NEW` and `CHANGED` require `PENDING` with
 
 Will/Scraper owns source fetch, parsing, normalization, record upsert,
 `content_hash` comparison, `NEW/CHANGED/UNCHANGED` classification and
-`ingestion_runs` writes.
+`ingestion_runs` writes. The scraper is the trusted canonical normalization and
+hash writer and guarantees that the persisted hash is SHA-256 of canonical
+persisted UTF-8 `content`.
 
 Carmen/RAG owns the shared schema/migration, persisted read model, retrieval,
 the meaning of `index_status`, and indexing lifecycle/result-safety semantics.
+RAG validates the lowercase 64-character hash format and trusts the persisted
+invariant; it does not independently rehash records during retrieval.
+Stale-index result safety assumes only approved writer paths can persist rows
+and that each such path enforces the canonical content/hash invariant.
 
 Qasim owns shared-contract approval, live migration, deployment, IAM and the
 integration/release gate.
@@ -187,22 +196,25 @@ integration/release gate.
 ```text
 NEW
   -> persist complete normalized row
+  -> set collected_at and last_seen_at
   -> PENDING
   -> embedding_version NULL
 
 CHANGED
   -> replace current normalized source content under the stable identity
   -> update content_hash
+  -> preserve collected_at and update last_seen_at
   -> PENDING
   -> embedding_version NULL
 
 UNCHANGED
   -> preserve content and content_hash
   -> preserve index_status and embedding_version
-  -> update only approved freshness fields such as last_seen_at
+  -> preserve collected_at and update last_seen_at
 
 MISSING or collection failure
   -> preserve the last-known-good record
+  -> do not advance collected_at or last_seen_at
   -> no delete and no re-embedding signal
 ```
 
@@ -211,10 +223,10 @@ MISSING or collection failure
 | Failure | Previous known-good remains? | Source row / `last_seen_at` | Index status / version | Exact retrieval | Current semantic retrieval | API/audit behavior |
 |---|---|---|---|---|---|---|
 | Listing fetch fails | yes | unchanged / unchanged | unchanged / unchanged | last-known-good remains available | only if its prior index is still current | controlled failure or safe last-known-good behavior; failed run recorded by writer contract |
-| One detail fetch fails | yes for affected record | affected row and timestamp unchanged | unchanged / unchanged | prior record remains available | only if its prior index is still current | do not replace with partial content; batch/run outcome follows approved atomicity policy |
+| One detail fetch fails | yes for affected record | entire bounded batch rolls back; affected row and timestamp unchanged | unchanged / unchanged | prior record remains available | only if its prior index is still current | do not replace with partial content; recovery transaction marks run failed |
 | Parser fails | yes | unchanged / unchanged | unchanged / unchanged | prior record remains available | prior current index remains eligible | controlled failure; no incomplete upsert |
-| Validation fails | yes | unchanged / unchanged | unchanged / unchanged | prior record remains available | prior current index remains eligible | reject invalid record and report run failure; batch rollback policy requires approval |
-| DB write fails | yes if proposed transaction boundary is adopted | no partial committed batch / unchanged | unchanged / unchanged | previous committed row remains | previous committed current index remains | controlled DB failure and failed audit recovery |
+| Validation fails | yes | unchanged / unchanged | unchanged / unchanged | prior record remains available | prior current index remains eligible | reject invalid record, roll back the bounded batch and report run failure |
+| DB write fails | yes | no partial committed batch / unchanged | unchanged / unchanged | previous committed row remains | previous committed current index remains | controlled DB failure and failed audit recovery |
 | Indexing fails | yes | accepted source row unchanged / unchanged | matching current row becomes `FAILED`; no successful new version | current source facts remain available | current failed content unavailable | deterministic API may still answer; semantic-only request abstains/fails safely |
 | Gemini generation fails | yes | unchanged / unchanged | unchanged / unchanged | retrieval remains available | existing eligible retrieval remains available | controlled 502/error envelope; no fabricated answer/source |
 | Future embedding provider fails | yes | accepted source row unchanged / unchanged | `FAILED`; no new successful version | current source facts remain available | current content unavailable | exact/filter path remains; semantic path returns controlled failure/insufficient evidence |
@@ -222,10 +234,10 @@ MISSING or collection failure
 Invariant: collection, parsing, indexing or provider failure must never silently
 delete a known-good row or replace it with incomplete content.
 
-### 13. Expected PostgreSQL atomicity — REQUIRES QASIM/WILL APPROVAL
+### 13. Frozen PostgreSQL atomicity
 
-No writer is implemented in this repository, and the transaction boundary is
-not yet frozen. The proposed shared contract is:
+No writer is implemented in this repository; Will's scraper implements the
+writer. The frozen shared contract is:
 
 1. Insert the `RUNNING` `ingestion_runs` audit row in a short transaction.
 2. Apply every accepted upsert in one transaction per bounded source run and
@@ -236,13 +248,14 @@ not yet frozen. The proposed shared contract is:
    recovery transaction with bounded safe error information.
 5. If commit outcome is unknown, reconcile by stable `run_id`, record IDs and
    hashes before retrying; never assume success or issue blind duplicate writes.
+6. A partially committed successful batch is invalid.
 
-This proposal prevents a state where record changes commit but the success/count
-audit update fails. Qasim and Will must approve or replace it in both repos.
+This prevents a state where record changes commit but the success/count audit
+update fails. For an unknown outcome, blind duplicate writes are forbidden.
 
 ### 14. Idempotency and timestamp policy
 
-Expected proof after approval:
+Required live integration proof:
 
 - first bounded run of N new logical records produces N `NEW` rows;
 - an identical second run produces the same N logical rows as `UNCHANGED`;
@@ -251,12 +264,15 @@ Expected proof after approval:
 - `index_status` and `embedding_version` are preserved; and
 - `last_seen_at` advances only after successful observation/write.
 
-The schema defines `collected_at` as the collection timestamp, but the existing
-shared text does not unambiguously freeze whether it changes on an identical
-`UNCHANGED` observation. The proposed rule is: set it for `NEW`, replace it when
-new content is accepted as `CHANGED`, and preserve it for `UNCHANGED` while only
-`last_seen_at` advances. **This requires Qasim/Will approval** and is not claimed
-as implemented by RAG.
+For `NEW`, set both `collected_at` and `last_seen_at`. For `CHANGED` and
+`UNCHANGED`, preserve `collected_at` and update `last_seen_at` only in the
+successful atomic batch. `MISSING` and any failed observation preserve the
+known-good row and advance neither timestamp. This is frozen writer behavior;
+RAG does not implement the writer.
+
+If a future content-version timestamp is needed, it must be introduced
+deliberately as a new shared field/contract rather than overloading
+`collected_at`.
 
 ### 15. Generic lifecycle status versus Scholarship dates/status
 
@@ -264,11 +280,11 @@ Top-level `status` is the generic source-record change state
 `NEW/CHANGED/UNCHANGED/MISSING`. `metadata_json.status` is the Scholarship
 source's public status string. They are different concepts.
 
-`opening_date` and `closing_date` remain Scholarship metadata. No approved rule
-maps them to top-level `effective_from/effective_to`; current fixtures keep the
-top-level fields null. Unknown dates remain null, and RAG never derives
-open/closed from dates. Any future effective-date mapping requires Qasim/Will
-approval rather than inference.
+`opening_date` and `closing_date` remain Scholarship metadata. Scholarship
+top-level `effective_from` and `effective_to` are frozen as `NULL` and enforced
+by the model and database. Unknown dates remain null, and RAG never derives
+open/closed from dates. Any future effective-date mapping is a new shared
+contract change rather than an inference.
 
 ### 16. Exact, structured, and semantic Scholarship retrieval
 
@@ -319,17 +335,21 @@ invoke Gemini.
 1. Carmen/Qasim review and merge the RAG/schema PR.
 2. Build an image from the exact merged SHA and record its digest.
 3. Apply `20260913_0002` to dev PostgreSQL 18 Cloud SQL.
-4. Deploy the compatible RAG revision; do not deploy it before the migration
+4. Before relying on compatibility, verify the exact live roles: old RAG can
+   `SELECT` the view, intended roles cannot write the view, new RAG can `SELECT`
+   `source_records`, and the scraper writer can write `source_records`.
+5. Deploy the compatible RAG revision; do not deploy it before the migration
    because it reads `source_records`.
-5. Regress existing Courses/Programs paths.
-6. Verify Scholarship model/read behavior with controlled data.
-7. Qasim approves Will's target switch to `source_records`.
-8. Deploy the reviewed Will scraper image with bounded limits and writes still
+6. Regress existing Courses/Programs paths, including COMP1110 under those
+   verified permissions.
+7. Verify Scholarship model/read behavior with controlled data.
+8. Qasim approves Will's target switch to `source_records`.
+9. Deploy the reviewed Will scraper image with bounded limits and writes still
    gated.
-9. Run the first bounded write and prove `NEW`.
-10. Run the identical bounded write and prove `UNCHANGED`/idempotency.
-11. Simulate and prove failure preservation.
-12. Only then decide whether scheduled writes may be enabled.
+10. Run the first bounded write and prove `NEW`.
+11. Run the identical bounded write and prove `UNCHANGED`/idempotency.
+12. Simulate and prove failure preservation and whole-batch rollback.
+13. Only then decide whether scheduled writes may be enabled.
 
 No step above has been executed by Carmen in this task.
 
@@ -347,21 +367,32 @@ operational approval. Before live work, verify PostgreSQL 18 migration behavior,
 view privileges, row counts/hashes, exact Courses behavior, downgrade guard and
 the exact image SHA/digest. PostgreSQL 12.20 evidence is supplementary only.
 
+## Future carry-over
+
+1. Resolve domain/intent before calling eager `all_scholarships()`; do not make
+   that routing refactor in this follow-up.
+2. For a future Scholarship semantic vector path, keep candidate K relatively
+   generous and tune it empirically across recall, reranking quality, latency
+   and evaluation results; no numeric K is frozen here.
+
 ## Local verification evidence
 
-- The pre-commit identity blocker was removed by literal final-path comparison;
-  static, Pydantic and guarded database regression tests cover `foo.*`,
-  `foo|bar`, `foo[0-9]`, `foo+`, and `foo?`, plus a valid literal slug.
+- The identity boundary is enforced consistently in migration and Pydantic:
+  exact `study.anu.edu.au` host/path, frozen slug grammar, literal final-path
+  equality and null Scholarship effective dates. Static, model and guarded
+  database tests cover wrong hosts/paths, extra components, queries, fragments,
+  trailing slashes, malformed slugs and regex metacharacters.
 - Focused migration/model/repository/lifecycle/conversation/Courses/Scholarship
-  suite: `234 passed`.
-- Full suite: `362 passed, 8 skipped` from 370 collected tests. One skip is the
-  Windows symlink-privilege case; seven are the guarded local PostgreSQL cases
-  when `ASKANU_TEST_DATABASE_URL` is absent.
+  contract suite: `81 passed`.
+- Full suite: `397 passed, 39 skipped` from 436 collected tests. One skip is the
+  Windows symlink-privilege case; 38 are the guarded local PostgreSQL cases when
+  `ASKANU_TEST_DATABASE_URL` is absent.
 - The complete guarded PostgreSQL integration module passed separately with
-  `7 passed` on a disposable PostgreSQL 12.20 instance bound only to
-  `127.0.0.1:55435`. This includes all five regex-metacharacter rejection cases,
-  the valid literal slug, the compatibility view, Scholarship round-trip and
-  existing COMP1110/API behavior. The instance was stopped and removed.
+  `38 passed` on a disposable PostgreSQL 12.20 instance bound only to
+  `127.0.0.1:55438`. This includes the exact URL/slug/effective-date checks,
+  literal mismatch and metacharacter rejection, compatibility view,
+  guarded downgrade refusal, Scholarship round-trip and existing COMP1110/API
+  behavior. The instance was stopped and removed.
 - `python -m pip check`, `python -m compileall -q src tests migrations`, Alembic
   single-head and offline SQL generation, and `git diff --check` passed.
 - PostgreSQL 18 and a Day 9 container/image smoke remain pending in Qasim's

@@ -303,6 +303,8 @@ def test_postgres_scholarship_round_trip_uses_generic_table_and_exact_metadata()
     assert found.index_status == "PENDING"
     assert found.content_hash == scholarship.content_hash
     assert str(found.canonical_url) == str(scholarship.canonical_url)
+    assert found.effective_from is None
+    assert found.effective_to is None
     assert all("FROM source_records" in query for query, _parameters in calls)
     assert "academic_year" not in found.metadata_json.model_dump()
     assert set(CommonRecord.model_fields) == {

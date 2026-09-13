@@ -3,13 +3,17 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr
+from sqlalchemy.exc import DBAPIError
 
 from askanu_rag.config import Settings
 from askanu_rag.database import DatabaseConnectionConfig
@@ -23,6 +27,10 @@ from test_postgres_repository import (
 )
 
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
+ROOT = Path(__file__).parents[1]
+SCHOLARSHIP_URL_PREFIX = (
+    "https://study.anu.edu.au/scholarships/find-scholarship/"
+)
 
 
 def _local_test_url() -> str:
@@ -184,6 +192,22 @@ def test_real_local_migration_repository_and_api_path(caplog):
     assert repository.all_scholarships() == (scholarship,)
 
 
+def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(DBAPIError, match="Cannot downgrade while non-course"):
+        command.downgrade(Config(ROOT / "alembic.ini"), "20260911_0001")
+
+    with psycopg.connect(database_url) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0] == "20260913_0002"
+        assert connection.execute(
+            "SELECT count(*) FROM source_records WHERE domain = 'scholarships'"
+        ).fetchone()[0] == 1
+
+
 @pytest.mark.parametrize(
     ("entity_id", "different_url_slug"),
     [
@@ -202,10 +226,7 @@ def test_database_rejects_regex_like_entity_id_for_different_literal_url_slug(
     values.update(
         entity_id=entity_id,
         record_id=f"scholarships:scholarship:{entity_id}",
-        canonical_url=(
-            "https://www.anu.edu.au/study/scholarships/find-a-scholarship/"
-            f"{different_url_slug}"
-        ),
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{different_url_slug}",
     )
 
     with psycopg.connect(database_url) as connection:
@@ -216,15 +237,12 @@ def test_database_rejects_regex_like_entity_id_for_different_literal_url_slug(
 
 def test_database_accepts_exact_literal_scholarship_url_slug():
     database_url = _local_test_url()
-    entity_id = "national-university-scholarship"
+    entity_id = "foo-bar"
     values = _record_values(make_scholarship())
     values.update(
         entity_id=entity_id,
         record_id=f"scholarships:scholarship:{entity_id}",
-        canonical_url=(
-            "https://example.anu.edu.au/scholarships/"
-            "national-university-scholarship"
-        ),
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{entity_id}",
     )
 
     with psycopg.connect(database_url) as connection:
@@ -234,4 +252,84 @@ def test_database_accepts_exact_literal_scholarship_url_slug():
             (values["record_id"],),
         ).fetchone()
         assert stored == (entity_id, values["canonical_url"])
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "canonical_url",
+    [
+        "http://study.anu.edu.au/scholarships/find-scholarship/foo",
+        "HTTPS://study.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://STUDY.ANU.EDU.AU/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au:443/scholarships/find-scholarship/foo",
+        "https://www.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://example.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au/study/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au/scholarships/find-a-scholarship/foo",
+        "https://study.anu.edu.au/find-scholarship/foo",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo/",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo?year=2026",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo#details",
+    ],
+)
+def test_database_rejects_noncanonical_scholarship_url_boundary(canonical_url):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id="foo",
+        record_id="scholarships:scholarship:foo",
+        canonical_url=canonical_url,
+    )
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "invalid_slug",
+    [
+        "Foo",
+        "FOO",
+        "foo_bar",
+        "foo--bar",
+        "-foo",
+        "foo-",
+        "foo.bar",
+        "foo/bar",
+        "foo%20bar",
+        "foo*bar",
+        "foo.*",
+        "foo+bar",
+        "foo?",
+        "foo|bar",
+        "foo[0-9]",
+        "foo[bar]",
+    ],
+)
+def test_database_rejects_scholarship_slug_outside_frozen_grammar(invalid_slug):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id=invalid_slug,
+        record_id=f"scholarships:scholarship:{invalid_slug}",
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{invalid_slug}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+@pytest.mark.parametrize("field", ["effective_from", "effective_to"])
+def test_database_rejects_non_null_scholarship_effective_dates(field):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values[field] = datetime(2026, 9, 13, tzinfo=timezone.utc)
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
         connection.rollback()

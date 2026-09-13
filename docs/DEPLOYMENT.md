@@ -394,7 +394,7 @@ These coordinated live steps are not a blocker for Carmen's local Day 7 PR.
 Anonymous access must remain disabled. Browser/Firebase continues to call App
 Cloud Run, whose dedicated runtime identity invokes the private RAG service.
 
-## Day 9 Scholarships migration candidate (local only)
+## Day 9 Scholarships migration contract (local only)
 
 Revision `20260913_0002` is a new revision after the already deployed
 `20260911_0001`; the deployed Day 7 file is not edited. It renames the existing
@@ -404,7 +404,7 @@ unique identity, adds Scholarship URL-slug identity, and creates the
 `course_program_records` Courses/Programs compatibility read view. It copies or
 deletes no rows. Downgrade refuses to proceed while Scholarship rows exist.
 
-This candidate requires Qasim approval before Cloud SQL mutation. The safe live
+Cloud SQL mutation still requires Qasim's operational approval. The safe live
 order is: merge and build the exact reviewed SHA; migrate Cloud SQL to
 `20260913_0002`; deploy the compatible RAG revision; regress Courses/Programs;
 verify Scholarship reads; then update/deploy Will's adapter to write
@@ -415,10 +415,19 @@ migration; the new RAG must not deploy before the migration because it reads
 
 The view is read-only by usage intent only: this migration does not add grants,
 revokes or triggers, and ordinary PostgreSQL views can be automatically
-updatable. Before relying on the old RAG image for rollback, Qasim must verify
-that its database role can SELECT the newly created view and cannot use it as an
-unreviewed writer. PostgreSQL 18 execution must also confirm the literal
-Scholarship URL-slug CHECK and its regex-metacharacter regression cases.
+updatable. Before migration, Qasim must verify the actual live roles and record
+evidence that:
+
+1. the old RAG role can `SELECT` `course_program_records`;
+2. intended runtime roles cannot write through that compatibility view;
+3. the new RAG role can `SELECT` `source_records`;
+4. the scraper writer role can write `source_records`; and
+5. the existing COMP1110 path works under those exact permissions.
+
+PostgreSQL 18 execution must also confirm the exact
+`https://study.anu.edu.au/scholarships/find-scholarship/<slug>` boundary, the
+frozen slug grammar, literal slug equality and null Scholarship effective-date
+checks.
 
 Keep the scraper PostgreSQL gate disabled until Qasim approves and deploys the
 migration. No live migration, Cloud Run/Scheduler/IAM/secret change, production

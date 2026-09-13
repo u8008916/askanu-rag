@@ -1,5 +1,6 @@
 """Validated shared schema-v1 persisted records."""
 
+import re
 from datetime import date, datetime
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
@@ -17,6 +18,11 @@ from pydantic import (
 RecordStatus = Literal["NEW", "CHANGED", "UNCHANGED", "MISSING"]
 IndexStatus = Literal["PENDING", "INDEXED", "FAILED"]
 IsoDate = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+SCHOLARSHIP_URL_PREFIX = (
+    "https://study.anu.edu.au/scholarships/find-scholarship/"
+)
+SCHOLARSHIP_PATH_PREFIX = "/scholarships/find-scholarship/"
+SCHOLARSHIP_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class CourseMetadata(BaseModel):
@@ -117,6 +123,27 @@ class CommonRecord(BaseModel):
     index_status: IndexStatus
     metadata_json: CommonMetadata
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_raw_scholarship_url_boundary(cls, values: object) -> object:
+        if not isinstance(values, dict):
+            return values
+        metadata = values.get("metadata_json")
+        entity_type = (
+            metadata.get("entity_type")
+            if isinstance(metadata, dict)
+            else getattr(metadata, "entity_type", None)
+        )
+        if entity_type != "scholarship":
+            return values
+        entity_id = values.get("entity_id")
+        canonical_url = values.get("canonical_url")
+        if not isinstance(entity_id, str) or str(canonical_url) != (
+            f"{SCHOLARSHIP_URL_PREFIX}{entity_id}"
+        ):
+            raise ValueError("Scholarship canonical_url must use the exact boundary")
+        return values
+
     @field_validator(
         "effective_from",
         "effective_to",
@@ -149,6 +176,10 @@ class CommonRecord(BaseModel):
             expected_domain = "scholarships"
             entity_type = "scholarship"
             expected_entity_id = self._scholarship_url_slug()
+            if self.effective_from is not None or self.effective_to is not None:
+                raise ValueError(
+                    "Scholarship effective_from/effective_to must be null"
+                )
 
         if self.source_id != expected_source or self.domain != expected_domain:
             raise ValueError("source_id/domain do not match metadata entity_type")
@@ -161,14 +192,19 @@ class CommonRecord(BaseModel):
 
     def _scholarship_url_slug(self) -> str:
         parsed = urlsplit(str(self.canonical_url))
-        host = (parsed.hostname or "").casefold()
-        if host != "anu.edu.au" and not host.endswith(".anu.edu.au"):
-            raise ValueError("Scholarship canonical_url must use an ANU host")
-        if parsed.query or parsed.fragment or parsed.path.endswith("/"):
-            raise ValueError("Scholarship canonical_url must be canonical")
-        slug = parsed.path.rsplit("/", 1)[-1]
-        if not slug:
-            raise ValueError("Scholarship canonical_url must contain an entity slug")
+        if parsed.scheme != "https" or parsed.netloc != "study.anu.edu.au":
+            raise ValueError("Scholarship canonical_url must use the approved host")
+        if parsed.query or parsed.fragment:
+            raise ValueError("Scholarship canonical_url must not contain query/fragment")
+        if not parsed.path.startswith(SCHOLARSHIP_PATH_PREFIX):
+            raise ValueError("Scholarship canonical_url must use the approved path")
+        slug = parsed.path.removeprefix(SCHOLARSHIP_PATH_PREFIX)
+        if not SCHOLARSHIP_SLUG_PATTERN.fullmatch(slug):
+            raise ValueError("Scholarship canonical_url must end in an approved slug")
+        if not SCHOLARSHIP_SLUG_PATTERN.fullmatch(self.entity_id):
+            raise ValueError("Scholarship entity_id must use the approved slug form")
+        if str(self.canonical_url) != f"{SCHOLARSHIP_URL_PREFIX}{slug}":
+            raise ValueError("Scholarship canonical_url must use the exact boundary")
         return slug
 
 

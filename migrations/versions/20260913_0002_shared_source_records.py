@@ -102,10 +102,17 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_source_records_scholarship_identity",
         "source_records",
-        "domain <> 'scholarships' OR (char_length(entity_id) > 0 AND "
-        "canonical_url ~ '^https://([A-Za-z0-9-]+\\.)*anu\\.edu\\.au/.+/.+$' "
-        "AND canonical_url !~ '[?#]' AND right(canonical_url, 1) <> '/' AND "
+        "domain <> 'scholarships' OR ("
+        "entity_id ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND "
+        "canonical_url = 'https://study.anu.edu.au/scholarships/"
+        "find-scholarship/' || entity_id AND "
         "reverse(split_part(reverse(canonical_url), '/', 1)) = entity_id)",
+    )
+    op.create_check_constraint(
+        "ck_source_records_scholarship_effective_dates",
+        "source_records",
+        "domain <> 'scholarships' OR "
+        "(effective_from IS NULL AND effective_to IS NULL)",
     )
     op.create_check_constraint(
         "ck_source_records_scholarship_metadata_keys",
@@ -202,6 +209,7 @@ def downgrade() -> None:
         "ck_source_records_course_entity_id",
         "ck_source_records_record_id",
         "ck_source_records_scholarship_identity",
+        "ck_source_records_scholarship_effective_dates",
         "ck_source_records_scholarship_metadata_keys",
         "ck_source_records_scholarship_metadata_types",
     ):

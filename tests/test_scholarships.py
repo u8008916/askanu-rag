@@ -1,5 +1,6 @@
 """Day 9 Scholarship shared-record and deterministic RAG behavior."""
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,9 @@ from askanu_rag.retrieval import (
 ROOT = Path(__file__).parents[1]
 SCHOLARSHIP_FIXTURE = ROOT / "fixtures/day9_scholarship_records.json"
 COURSE_FIXTURE = ROOT / "fixtures/day5_course_program_records.json"
+SCHOLARSHIP_URL_PREFIX = (
+    "https://study.anu.edu.au/scholarships/find-scholarship/"
+)
 
 
 @pytest.fixture
@@ -84,7 +88,13 @@ def test_scholarship_metadata_deserializes_exact_keys_null_lists_and_iso_dates(
     assert metadata.closing_date is None
     assert isinstance(scholarships[0].metadata_json.closing_date, str)
     assert scholarships[2].metadata_json.study_stage == []
-    assert str(record.canonical_url).startswith("https://study.anu.edu.au/")
+    assert str(record.canonical_url) == (
+        f"{SCHOLARSHIP_URL_PREFIX}day9-international-science"
+    )
+    assert all(
+        item.effective_from is None and item.effective_to is None
+        for item in scholarships
+    )
 
 
 @pytest.mark.parametrize("invalid_date", ["31/10/2026", "2026-99-99"])
@@ -140,14 +150,133 @@ def test_model_rejects_regex_like_entity_id_for_different_literal_url_slug(
     values.update(
         entity_id=entity_id,
         record_id=f"scholarships:scholarship:{entity_id}",
-        canonical_url=(
-            "https://www.anu.edu.au/study/scholarships/find-a-scholarship/"
-            f"{different_url_slug}"
-        ),
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{different_url_slug}",
     )
 
     with pytest.raises(ValidationError):
         ScholarshipRecord.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "canonical_url",
+    [
+        "http://study.anu.edu.au/scholarships/find-scholarship/foo",
+        "HTTPS://study.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://STUDY.ANU.EDU.AU/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au:443/scholarships/find-scholarship/foo",
+        "https://www.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://example.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au/study/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au/scholarships/find-a-scholarship/foo",
+        "https://study.anu.edu.au/find-scholarship/foo",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo/",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo?year=2026",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo#details",
+    ],
+)
+def test_model_rejects_noncanonical_scholarship_url_boundary(
+    scholarships, canonical_url
+):
+    values = scholarships[0].model_dump(mode="python")
+    values.update(
+        entity_id="foo",
+        record_id="scholarships:scholarship:foo",
+        canonical_url=canonical_url,
+    )
+
+    with pytest.raises(ValidationError):
+        ScholarshipRecord.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "invalid_slug",
+    [
+        "Foo",
+        "FOO",
+        "foo_bar",
+        "foo--bar",
+        "-foo",
+        "foo-",
+        "foo.bar",
+        "foo/bar",
+        "foo%20bar",
+        "foo*bar",
+        "foo.*",
+        "foo+bar",
+        "foo?",
+        "foo|bar",
+        "foo[0-9]",
+        "foo[bar]",
+    ],
+)
+def test_model_rejects_scholarship_slug_outside_frozen_grammar(
+    scholarships, invalid_slug
+):
+    values = scholarships[0].model_dump(mode="python")
+    values.update(
+        entity_id=invalid_slug,
+        record_id=f"scholarships:scholarship:{invalid_slug}",
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{invalid_slug}",
+    )
+
+    with pytest.raises(ValidationError):
+        ScholarshipRecord.model_validate(values)
+
+
+@pytest.mark.parametrize("field", ["effective_from", "effective_to"])
+def test_model_rejects_non_null_scholarship_effective_dates(
+    scholarships, field
+):
+    values = scholarships[0].model_dump(mode="python")
+    values[field] = values["collected_at"]
+
+    with pytest.raises(ValidationError):
+        ScholarshipRecord.model_validate(values)
+
+
+def test_rag_trusts_scraper_canonical_content_hash_without_rehashing(scholarships):
+    values = scholarships[0].model_dump(mode="python")
+    values["content"] = "A changed canonical payload owned by the scraper."
+    values["content_hash"] = "0" * 64
+
+    record = ScholarshipRecord.model_validate(values)
+
+    assert record.content_hash == "0" * 64
+
+
+def test_exact_scholarship_slug_lookup_preserves_identity_and_url(repo):
+    entity_id = "day9-undergraduate-computing"
+
+    record = repo.find_scholarship_by_entity_id(entity_id)
+
+    assert record is not None
+    assert record.entity_id == entity_id
+    assert record.record_id == f"scholarships:scholarship:{entity_id}"
+    assert str(record.canonical_url) == f"{SCHOLARSHIP_URL_PREFIX}{entity_id}"
+
+
+def test_frozen_new_changed_and_unchanged_timestamp_examples(scholarships):
+    new = scholarships[0]
+    assert new.status == "NEW"
+    assert new.collected_at == new.last_seen_at
+
+    later = new.last_seen_at + timedelta(hours=1)
+    changed = new.model_copy(
+        update={
+            "status": "CHANGED",
+            "content": f"{new.content}\nChanged",
+            "content_hash": "1" * 64,
+            "last_seen_at": later,
+        }
+    )
+    unchanged = changed.model_copy(
+        update={"status": "UNCHANGED", "last_seen_at": later + timedelta(hours=1)}
+    )
+
+    assert changed.collected_at == new.collected_at
+    assert changed.last_seen_at == later
+    assert unchanged.collected_at == new.collected_at
+    assert unchanged.last_seen_at > changed.last_seen_at
 
 
 def test_direct_title_uses_stored_facts_and_canonical_source(repo):
@@ -160,10 +289,7 @@ def test_direct_title_uses_stored_facts_and_canonical_source(repo):
             "record_id": "scholarships:scholarship:day9-undergraduate-computing",
             "source_id": "scholarships_anu_finder",
             "title": "Day 9 Test Undergraduate Computing Scholarship",
-            "url": (
-                "https://www.anu.edu.au/study/scholarships/"
-                "find-a-scholarship/day9-undergraduate-computing"
-            ),
+            "url": f"{SCHOLARSHIP_URL_PREFIX}day9-undergraduate-computing",
             "domain": "scholarships",
         }
     ]
@@ -202,7 +328,7 @@ def test_broad_query_and_ambiguous_title_clarify_without_guessing(
         entity_id="day9-international-science-second",
         record_id="scholarships:scholarship:day9-international-science-second",
         canonical_url=(
-            "https://study.anu.edu.au/scholarships/find-a-scholarship/"
+            "https://study.anu.edu.au/scholarships/find-scholarship/"
             "day9-international-science-second"
         ),
         title=scholarships[0].title,

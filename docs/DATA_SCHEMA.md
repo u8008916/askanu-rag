@@ -500,14 +500,23 @@ Expected format:
 ^[0-9a-f]{64}$
 ```
 
-The scraper owns calculation of `content_hash`.
+The scraper is the trusted canonical normalization and `content_hash` writer.
+It guarantees that the stored digest is SHA-256 of the canonical persisted
+UTF-8 `content`.
 
 RAG:
 
 - accepts it,
+- validates the lowercase 64-character hexadecimal format,
 - preserves it,
 - does not recalculate it during retrieval,
+- trusts the scraper's persisted hash/content invariant,
 - and does not use an LLM to generate it.
+
+Stale-index result safety assumes that only approved writer paths may persist
+records and that each approved writer enforces the canonical content/hash
+invariant. Equality proof belongs in Will's scraper tests, not a second RAG
+normalizer.
 
 Change-detection behaviour:
 
@@ -891,7 +900,7 @@ Such changes must:
 
 ---
 
-# Day 9 Scholarships shared-persistence candidate
+# Day 9 Scholarships shared-persistence candidate (frozen record contract)
 
 This local Day 9 implementation proposes `source_records` as the canonical
 writable table for approved source records. The deployed
@@ -899,7 +908,7 @@ writable table for approved source records. The deployed
 `20260913_0002`; a `course_program_records` compatibility view continues to
 expose only Courses/Programs rows for legacy reads. There is no row copy,
 Scholarship-only table, or Scholarship-only top-level column. The table/view
-name and shared constraint change require Qasim review before live migration.
+name and live permission behavior remain pre-migration operational gates.
 
 All domains continue to use the same 16 top-level fields defined in section 1.
 The only approved source/domain pairs in this migration are:
@@ -919,26 +928,27 @@ Scholarships.
 ```text
 domain    = scholarships
 source_id = scholarships_anu_finder
-entity_id = <final path segment of the canonical ANU scholarship URL>
+entity_id = <slug matching ^[a-z0-9]+(?:-[a-z0-9]+)*$>
 record_id = scholarships:scholarship:<entity_id>
+canonical_url = https://study.anu.edu.au/scholarships/find-scholarship/<entity_id>
 ```
 
-The canonical URL must be HTTPS on `anu.edu.au` or a subdomain, with no query,
-fragment, or trailing slash. Identity comes from that URL path, never the title,
-year, deadline, status, or value. The URL remains the top-level
-`canonical_url`; it is not duplicated in metadata.
+The canonical URL must be exactly the constant prefix above plus the literal
+`entity_id`, with no alternate host/path, query, fragment, trailing slash or
+extra segment. Identity comes from that URL path, never the title, year,
+deadline, status, or value. The URL remains the top-level `canonical_url`; it
+is not duplicated in metadata.
 
-The database obtains the final URL path segment with deterministic PostgreSQL
-string operations and compares it to `entity_id` using literal equality. Record
-data is never concatenated into a regular-expression pattern. The current
-shared contract does not define a separate slug character whitelist, so Day 9
-does not introduce one implicitly.
+The database validates the frozen slug grammar, compares the full URL to the
+constant prefix plus `entity_id`, and compares the final path segment to
+`entity_id` using literal equality. Record data is never concatenated into a
+regular-expression pattern.
 
 `course_program_records` is a legacy read-compatibility view by usage contract,
 not a second authoritative store or an approved upsert target. Ordinary
 PostgreSQL views may be automatically updatable; this migration does not add
-permission/trigger enforcement. Qasim must decide whether to enforce read-only
-access and how long the view remains before live rollout.
+permission/trigger enforcement. Exact old-RAG, new-RAG and scraper live-role
+permissions must be verified before migration rollout.
 
 ## Scholarship metadata_json v1
 
@@ -966,18 +976,21 @@ dates, infer value/deadline, or decide personal eligibility.
 
 Top-level `status` remains the generic record lifecycle state. Scholarship
 `metadata_json.status` is the source's public Scholarship status. Opening and
-closing dates remain domain metadata; they do not populate top-level
-`effective_from`/`effective_to` without a separately approved mapping.
+closing dates remain domain metadata. Scholarship top-level `effective_from`
+and `effective_to` are frozen as `NULL` and enforced in both model and database.
 
 ## Cross-domain index/freshness behavior
 
 The Day 8 lifecycle applies to every `source_records` row:
 
-- `NEW`/`CHANGED`: `PENDING`, `embedding_version = null`.
-- `UNCHANGED`: update freshness and preserve the existing index state/version;
+- `NEW`: set `collected_at` and `last_seen_at`; use `PENDING` with
+  `embedding_version = null`.
+- `CHANGED`: preserve `collected_at`, update `last_seen_at`; use `PENDING` with
+  `embedding_version = null`.
+- `UNCHANGED`: preserve `collected_at`, update `last_seen_at`, and preserve the existing index state/version;
   emit no new content-change signal.
-- `MISSING` or source failure: preserve the last-known-good row; do not delete or
-  request re-embedding.
+- `MISSING` or source failure: preserve the last-known-good row and both
+  timestamps; do not delete or request re-embedding.
 - `PENDING`/`FAILED`: current stored source facts remain available to
   deterministic relational retrieval, but the persistent semantic path must not
   claim that current content is indexed.
@@ -991,3 +1004,16 @@ No `STALE` column/enum, embedding worker, pgvector pipeline, or writer is added.
 Will continues to own scraper upserts/change detection; Carmen owns this shared
 migration, RAG reads, and index-state meaning; Qasim owns contract approval and
 live migration/deployment ordering.
+
+## Frozen bounded-run transaction contract
+
+1. Create the `RUNNING` `ingestion_runs` row in a short transaction.
+2. Commit the complete accepted bounded record batch and the matching `SUCCESS`
+   status/counts together in one atomic transaction.
+3. Any record write or final run update failure rolls back the whole batch.
+4. A separate recovery transaction then marks the existing run `FAILED`.
+5. For an unknown commit outcome, reconcile by `run_id`, stable identity and
+   hash; never issue a blind duplicate write.
+
+A partially committed successful batch is invalid. The writer implementation
+remains in the scraper repository.
