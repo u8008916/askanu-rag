@@ -200,8 +200,9 @@ def test_explicit_switch_does_not_inherit_old_course_year(repo):
 def test_non_course_topic_switch_is_not_locked_by_old_pending(repo):
     body = post(repo, "Show me ANU scholarships", (), pending_options())
 
-    assert body["status"] == "insufficient_evidence"
-    assert body["clarification"] is None
+    assert body["status"] == "needs_clarification"
+    assert body["clarification"]["id"] == "clar-scholarship-scope"
+    assert body["clarification"]["id"] != "clar-test"
 
 
 def test_adjacent_latest_entity_wins_without_inheriting_old_year(repo):

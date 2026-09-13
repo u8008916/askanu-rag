@@ -3,13 +3,17 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr
+from sqlalchemy.exc import DBAPIError
 
 from askanu_rag.config import Settings
 from askanu_rag.database import DatabaseConnectionConfig
@@ -19,9 +23,14 @@ from test_postgres_repository import (
     CapturingSynthesisClient,
     ask_payload,
     make_record,
+    make_scholarship,
 )
 
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
+ROOT = Path(__file__).parents[1]
+SCHOLARSHIP_URL_PREFIX = (
+    "https://study.anu.edu.au/scholarships/find-scholarship/"
+)
 
 
 def _local_test_url() -> str:
@@ -35,12 +44,18 @@ def _local_test_url() -> str:
     return TEST_DATABASE_URL
 
 
-def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
+def _record_values(record) -> dict[str, object]:
     values = record.model_dump(mode="python")
     values["canonical_url"] = str(record.canonical_url)
     values["metadata_json"] = Jsonb(
         record.metadata_json.model_dump(mode="python")
     )
+    return values
+
+
+def _insert_record_values(
+    connection, values: dict[str, object], *, ignore_conflict: bool = False
+) -> int:
     columns = (
         "record_id", "source_id", "entity_id", "domain", "title", "content",
         "canonical_url", "status", "effective_from", "effective_to",
@@ -50,11 +65,19 @@ def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
     placeholders = ", ".join(["%s"] * len(columns))
     conflict_clause = " ON CONFLICT DO NOTHING" if ignore_conflict else ""
     cursor = connection.execute(
-        f"INSERT INTO course_program_records ({', '.join(columns)}) "
+        f"INSERT INTO source_records ({', '.join(columns)}) "
         f"VALUES ({placeholders}){conflict_clause}",
         tuple(values[column] for column in columns),
     )
     return cursor.rowcount
+
+
+def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
+    return _insert_record_values(
+        connection,
+        _record_values(record),
+        ignore_conflict=ignore_conflict,
+    )
 
 
 def test_real_local_migration_repository_and_api_path(caplog):
@@ -64,11 +87,12 @@ def test_real_local_migration_repository_and_api_path(caplog):
     )
     record_2025 = make_record(year="2025")
     record_2026 = make_record(year="2026")
+    scholarship = make_scholarship()
     started_at = datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc)
 
     with psycopg.connect(database_url) as connection:
         connection.execute(
-            "TRUNCATE TABLE course_program_records, ingestion_runs"
+            "TRUNCATE TABLE source_records, ingestion_runs"
         )
         connection.execute(
             """
@@ -95,6 +119,10 @@ def test_real_local_migration_repository_and_api_path(caplog):
         )
         _insert_record(connection, record_2025)
         _insert_record(connection, record_2026)
+        _insert_record(connection, scholarship)
+        assert connection.execute(
+            "SELECT count(*) FROM course_program_records"
+        ).fetchone()[0] == 2
 
     with psycopg.connect(database_url) as connection:
         run = connection.execute(
@@ -157,3 +185,151 @@ def test_real_local_migration_repository_and_api_path(caplog):
     assert "http_status=200" in caplog.text
     assert "response_status=ok" in caplog.text
     assert "latency_ms=" in caplog.text
+
+    repository = PostgresCourseProgramRepository(config.connect)
+    found = repository.find_scholarship_by_entity_id(scholarship.entity_id)
+    assert found == scholarship
+    assert repository.all_scholarships() == (scholarship,)
+
+
+def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(DBAPIError, match="Cannot downgrade while non-course"):
+        command.downgrade(Config(ROOT / "alembic.ini"), "20260911_0001")
+
+    with psycopg.connect(database_url) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0] == "20260913_0002"
+        assert connection.execute(
+            "SELECT count(*) FROM source_records WHERE domain = 'scholarships'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "different_url_slug"),
+    [
+        ("foo.*", "foo-123"),
+        ("foo|bar", "bar"),
+        ("foo[0-9]", "foo7"),
+        ("foo+", "fooo"),
+        ("foo?", "fo"),
+    ],
+)
+def test_database_rejects_regex_like_entity_id_for_different_literal_url_slug(
+    entity_id, different_url_slug
+):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id=entity_id,
+        record_id=f"scholarships:scholarship:{entity_id}",
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{different_url_slug}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+def test_database_accepts_exact_literal_scholarship_url_slug():
+    database_url = _local_test_url()
+    entity_id = "foo-bar"
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id=entity_id,
+        record_id=f"scholarships:scholarship:{entity_id}",
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{entity_id}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        assert _insert_record_values(connection, values) == 1
+        stored = connection.execute(
+            "SELECT entity_id, canonical_url FROM source_records WHERE record_id = %s",
+            (values["record_id"],),
+        ).fetchone()
+        assert stored == (entity_id, values["canonical_url"])
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "canonical_url",
+    [
+        "http://study.anu.edu.au/scholarships/find-scholarship/foo",
+        "HTTPS://study.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://STUDY.ANU.EDU.AU/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au:443/scholarships/find-scholarship/foo",
+        "https://www.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://example.anu.edu.au/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au/study/scholarships/find-scholarship/foo",
+        "https://study.anu.edu.au/scholarships/find-a-scholarship/foo",
+        "https://study.anu.edu.au/find-scholarship/foo",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo/",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo?year=2026",
+        "https://study.anu.edu.au/scholarships/find-scholarship/foo#details",
+    ],
+)
+def test_database_rejects_noncanonical_scholarship_url_boundary(canonical_url):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id="foo",
+        record_id="scholarships:scholarship:foo",
+        canonical_url=canonical_url,
+    )
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "invalid_slug",
+    [
+        "Foo",
+        "FOO",
+        "foo_bar",
+        "foo--bar",
+        "-foo",
+        "foo-",
+        "foo.bar",
+        "foo/bar",
+        "foo%20bar",
+        "foo*bar",
+        "foo.*",
+        "foo+bar",
+        "foo?",
+        "foo|bar",
+        "foo[0-9]",
+        "foo[bar]",
+    ],
+)
+def test_database_rejects_scholarship_slug_outside_frozen_grammar(invalid_slug):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id=invalid_slug,
+        record_id=f"scholarships:scholarship:{invalid_slug}",
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{invalid_slug}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+@pytest.mark.parametrize("field", ["effective_from", "effective_to"])
+def test_database_rejects_non_null_scholarship_effective_dates(field):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values[field] = datetime(2026, 9, 13, tzinfo=timezone.utc)
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()

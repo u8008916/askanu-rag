@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -15,11 +16,22 @@ from askanu_rag.main import (
     create_configured_app,
     create_configured_repository,
 )
-from askanu_rag.models import CourseMetadata, CourseProgramRecord, ProgramMetadata
+from askanu_rag.models import (
+    CommonRecord,
+    CourseMetadata,
+    CourseProgramRecord,
+    ProgramMetadata,
+    ScholarshipRecord,
+)
 from askanu_rag.retrieval import (
     CourseProgramRepository,
     PostgresCourseProgramRepository,
     UnavailableCourseProgramRepository,
+    load_common_records,
+)
+
+SCHOLARSHIP_FIXTURE = (
+    Path(__file__).parents[1] / "fixtures/day9_scholarship_records.json"
 )
 
 
@@ -83,6 +95,11 @@ def database_row(record: CourseProgramRecord) -> dict[str, object]:
     return row
 
 
+def make_scholarship(index: int = 0) -> ScholarshipRecord:
+    record = load_common_records(SCHOLARSHIP_FIXTURE)[index]
+    return ScholarshipRecord.model_validate(record.model_dump(mode="python"))
+
+
 class FakeCursor:
     def __init__(self, rows, calls):
         self.rows = rows
@@ -97,8 +114,23 @@ class FakeCursor:
 
     def execute(self, query, parameters=()):
         self.calls.append((query, parameters))
+        if "scholarships_anu_finder" in query:
+            self.results = [
+                row for row in self.rows if row["domain"] == "scholarships"
+            ]
+            if parameters:
+                self.results = [
+                    row
+                    for row in self.results
+                    if row["entity_id"] == parameters[0]
+                ]
+            self.results.sort(key=lambda row: row["record_id"])
+            return
         if not parameters:
-            self.results = sorted(self.rows, key=lambda row: row["record_id"])
+            self.results = sorted(
+                (row for row in self.rows if row["domain"] == "courses"),
+                key=lambda row: row["record_id"],
+            )
             return
         entity_type, code, *year = parameters
         code_key = "course_code" if entity_type == "course" else "program_code"
@@ -240,6 +272,59 @@ def test_postgres_catalog_preserves_full_validated_records():
     repository, _calls = fake_repository(records)
 
     assert repository.all_records() == tuple(sorted(records, key=lambda r: r.record_id))
+
+
+def test_postgres_scholarship_round_trip_uses_generic_table_and_exact_metadata():
+    scholarship = make_scholarship()
+    repository, calls = fake_repository([make_record(), scholarship])
+
+    found = repository.find_scholarship_by_entity_id(scholarship.entity_id)
+    all_scholarships = repository.all_scholarships()
+
+    assert found == scholarship
+    assert all_scholarships == (scholarship,)
+    assert isinstance(found, ScholarshipRecord)
+    assert set(found.metadata_json.model_dump()) == {
+        "entity_type",
+        "featured",
+        "status",
+        "application_required",
+        "study_stage",
+        "student_type",
+        "study_level",
+        "area_of_study",
+        "value",
+        "selection_basis",
+        "opening_date",
+        "closing_date",
+        "eligibility",
+    }
+    assert found.embedding_version is None
+    assert found.index_status == "PENDING"
+    assert found.content_hash == scholarship.content_hash
+    assert str(found.canonical_url) == str(scholarship.canonical_url)
+    assert found.effective_from is None
+    assert found.effective_to is None
+    assert all("FROM source_records" in query for query, _parameters in calls)
+    assert "academic_year" not in found.metadata_json.model_dump()
+    assert set(CommonRecord.model_fields) == {
+        "record_id",
+        "source_id",
+        "entity_id",
+        "domain",
+        "title",
+        "content",
+        "canonical_url",
+        "status",
+        "effective_from",
+        "effective_to",
+        "collected_at",
+        "last_seen_at",
+        "content_hash",
+        "embedding_version",
+        "index_status",
+        "metadata_json",
+    }
 
 
 class CapturingSynthesisClient:

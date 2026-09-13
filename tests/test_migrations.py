@@ -51,7 +51,7 @@ def test_alembic_revision_is_single_versioned_head():
         capture_output=True,
         text=True,
     )
-    assert "20260911_0001 (head)" in result.stdout
+    assert "20260913_0002 (head)" in result.stdout
 
 
 def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
@@ -73,6 +73,8 @@ def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
     assert "CREATE TABLE ingestion_runs" in sql
     assert "CREATE UNIQUE INDEX uq_course_program_records_identity" in sql
     assert "CREATE INDEX ix_ingestion_runs_source_started_at" in sql
+    assert "ALTER TABLE course_program_records RENAME TO source_records" in sql
+    assert "CREATE VIEW course_program_records AS" in sql
     assert "INSERT INTO alembic_version" in sql
     assert "CREATE EXTENSION" not in sql
 

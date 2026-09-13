@@ -5,11 +5,17 @@ import stat
 from collections.abc import Iterable
 from os import stat_result
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 from pydantic import ValidationError
 
-from askanu_rag.models import CourseMetadata, CourseProgramRecord
+from askanu_rag.models import (
+    CommonRecord,
+    CourseMetadata,
+    CourseProgramRecord,
+    ScholarshipMetadata,
+    ScholarshipRecord,
+)
 from askanu_rag.retrieval.identifiers import (
     normalize_course_code,
     normalize_program_code,
@@ -18,6 +24,7 @@ from askanu_rag.retrieval.identifiers import (
 LookupResult: TypeAlias = (
     CourseProgramRecord | tuple[CourseProgramRecord, ...] | None
 )
+ScholarshipLookupResult: TypeAlias = ScholarshipRecord | None
 LookupKey: TypeAlias = tuple[Literal["course", "program"], str, str]
 CodeKey: TypeAlias = tuple[Literal["course", "program"], str]
 
@@ -31,6 +38,26 @@ class CourseProgramReader(Protocol):
         """Return an exact course match or preserve multi-year ambiguity."""
 
         ...
+
+
+@runtime_checkable
+class ScholarshipReader(Protocol):
+    """Minimal read boundary for deterministic Scholarship retrieval."""
+
+    def find_scholarship_by_entity_id(
+        self, entity_id: str
+    ) -> ScholarshipLookupResult: ...
+
+    def all_scholarships(self) -> tuple[ScholarshipRecord, ...]: ...
+
+
+def load_common_records(fixture_path: str | Path) -> tuple[CommonRecord, ...]:
+    """Load the shared 16-field contract from one local JSON array."""
+
+    payload = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Shared record fixture must contain a JSON array.")
+    return tuple(CommonRecord.model_validate(item) for item in payload)
 
 
 def load_course_program_records(
@@ -90,14 +117,29 @@ def load_course_program_records_directory(
 
 
 class CourseProgramRepository:
-    """Own multi-year-safe exact lookup without inferring an academic year."""
+    """In-memory shared records with compatible course/program lookup methods."""
 
-    def __init__(self, records: Iterable[CourseProgramRecord]) -> None:
+    def __init__(self, records: Iterable[CommonRecord]) -> None:
         self._records: dict[LookupKey, CourseProgramRecord] = {}
         self._records_by_code: dict[CodeKey, list[CourseProgramRecord]] = {}
+        self._scholarships: dict[str, ScholarshipRecord] = {}
 
         for record in records:
             metadata = record.metadata_json
+            if isinstance(metadata, ScholarshipMetadata):
+                scholarship = ScholarshipRecord.model_validate(
+                    record.model_dump(mode="python")
+                )
+                if scholarship.entity_id in self._scholarships:
+                    raise ValueError(
+                        f"Duplicate record_id: {scholarship.record_id}"
+                    )
+                self._scholarships[scholarship.entity_id] = scholarship
+                continue
+
+            course_program = CourseProgramRecord.model_validate(
+                record.model_dump(mode="python")
+            )
             if isinstance(metadata, CourseMetadata):
                 entity_type: Literal["course", "program"] = "course"
                 code = metadata.course_code
@@ -109,8 +151,10 @@ class CourseProgramRepository:
             if lookup_key in self._records:
                 raise ValueError(f"Duplicate exact lookup key: {lookup_key}")
 
-            self._records[lookup_key] = record
-            self._records_by_code.setdefault((entity_type, code), []).append(record)
+            self._records[lookup_key] = course_program
+            self._records_by_code.setdefault((entity_type, code), []).append(
+                course_program
+            )
 
     def _find(
         self,
@@ -156,6 +200,20 @@ class CourseProgramRepository:
     def all_records(self) -> tuple[CourseProgramRecord, ...]:
         """Read-only catalog snapshot for bounded Day 5 name/metadata planning."""
         return tuple(sorted(self._records.values(), key=lambda record: record.record_id))
+
+    def find_scholarship_by_entity_id(
+        self, entity_id: str
+    ) -> ScholarshipLookupResult:
+        """Return one stable URL-slug Scholarship identity without inference."""
+
+        return self._scholarships.get(entity_id.strip())
+
+    def all_scholarships(self) -> tuple[ScholarshipRecord, ...]:
+        """Return the current stored Scholarship snapshot in stable ID order."""
+
+        return tuple(
+            sorted(self._scholarships.values(), key=lambda record: record.record_id)
+        )
 
 
 def create_default_course_program_repository() -> CourseProgramRepository:

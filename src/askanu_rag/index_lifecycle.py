@@ -9,7 +9,7 @@ success.
 from dataclasses import dataclass
 from enum import Enum
 
-from askanu_rag.models import CourseProgramRecord, IndexStatus
+from askanu_rag.models import CommonRecord, IndexStatus
 
 
 class IndexAction(str, Enum):
@@ -44,7 +44,7 @@ class IndexTaskIdentity:
 
 
 def index_is_stale(
-    record: CourseProgramRecord, *, target_version: str | None = None
+    record: CommonRecord, *, target_version: str | None = None
 ) -> bool:
     """Return whether a persistent index is unusable for this record/request.
 
@@ -60,7 +60,7 @@ def index_is_stale(
 
 
 def plan_index_action(
-    record: CourseProgramRecord,
+    record: CommonRecord,
     *,
     explicit_retry: bool = False,
     target_version: str | None = None,
@@ -117,7 +117,7 @@ def plan_index_action(
 
 
 def resolve_index_result(
-    current: CourseProgramRecord,
+    current: CommonRecord,
     task: IndexTaskIdentity,
     *,
     succeeded: bool,

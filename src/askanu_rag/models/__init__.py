@@ -17,12 +17,16 @@ from askanu_rag.models.contracts import (
     Source,
 )
 from askanu_rag.models.records import (
+    CommonMetadata,
+    CommonRecord,
     CourseMetadata,
     CourseProgramMetadata,
     CourseProgramRecord,
     IndexStatus,
     ProgramMetadata,
     RecordStatus,
+    ScholarshipMetadata,
+    ScholarshipRecord,
 )
 
 __all__ = [
@@ -31,6 +35,8 @@ __all__ = [
     "Clarification",
     "ClarificationOption",
     "ConversationState",
+    "CommonMetadata",
+    "CommonRecord",
     "CourseMetadata",
     "CourseProgramMetadata",
     "CourseProgramRecord",
@@ -45,5 +51,7 @@ __all__ = [
     "PartialResponse",
     "ProgramMetadata",
     "RecordStatus",
+    "ScholarshipMetadata",
+    "ScholarshipRecord",
     "Source",
 ]

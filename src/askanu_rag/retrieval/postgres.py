@@ -1,7 +1,7 @@
 """PostgreSQL adapter for the existing deterministic course/program boundary."""
 
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from askanu_rag.config import Settings
 from askanu_rag.database import (
@@ -9,16 +9,22 @@ from askanu_rag.database import (
     DatabaseConnectionConfig,
     RepositoryUnavailableError,
 )
-from askanu_rag.models import CourseProgramRecord
+from askanu_rag.models import CommonRecord, CourseProgramRecord, ScholarshipRecord
 from askanu_rag.retrieval.identifiers import (
     normalize_course_code,
     normalize_program_code,
 )
 from askanu_rag.retrieval.repository import LookupResult
+from askanu_rag.retrieval.repository import ScholarshipLookupResult
 
-APPROVED_RECORD_WHERE = """
+COURSE_PROGRAM_WHERE = """
 source_id = 'courses_programs_and_courses'
 AND domain = 'courses'
+"""
+SCHOLARSHIP_WHERE = """
+source_id = 'scholarships_anu_finder'
+AND domain = 'scholarships'
+AND metadata_json ->> 'entity_type' = 'scholarship'
 """
 
 SELECT_COLUMNS = """
@@ -28,14 +34,11 @@ content_hash, embedding_version, index_status, metadata_json
 """
 
 
-def _record_from_row(row: Mapping[str, Any]) -> CourseProgramRecord:
-    """Validate every database row at the frozen schema-v1 boundary."""
-
-    return CourseProgramRecord.model_validate(dict(row))
+RecordModel = TypeVar("RecordModel", bound=CommonRecord)
 
 
 class PostgresCourseProgramRepository:
-    """Fresh, parameterised reads implementing the existing CatalogReader API."""
+    """Fresh shared-table reads with compatible course/program methods."""
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
         self._connection_factory = connection_factory
@@ -54,8 +57,8 @@ class PostgresCourseProgramRepository:
         code_key = "course_code" if entity_type == "course" else "program_code"
         query = f"""
             SELECT {SELECT_COLUMNS}
-            FROM course_program_records
-            WHERE {APPROVED_RECORD_WHERE}
+            FROM source_records
+            WHERE {COURSE_PROGRAM_WHERE}
               AND metadata_json ->> 'entity_type' = %s
               AND metadata_json ->> '{code_key}' = %s
         """
@@ -65,7 +68,9 @@ class PostgresCourseProgramRepository:
             parameters.append(academic_year)
         query += " ORDER BY metadata_json ->> 'academic_year', record_id"
 
-        records = self._fetch_records(query, tuple(parameters))
+        records = self._fetch_records(
+            query, tuple(parameters), model=CourseProgramRecord
+        )
         if not records:
             return None
         if len(records) == 1:
@@ -73,14 +78,18 @@ class PostgresCourseProgramRepository:
         return records
 
     def _fetch_records(
-        self, query: str, parameters: tuple[object, ...] = ()
-    ) -> tuple[CourseProgramRecord, ...]:
+        self,
+        query: str,
+        parameters: tuple[object, ...] = (),
+        *,
+        model: type[RecordModel],
+    ) -> tuple[RecordModel, ...]:
         try:
             with self._connection_factory() as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(query, parameters)
                     rows = cursor.fetchall()
-            records = tuple(_record_from_row(row) for row in rows)
+            records = tuple(model.model_validate(dict(row)) for row in rows)
         except Exception:
             raise RepositoryUnavailableError() from None
         return records
@@ -105,10 +114,38 @@ class PostgresCourseProgramRepository:
         return self._fetch_records(
             f"""
             SELECT {SELECT_COLUMNS}
-            FROM course_program_records
-            WHERE {APPROVED_RECORD_WHERE}
+            FROM source_records
+            WHERE {COURSE_PROGRAM_WHERE}
             ORDER BY record_id
-            """
+            """,
+            model=CourseProgramRecord,
+        )
+
+    def find_scholarship_by_entity_id(
+        self, entity_id: str
+    ) -> ScholarshipLookupResult:
+        records = self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE {SCHOLARSHIP_WHERE}
+              AND entity_id = %s
+            ORDER BY record_id
+            """,
+            (entity_id.strip(),),
+            model=ScholarshipRecord,
+        )
+        return records[0] if records else None
+
+    def all_scholarships(self) -> tuple[ScholarshipRecord, ...]:
+        return self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE {SCHOLARSHIP_WHERE}
+            ORDER BY record_id
+            """,
+            model=ScholarshipRecord,
         )
 
 
@@ -130,4 +167,12 @@ class UnavailableCourseProgramRepository:
         self._raise()
 
     def all_records(self) -> tuple[CourseProgramRecord, ...]:
+        self._raise()
+
+    def find_scholarship_by_entity_id(
+        self, _entity_id: str
+    ) -> ScholarshipLookupResult:
+        self._raise()
+
+    def all_scholarships(self) -> tuple[ScholarshipRecord, ...]:
         self._raise()
