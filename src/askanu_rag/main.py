@@ -37,9 +37,11 @@ from askanu_rag.retrieval import (
     CourseProgramRepository,
     PostgresCourseProgramRepository,
     UnavailableCourseProgramRepository,
+    ScholarshipReader,
     load_course_program_record_file,
     load_course_program_records_directory,
 )
+from askanu_rag.scholarship_queries import ScholarshipQueryService
 
 MOCK_CLARIFICATION_TRIGGER = "mock:needs_clarification"
 SAFE_ERROR_ANSWER = "The request could not be completed."
@@ -115,6 +117,11 @@ def create_app(
             timeout_seconds=timeout_seconds, top_k=semantic_top_k, min_score=semantic_min_score)
     else:
         course_queries = CourseQueryService(repository, synthesis_client, timeout_seconds)
+    scholarship_queries = (
+        ScholarshipQueryService(repository)
+        if isinstance(repository, ScholarshipReader)
+        else None
+    )
 
     @app.middleware("http")
     async def request_metrics(request: Request, call_next):
@@ -227,6 +234,15 @@ def create_app(
             resolved_question = resolution.question
         else:
             resolved_question = payload.question
+
+        if scholarship_queries is not None:
+            scholarship_response = await scholarship_queries.answer(
+                resolved_question,
+                request_id,
+                payload.conversation_state.pending_clarification,
+            )
+            if scholarship_response is not None:
+                return _mark_response(request, scholarship_response)
 
         course_response = await course_queries.answer(resolved_question, request_id)
         if course_response is not None:

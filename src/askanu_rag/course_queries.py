@@ -9,6 +9,7 @@ from askanu_rag.models import (
     AskResponse,
     Clarification,
     ClarificationOption,
+    CommonRecord,
     CourseMetadata,
     CourseProgramRecord,
     InsufficientEvidenceResponse,
@@ -81,7 +82,7 @@ def classify_course_prerequisites_query(
     )
 
 
-def _source_from_record(record: CourseProgramRecord) -> Source:
+def _source_from_record(record: CommonRecord) -> Source:
     # Kept separate so every response field is visibly mapped from stored evidence.
     return Source(
         record_id=record.record_id,

@@ -19,6 +19,7 @@ from test_postgres_repository import (
     CapturingSynthesisClient,
     ask_payload,
     make_record,
+    make_scholarship,
 )
 
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
@@ -35,12 +36,18 @@ def _local_test_url() -> str:
     return TEST_DATABASE_URL
 
 
-def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
+def _record_values(record) -> dict[str, object]:
     values = record.model_dump(mode="python")
     values["canonical_url"] = str(record.canonical_url)
     values["metadata_json"] = Jsonb(
         record.metadata_json.model_dump(mode="python")
     )
+    return values
+
+
+def _insert_record_values(
+    connection, values: dict[str, object], *, ignore_conflict: bool = False
+) -> int:
     columns = (
         "record_id", "source_id", "entity_id", "domain", "title", "content",
         "canonical_url", "status", "effective_from", "effective_to",
@@ -50,11 +57,19 @@ def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
     placeholders = ", ".join(["%s"] * len(columns))
     conflict_clause = " ON CONFLICT DO NOTHING" if ignore_conflict else ""
     cursor = connection.execute(
-        f"INSERT INTO course_program_records ({', '.join(columns)}) "
+        f"INSERT INTO source_records ({', '.join(columns)}) "
         f"VALUES ({placeholders}){conflict_clause}",
         tuple(values[column] for column in columns),
     )
     return cursor.rowcount
+
+
+def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
+    return _insert_record_values(
+        connection,
+        _record_values(record),
+        ignore_conflict=ignore_conflict,
+    )
 
 
 def test_real_local_migration_repository_and_api_path(caplog):
@@ -64,11 +79,12 @@ def test_real_local_migration_repository_and_api_path(caplog):
     )
     record_2025 = make_record(year="2025")
     record_2026 = make_record(year="2026")
+    scholarship = make_scholarship()
     started_at = datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc)
 
     with psycopg.connect(database_url) as connection:
         connection.execute(
-            "TRUNCATE TABLE course_program_records, ingestion_runs"
+            "TRUNCATE TABLE source_records, ingestion_runs"
         )
         connection.execute(
             """
@@ -95,6 +111,10 @@ def test_real_local_migration_repository_and_api_path(caplog):
         )
         _insert_record(connection, record_2025)
         _insert_record(connection, record_2026)
+        _insert_record(connection, scholarship)
+        assert connection.execute(
+            "SELECT count(*) FROM course_program_records"
+        ).fetchone()[0] == 2
 
     with psycopg.connect(database_url) as connection:
         run = connection.execute(
@@ -157,3 +177,61 @@ def test_real_local_migration_repository_and_api_path(caplog):
     assert "http_status=200" in caplog.text
     assert "response_status=ok" in caplog.text
     assert "latency_ms=" in caplog.text
+
+    repository = PostgresCourseProgramRepository(config.connect)
+    found = repository.find_scholarship_by_entity_id(scholarship.entity_id)
+    assert found == scholarship
+    assert repository.all_scholarships() == (scholarship,)
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "different_url_slug"),
+    [
+        ("foo.*", "foo-123"),
+        ("foo|bar", "bar"),
+        ("foo[0-9]", "foo7"),
+        ("foo+", "fooo"),
+        ("foo?", "fo"),
+    ],
+)
+def test_database_rejects_regex_like_entity_id_for_different_literal_url_slug(
+    entity_id, different_url_slug
+):
+    database_url = _local_test_url()
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id=entity_id,
+        record_id=f"scholarships:scholarship:{entity_id}",
+        canonical_url=(
+            "https://www.anu.edu.au/study/scholarships/find-a-scholarship/"
+            f"{different_url_slug}"
+        ),
+    )
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+def test_database_accepts_exact_literal_scholarship_url_slug():
+    database_url = _local_test_url()
+    entity_id = "national-university-scholarship"
+    values = _record_values(make_scholarship())
+    values.update(
+        entity_id=entity_id,
+        record_id=f"scholarships:scholarship:{entity_id}",
+        canonical_url=(
+            "https://example.anu.edu.au/scholarships/"
+            "national-university-scholarship"
+        ),
+    )
+
+    with psycopg.connect(database_url) as connection:
+        assert _insert_record_values(connection, values) == 1
+        stored = connection.execute(
+            "SELECT entity_id, canonical_url FROM source_records WHERE record_id = %s",
+            (values["record_id"],),
+        ).fetchone()
+        assert stored == (entity_id, values["canonical_url"])
+        connection.rollback()

@@ -393,3 +393,34 @@ These coordinated live steps are not a blocker for Carmen's local Day 7 PR.
 
 Anonymous access must remain disabled. Browser/Firebase continues to call App
 Cloud Run, whose dedicated runtime identity invokes the private RAG service.
+
+## Day 9 Scholarships migration candidate (local only)
+
+Revision `20260913_0002` is a new revision after the already deployed
+`20260911_0001`; the deployed Day 7 file is not edited. It renames the existing
+physical table in place to writable `source_records`, widens only the approved
+source/domain and metadata constraints, preserves the course/program partial
+unique identity, adds Scholarship URL-slug identity, and creates the
+`course_program_records` Courses/Programs compatibility read view. It copies or
+deletes no rows. Downgrade refuses to proceed while Scholarship rows exist.
+
+This candidate requires Qasim approval before Cloud SQL mutation. The safe live
+order is: merge and build the exact reviewed SHA; migrate Cloud SQL to
+`20260913_0002`; deploy the compatible RAG revision; regress Courses/Programs;
+verify Scholarship reads; then update/deploy Will's adapter to write
+`source_records` and enable only a controlled bounded proof. The old deployed
+RAG can continue Courses/Programs reads through the compatibility view after the
+migration; the new RAG must not deploy before the migration because it reads
+`source_records`. The compatibility view is not the approved upsert target.
+
+The view is read-only by usage intent only: this migration does not add grants,
+revokes or triggers, and ordinary PostgreSQL views can be automatically
+updatable. Before relying on the old RAG image for rollback, Qasim must verify
+that its database role can SELECT the newly created view and cannot use it as an
+unreviewed writer. PostgreSQL 18 execution must also confirm the literal
+Scholarship URL-slug CHECK and its regex-metacharacter regression cases.
+
+Keep the scraper PostgreSQL gate disabled until Qasim approves and deploys the
+migration. No live migration, Cloud Run/Scheduler/IAM/secret change, production
+write, image push, embedding worker, or pgvector workflow is part of Carmen's
+local Day 9 work.

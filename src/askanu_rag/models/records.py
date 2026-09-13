@@ -1,19 +1,22 @@
-"""Validated Courses/Programs schema-v1 normalized records."""
+"""Validated shared schema-v1 persisted records."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     HttpUrl,
+    StrictBool,
     field_validator,
     model_validator,
 )
 
 RecordStatus = Literal["NEW", "CHANGED", "UNCHANGED", "MISSING"]
 IndexStatus = Literal["PENDING", "INDEXED", "FAILED"]
+IsoDate = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
 
 class CourseMetadata(BaseModel):
@@ -55,21 +58,52 @@ class ProgramMetadata(BaseModel):
         return value
 
 
+class ScholarshipMetadata(BaseModel):
+    """Exact Day 9 Scholarship metadata_json v1 boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entity_type: Literal["scholarship"]
+    featured: StrictBool | None
+    status: str | None
+    application_required: StrictBool | None
+    study_stage: list[str]
+    student_type: list[str]
+    study_level: list[str]
+    area_of_study: list[str]
+    value: str | None
+    selection_basis: str | None
+    opening_date: IsoDate | None
+    closing_date: IsoDate | None
+    eligibility: str | None
+
+    @field_validator("opening_date", "closing_date")
+    @classmethod
+    def validate_calendar_date(cls, value: str | None) -> str | None:
+        if value is not None:
+            date.fromisoformat(value)
+        return value
+
+
 CourseProgramMetadata = Annotated[
     CourseMetadata | ProgramMetadata,
     Field(discriminator="entity_type"),
 ]
+CommonMetadata = Annotated[
+    CourseMetadata | ProgramMetadata | ScholarshipMetadata,
+    Field(discriminator="entity_type"),
+]
 
 
-class CourseProgramRecord(BaseModel):
-    """Full serialized Courses/Programs schema-v1 boundary."""
+class CommonRecord(BaseModel):
+    """The shared 16-field persisted-record boundary across approved domains."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     record_id: str
-    source_id: Literal["courses_programs_and_courses"]
+    source_id: Literal["courses_programs_and_courses", "scholarships_anu_finder"]
     entity_id: str
-    domain: Literal["courses"]
+    domain: Literal["courses", "scholarships"]
     title: str
     content: str = Field(min_length=1)
     canonical_url: HttpUrl
@@ -81,7 +115,7 @@ class CourseProgramRecord(BaseModel):
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     embedding_version: str | None
     index_status: IndexStatus
-    metadata_json: CourseProgramMetadata
+    metadata_json: CommonMetadata
 
     @field_validator(
         "effective_from",
@@ -98,20 +132,57 @@ class CourseProgramRecord(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_schema_identity(self) -> "CourseProgramRecord":
+    def validate_schema_identity(self) -> "CommonRecord":
         metadata = self.metadata_json
         if isinstance(metadata, CourseMetadata):
+            expected_source = "courses_programs_and_courses"
+            expected_domain = "courses"
             entity_type = "course"
-            code = metadata.course_code
-        else:
+            expected_entity_id = f"{metadata.course_code}_{metadata.academic_year}"
+        elif isinstance(metadata, ProgramMetadata):
+            expected_source = "courses_programs_and_courses"
+            expected_domain = "courses"
             entity_type = "program"
-            code = metadata.program_code
+            expected_entity_id = f"{metadata.program_code}_{metadata.academic_year}"
+        else:
+            expected_source = "scholarships_anu_finder"
+            expected_domain = "scholarships"
+            entity_type = "scholarship"
+            expected_entity_id = self._scholarship_url_slug()
 
-        expected_entity_id = f"{code}_{metadata.academic_year}"
-        expected_record_id = f"courses:{entity_type}:{expected_entity_id}"
-
+        if self.source_id != expected_source or self.domain != expected_domain:
+            raise ValueError("source_id/domain do not match metadata entity_type")
         if self.entity_id != expected_entity_id:
-            raise ValueError("entity_id does not match normalized metadata")
+            raise ValueError("entity_id does not match normalized metadata/source URL")
+        expected_record_id = f"{expected_domain}:{entity_type}:{expected_entity_id}"
         if self.record_id != expected_record_id:
             raise ValueError("record_id does not match normalized metadata")
         return self
+
+    def _scholarship_url_slug(self) -> str:
+        parsed = urlsplit(str(self.canonical_url))
+        host = (parsed.hostname or "").casefold()
+        if host != "anu.edu.au" and not host.endswith(".anu.edu.au"):
+            raise ValueError("Scholarship canonical_url must use an ANU host")
+        if parsed.query or parsed.fragment or parsed.path.endswith("/"):
+            raise ValueError("Scholarship canonical_url must be canonical")
+        slug = parsed.path.rsplit("/", 1)[-1]
+        if not slug:
+            raise ValueError("Scholarship canonical_url must contain an entity slug")
+        return slug
+
+
+class CourseProgramRecord(CommonRecord):
+    """Backward-compatible Courses/Programs view of a shared record."""
+
+    source_id: Literal["courses_programs_and_courses"]
+    domain: Literal["courses"]
+    metadata_json: CourseProgramMetadata
+
+
+class ScholarshipRecord(CommonRecord):
+    """Day 9 Scholarship view of a shared record."""
+
+    source_id: Literal["scholarships_anu_finder"]
+    domain: Literal["scholarships"]
+    metadata_json: ScholarshipMetadata

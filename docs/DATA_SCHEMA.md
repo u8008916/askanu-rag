@@ -888,3 +888,106 @@ Such changes must:
 1. be recorded in `docs/DECISION_LOG.md`,
 2. be synchronized across affected repos,
 3. be reviewed before dependent implementations silently diverge.
+
+---
+
+# Day 9 Scholarships shared-persistence candidate
+
+This local Day 9 implementation proposes `source_records` as the canonical
+writable table for approved source records. The deployed
+`course_program_records` table is renamed in place by revision
+`20260913_0002`; a `course_program_records` compatibility view continues to
+expose only Courses/Programs rows for legacy reads. There is no row copy,
+Scholarship-only table, or Scholarship-only top-level column. The table/view
+name and shared constraint change require Qasim review before live migration.
+
+All domains continue to use the same 16 top-level fields defined in section 1.
+The only approved source/domain pairs in this migration are:
+
+```text
+courses_programs_and_courses + courses
+scholarships_anu_finder      + scholarships
+```
+
+Courses/Programs keep their existing academic-year, normalized-code,
+`entity_id`, `record_id`, and unique identity rules. Those checks become
+conditional on `domain = courses`; they do not apply course/year assumptions to
+Scholarships.
+
+## Scholarship identity
+
+```text
+domain    = scholarships
+source_id = scholarships_anu_finder
+entity_id = <final path segment of the canonical ANU scholarship URL>
+record_id = scholarships:scholarship:<entity_id>
+```
+
+The canonical URL must be HTTPS on `anu.edu.au` or a subdomain, with no query,
+fragment, or trailing slash. Identity comes from that URL path, never the title,
+year, deadline, status, or value. The URL remains the top-level
+`canonical_url`; it is not duplicated in metadata.
+
+The database obtains the final URL path segment with deterministic PostgreSQL
+string operations and compares it to `entity_id` using literal equality. Record
+data is never concatenated into a regular-expression pattern. The current
+shared contract does not define a separate slug character whitelist, so Day 9
+does not introduce one implicitly.
+
+`course_program_records` is a legacy read-compatibility view by usage contract,
+not a second authoritative store or an approved upsert target. Ordinary
+PostgreSQL views may be automatically updatable; this migration does not add
+permission/trigger enforcement. Qasim must decide whether to enforce read-only
+access and how long the view remains before live rollout.
+
+## Scholarship metadata_json v1
+
+Scholarship metadata contains exactly these 13 keys:
+
+| Key | Serialized type | Missing value |
+|---|---|---|
+| `entity_type` | literal `scholarship` | invalid |
+| `featured` | boolean | `null` |
+| `status` | string | `null` |
+| `application_required` | boolean | `null` |
+| `study_stage` | array of strings | `[]` |
+| `student_type` | array of strings | `[]` |
+| `study_level` | array of strings | `[]` |
+| `area_of_study` | array of strings | `[]` |
+| `value` | string | `null` |
+| `selection_basis` | string | `null` |
+| `opening_date` | ISO `YYYY-MM-DD` string | `null` |
+| `closing_date` | ISO `YYYY-MM-DD` string | `null` |
+| `eligibility` | string | `null` |
+
+Only official source-supported facts are stored. A null or empty filter list is
+not evidence of the opposite value. RAG does not derive open/closed state from
+dates, infer value/deadline, or decide personal eligibility.
+
+Top-level `status` remains the generic record lifecycle state. Scholarship
+`metadata_json.status` is the source's public Scholarship status. Opening and
+closing dates remain domain metadata; they do not populate top-level
+`effective_from`/`effective_to` without a separately approved mapping.
+
+## Cross-domain index/freshness behavior
+
+The Day 8 lifecycle applies to every `source_records` row:
+
+- `NEW`/`CHANGED`: `PENDING`, `embedding_version = null`.
+- `UNCHANGED`: update freshness and preserve the existing index state/version;
+  emit no new content-change signal.
+- `MISSING` or source failure: preserve the last-known-good row; do not delete or
+  request re-embedding.
+- `PENDING`/`FAILED`: current stored source facts remain available to
+  deterministic relational retrieval, but the persistent semantic path must not
+  claim that current content is indexed.
+- derived stale indexed state: current DB content remains authoritative; a
+  result whose `record_id`/`content_hash` or target version is stale is excluded
+  or discarded.
+- `INDEXED`: usable only when the successful version represents current content
+  and the requested target version.
+
+No `STALE` column/enum, embedding worker, pgvector pipeline, or writer is added.
+Will continues to own scraper upserts/change detection; Carmen owns this shared
+migration, RAG reads, and index-state meaning; Qasim owns contract approval and
+live migration/deployment ordering.
