@@ -27,7 +27,7 @@ UNDERGRADUATE_STUDY_LEVELS = frozenset({"undergraduate", "bachelor"})
 UNDERGRADUATE_QUERY_TERMS = ("undergraduate", "undergraduates", "bachelor")
 OTHER_DOMAIN_PATTERN = re.compile(
     r"\b(?:courses?|programs?|prerequisites?|requisites?|jobs?|events?|"
-    r"accommodation|support|honours)\b",
+    r"accommodation)\b",
     re.IGNORECASE,
 )
 

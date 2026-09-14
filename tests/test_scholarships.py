@@ -819,3 +819,29 @@ def test_missing_scholarship_preserves_last_known_good_without_signal(scholarshi
 
     assert decision.action.value == "NONE"
     assert decision.index_status == "FAILED"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "I need support",
+        "Honours",
+    ],
+)
+def test_pending_scope_ambiguous_terms_do_not_force_domain_switch(
+    refinement_repo, question
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    pending = Clarification.model_validate(broad["clarification"])
+
+    response = asyncio.run(
+        ScholarshipQueryService(refinement_repo).answer(
+            question,
+            "ambiguous-routing-test",
+            pending,
+        )
+    )
+
+    assert response is not None
+    assert response.status == "needs_clarification"
+    assert response.clarification.id == "clar-scholarship-scope"
