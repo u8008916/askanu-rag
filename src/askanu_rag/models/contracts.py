@@ -100,3 +100,28 @@ AskResponse = Annotated[
 
 class HealthResponse(ContractModel):
     status: Literal["ok"] = "ok"
+
+
+class CurrentJobItem(ContractModel):
+    """Minimal source-grounded DTO for the deterministic Current Jobs list."""
+
+    record_id: str
+    source_id: str
+    job_id: str
+    title: str
+    employment_types: list[str]
+    location: str | None
+    classification: str | None
+    salary: str | None
+    closing_text: str | None
+    closing_date: str | None
+    closing_at: str | None
+    status: Literal["current"]
+    url: HttpUrl
+    domain: Literal["jobs"]
+
+
+class CurrentJobsResponse(ContractModel):
+    status: Literal["ok"] = "ok"
+    items: list[CurrentJobItem]
+    request_id: str

@@ -446,3 +446,26 @@ Keep the scraper PostgreSQL gate disabled until Qasim approves and deploys the
 migration. No live migration, Cloud Run/Scheduler/IAM/secret change, production
 write, image push, embedding worker, or pgvector workflow is part of Carmen's
 local Day 9 work.
+
+## Day 10 Jobs migration and release gates (local candidate)
+
+Revision `20260914_0004` follows `20260914_0003` and extends only the bounded
+shared constraints/indexes required by the frozen Jobs contract. It accepts the
+`jobs_anu_search`/`jobs` source pair, exact Job metadata/identity/URL rules and
+adds a partial unique Jobs identity index. It does not change the 16 columns,
+copy data, modify `ingestion_runs`, or recreate `course_program_records`.
+Downgrade refuses while Jobs rows exist rather than deleting or coercing them.
+
+The deterministic endpoint is `GET /api/v1/jobs/current?limit=5`, with limits
+1–20. PostgreSQL applies source/domain/status/date filtering, deterministic
+closing-date and numeric-ID ordering, then the limit. It does not depend on
+Gemini, vectors or successful indexing. Production remains fail-closed when the
+required database is unavailable.
+
+Live work remains Qasim-coordinated: review/merge the exact SHA; apply `0004` on
+PostgreSQL 18; verify production-equivalent RAG reads and scraper writes; verify
+the Day 9 compatibility view remains structurally non-updatable; use Will's
+contract-aligned source-backed fixture/writer; run dry-run/zero-write evidence;
+then prove controlled `NEW`, repeat `UNCHANGED`, failure preservation, Current
+Jobs ordering, exact lookup and canonical URLs before discussing Scheduler or
+write-gate enablement. No live/cloud step is performed by this local task.

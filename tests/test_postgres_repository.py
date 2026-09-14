@@ -3,7 +3,7 @@
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -28,7 +28,9 @@ from askanu_rag.retrieval import (
     PostgresCourseProgramRepository,
     UnavailableCourseProgramRepository,
     load_common_records,
+    normalize_job_title,
 )
+from test_jobs import make_job
 
 SCHOLARSHIP_FIXTURE = (
     Path(__file__).parents[1] / "fixtures/day9_scholarship_records.json"
@@ -114,6 +116,48 @@ class FakeCursor:
 
     def execute(self, query, parameters=()):
         self.calls.append((query, parameters))
+        if "jobs_anu_search" in query:
+            self.results = [row for row in self.rows if row["domain"] == "jobs"]
+            if "AND entity_id = %s" in query:
+                self.results = [
+                    row for row in self.results if row["entity_id"] == parameters[0]
+                ]
+            elif "regexp_replace" in query:
+                self.results = [
+                    row
+                    for row in self.results
+                    if normalize_job_title(row["title"]) == parameters[0]
+                ]
+            elif "metadata_json ->> 'status' = 'current'" in query:
+                today = parameters[0].isoformat()
+                employment_type = parameters[1] if len(parameters) == 3 else None
+                self.results = [
+                    row
+                    for row in self.results
+                    if row["metadata_json"]["status"] == "current"
+                    and (
+                        row["metadata_json"]["closing_date"] is None
+                        or row["metadata_json"]["closing_date"] >= today
+                    )
+                    and (
+                        employment_type is None
+                        or employment_type
+                        in row["metadata_json"]["employment_types"]
+                    )
+                ]
+                self.results.sort(
+                    key=lambda row: (
+                        row["metadata_json"]["closing_date"] is None,
+                        row["metadata_json"]["closing_date"] or "",
+                        int(row["entity_id"]),
+                    )
+                )
+                self.results = self.results[: parameters[-1]]
+            else:
+                raise AssertionError("Unexpected Jobs query")
+            if "metadata_json ->> 'status' = 'current'" not in query:
+                self.results.sort(key=lambda row: int(row["entity_id"]))
+            return
         if "scholarships_anu_finder" in query:
             self.results = [
                 row for row in self.rows if row["domain"] == "scholarships"
@@ -325,6 +369,36 @@ def test_postgres_scholarship_round_trip_uses_generic_table_and_exact_metadata()
         "index_status",
         "metadata_json",
     }
+
+
+def test_postgres_jobs_exact_and_current_queries_are_parameterised_and_bounded():
+    records = [
+        make_job("10", closing_date="2026-09-20"),
+        make_job("9", closing_date="2026-09-20"),
+        make_job("2", closing_date=None),
+        make_job("3", closing_date="2026-09-13"),
+        make_job("4", status="closed", closing_date="2026-09-30"),
+    ]
+    repository, calls = fake_repository(records)
+
+    assert repository.find_job_by_entity_id("9") == records[1]
+    assert repository.find_jobs_by_title("  research   officer  ") == (
+        records[2],
+        records[3],
+        records[4],
+        records[1],
+        records[0],
+    )
+    current = repository.current_jobs(3, date(2026, 9, 14))
+
+    assert [record.entity_id for record in current] == ["9", "10", "2"]
+    query, parameters = calls[-1]
+    assert "source_id = 'jobs_anu_search'" in query
+    assert "metadata_json ->> 'status' = 'current'" in query
+    assert "::date >= %s" in query
+    assert "entity_id::numeric ASC" in query
+    assert "LIMIT %s" in query
+    assert parameters == (date(2026, 9, 14), 3)
 
 
 class CapturingSynthesisClient:

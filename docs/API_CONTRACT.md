@@ -155,7 +155,8 @@ Minimal successful response (HTTP 200):
 `items` is an ordered array of event objects containing the fields shown above, with at most the requested limit. `record_id` identifies the evidence record and `source_id` identifies its source registry entry. Include upcoming events only; exclude past events and order by ascending `start_at` in `Australia/Canberra`. No qualifying records returns `status: "ok"` with `items: []`.
 
 ## GET /api/v1/jobs/current?limit=5
-Deterministic; current/open only; nearest known closing date first; undated open roles after dated roles; default 5.
+Deterministic; current only; nearest known closing date first; undated current
+roles after dated roles. The default is 5 and the accepted range is 1–20.
 
 Minimal successful response (HTTP 200):
 
@@ -166,10 +167,16 @@ Minimal successful response (HTTP 200):
     {
       "record_id":"<stored job record ID>",
       "source_id":"<stored source-registry ID>",
+      "job_id":"<stored numeric requisition ID>",
       "title":"<stored job title>",
-      "employment_type":"<stored employment type>",
+      "employment_types":["<stored employment type>"],
       "location":"<stored job location>",
+      "classification":"<stored classification>",
+      "salary":"<stored source salary wording>",
+      "closing_text":"<stored closing wording>",
+      "closing_date":"<stored Canberra-local YYYY-MM-DD date>",
       "closing_at":"<stored closing time>",
+      "status":"current",
       "url":"<stored canonical URL>",
       "domain":"jobs"
     }
@@ -178,7 +185,15 @@ Minimal successful response (HTTP 200):
 }
 ```
 
-`items` is an ordered array of job objects containing the fields shown above, with at most the requested limit. `record_id` identifies the evidence record and `source_id` identifies its source registry entry. Include only current/open roles, excluding expired roles; use `Australia/Canberra` for date handling. Order dated roles by nearest known `closing_at`, followed by undated open roles. No qualifying records returns `status: "ok"` with `items: []`.
+`items` is an ordered array of job objects containing exactly the fields shown
+above, with at most the requested limit. Nullable stored scalar fields remain
+JSON `null`; missing `employment_types` is `[]`. Include only records whose
+normalized Jobs status is `current` and whose `closing_date` is null or is on/
+after the current `Australia/Canberra` calendar date. `closed`, null status and
+past closing dates are excluded. Order dated roles by `closing_date` ascending
+then numeric `job_id` ascending; order undated roles afterward by numeric
+`job_id`. `closing_at` is returned only when stored and does not determine
+currentness. No qualifying records returns `status: "ok"` with `items: []`.
 
 Both list endpoints use the controlled error behaviour above. URLs come programmatically from stored canonical URLs, never Gemini. Angle-bracket values are illustrative placeholders, not field type or nullability declarations; domain field types/nullability remain scheduled Day 2 data-schema work.
 

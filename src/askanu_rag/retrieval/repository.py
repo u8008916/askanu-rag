@@ -3,6 +3,7 @@
 import json
 import stat
 from collections.abc import Iterable
+from datetime import date
 from os import stat_result
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
@@ -13,6 +14,8 @@ from askanu_rag.models import (
     CommonRecord,
     CourseMetadata,
     CourseProgramRecord,
+    JobMetadata,
+    JobRecord,
     ScholarshipMetadata,
     ScholarshipRecord,
 )
@@ -25,6 +28,7 @@ LookupResult: TypeAlias = (
     CourseProgramRecord | tuple[CourseProgramRecord, ...] | None
 )
 ScholarshipLookupResult: TypeAlias = ScholarshipRecord | None
+JobLookupResult: TypeAlias = JobRecord | None
 LookupKey: TypeAlias = tuple[Literal["course", "program"], str, str]
 CodeKey: TypeAlias = tuple[Literal["course", "program"], str]
 
@@ -49,6 +53,28 @@ class ScholarshipReader(Protocol):
     ) -> ScholarshipLookupResult: ...
 
     def all_scholarships(self) -> tuple[ScholarshipRecord, ...]: ...
+
+
+@runtime_checkable
+class JobReader(Protocol):
+    """Minimal read boundary for exact and deterministic Jobs retrieval."""
+
+    def find_job_by_entity_id(self, entity_id: str) -> JobLookupResult: ...
+
+    def find_jobs_by_title(self, title: str) -> tuple[JobRecord, ...]: ...
+
+    def current_jobs(
+        self,
+        limit: int,
+        today: date,
+        employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]: ...
+
+
+def normalize_job_title(value: str) -> str:
+    """Apply the frozen case/whitespace normalization for exact titles."""
+
+    return " ".join(value.casefold().split())
 
 
 def load_common_records(fixture_path: str | Path) -> tuple[CommonRecord, ...]:
@@ -123,9 +149,20 @@ class CourseProgramRepository:
         self._records: dict[LookupKey, CourseProgramRecord] = {}
         self._records_by_code: dict[CodeKey, list[CourseProgramRecord]] = {}
         self._scholarships: dict[str, ScholarshipRecord] = {}
+        self._jobs: dict[str, JobRecord] = {}
+        self._jobs_by_title: dict[str, list[JobRecord]] = {}
 
         for record in records:
             metadata = record.metadata_json
+            if isinstance(metadata, JobMetadata):
+                job = JobRecord.model_validate(record.model_dump(mode="python"))
+                if job.entity_id in self._jobs:
+                    raise ValueError(f"Duplicate record_id: {job.record_id}")
+                self._jobs[job.entity_id] = job
+                self._jobs_by_title.setdefault(
+                    normalize_job_title(job.title), []
+                ).append(job)
+                continue
             if isinstance(metadata, ScholarshipMetadata):
                 scholarship = ScholarshipRecord.model_validate(
                     record.model_dump(mode="python")
@@ -214,6 +251,58 @@ class CourseProgramRepository:
         return tuple(
             sorted(self._scholarships.values(), key=lambda record: record.record_id)
         )
+
+    def find_job_by_entity_id(self, entity_id: str) -> JobLookupResult:
+        """Return one exact numeric Jobs identity without URL/title inference."""
+
+        return self._jobs.get(entity_id.strip())
+
+    def find_jobs_by_title(self, title: str) -> tuple[JobRecord, ...]:
+        """Return every normalized exact-title match in numeric ID order."""
+
+        return tuple(
+            sorted(
+                self._jobs_by_title.get(normalize_job_title(title), ()),
+                key=lambda record: int(record.entity_id),
+            )
+        )
+
+    def current_jobs(
+        self,
+        limit: int,
+        today: date,
+        employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]:
+        """Filter, order, then limit source-supported current Jobs."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        wanted_type = employment_type.casefold() if employment_type else None
+        current = (
+            record
+            for record in self._jobs.values()
+            if record.metadata_json.status == "current"
+            and (
+                record.metadata_json.closing_date is None
+                or date.fromisoformat(record.metadata_json.closing_date) >= today
+            )
+            and (
+                wanted_type is None
+                or any(
+                    item.casefold() == wanted_type
+                    for item in record.metadata_json.employment_types
+                )
+            )
+        )
+        ordered = sorted(
+            current,
+            key=lambda record: (
+                record.metadata_json.closing_date is None,
+                record.metadata_json.closing_date or "",
+                int(record.entity_id),
+            ),
+        )
+        return tuple(ordered[:limit])
 
 
 def create_default_course_program_repository() -> CourseProgramRepository:
