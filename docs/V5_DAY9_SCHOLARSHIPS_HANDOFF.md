@@ -372,8 +372,12 @@ History does not become factual Scholarship evidence.
 
 When the active clarification is `clar-scholarship-scope`, the immediate
 follow-up first retains the existing explicit option-selection behavior, then
+an explicit current-message switch to another supported domain releases the
+stale Scholarship scope back to normal routing. Pending clarification is
+current-session context, not a route lock. With no such switch, the follow-up
 may reuse the deterministic Scholarship filters for values explicitly present
-in that follow-up. Supported metadata dimensions remain `student_type`,
+in that message; explicit Scholarship wording remains in the Scholarship flow.
+Supported metadata dimensions remain `student_type`,
 `study_level`, `study_stage` and `area_of_study`, together with the existing
 `open`, `closed` and `featured` filters. Independent dimensions combine with
 AND. The narrow frozen study-level wording treats `Undergraduate` and

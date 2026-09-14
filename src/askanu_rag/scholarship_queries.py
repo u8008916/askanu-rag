@@ -24,6 +24,7 @@ ELIGIBILITY_PATTERN = re.compile(
 )
 FILTER_FIELDS = ("study_stage", "student_type", "study_level", "area_of_study")
 UNDERGRADUATE_STUDY_LEVELS = frozenset({"undergraduate", "bachelor"})
+UNDERGRADUATE_QUERY_TERMS = ("undergraduate", "undergraduates", "bachelor")
 OTHER_DOMAIN_PATTERN = re.compile(
     r"\b(?:courses?|programs?|prerequisites?|requisites?|jobs?|events?|"
     r"accommodation|support|honours)\b",
@@ -60,7 +61,7 @@ def _filter_value_is_explicit(question: str, field: str, value: str) -> bool:
         and _filter_value(field, value) == "undergraduate"
         and any(
             _contains_phrase(question, alias)
-            for alias in UNDERGRADUATE_STUDY_LEVELS
+            for alias in UNDERGRADUATE_QUERY_TERMS
         )
     )
 
@@ -243,12 +244,11 @@ class ScholarshipQueryService:
         if (
             pending_scope
             and not selected_pending
-            and not identities
+            and not SCHOLARSHIP_PATTERN.search(question)
             and (
                 COURSE_CODE_CANDIDATE_PATTERN.search(question)
                 or OTHER_DOMAIN_PATTERN.search(question)
             )
-            and not filters
         ):
             return None
 

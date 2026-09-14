@@ -1,5 +1,6 @@
 """Day 9 Scholarship shared-record and deterministic RAG behavior."""
 
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 
@@ -9,12 +10,18 @@ from pydantic import TypeAdapter, ValidationError
 
 from askanu_rag.index_lifecycle import IndexAction, index_is_stale, plan_index_action
 from askanu_rag.main import create_app
-from askanu_rag.models import AskResponse, CommonRecord, ScholarshipRecord
+from askanu_rag.models import (
+    AskResponse,
+    Clarification,
+    CommonRecord,
+    ScholarshipRecord,
+)
 from askanu_rag.retrieval import (
     CourseProgramRepository,
     load_common_records,
     load_course_program_records,
 )
+from askanu_rag.scholarship_queries import ScholarshipQueryService
 
 ROOT = Path(__file__).parents[1]
 SCHOLARSHIP_FIXTURE = ROOT / "fixtures/day9_scholarship_records.json"
@@ -582,6 +589,47 @@ def test_pending_scholarship_scope_does_not_intercept_course_switch(repo):
 
     assert body["status"] == "ok"
     assert body["sources"][0]["record_id"].endswith("COMP1110_2026")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What jobs are available for international undergraduate students?",
+        "What courses can international undergraduates take?",
+    ],
+)
+def test_pending_scope_explicit_other_domain_beats_scholarship_filter_words(
+    refinement_repo, question
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    pending = Clarification.model_validate(broad["clarification"])
+
+    response = asyncio.run(
+        ScholarshipQueryService(refinement_repo).answer(
+            question,
+            "routing-precedence-test",
+            pending,
+        )
+    )
+
+    assert response is None
+
+
+def test_pending_scope_explicit_scholarship_domain_keeps_refinement(
+    refinement_repo,
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    body = ask(
+        refinement_repo,
+        "What scholarships are available for international undergraduates?",
+        pending=broad["clarification"],
+    )
+
+    assert body["status"] == "ok"
+    assert {source["record_id"] for source in body["sources"]} == {
+        "scholarships:scholarship:day9-international-bachelor-engineering",
+        "scholarships:scholarship:day9-international-bachelor-science",
+    }
 
 
 def test_personal_eligibility_returns_official_text_without_decision(repo):
