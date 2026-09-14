@@ -34,7 +34,13 @@ CURRENT_WORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FIXED_TERM_PATTERN = re.compile(r"\bfixed[-\s]term\b", re.IGNORECASE)
-ROLE_REFERENCE_PATTERN = re.compile(r"\b(?:this|that)\s+(?:job|role)\b", re.I)
+ROLE_REFERENCE_PATTERN = re.compile(
+    r"\b(?:this|that)\s+(?:ANU\s+)?(?:job|role)\b", re.I
+)
+REQUIREMENTS_PATTERN = re.compile(
+    r"\b(?:requirements?|qualifications?|selection\s+criteria|essential\s+criteria)\b",
+    re.I,
+)
 TITLE_PATTERNS = (
     re.compile(r"^\s*tell me about\s+(.+?)\s*[?.!]*\s*$", re.I),
     re.compile(r"^\s*when does\s+(.+?)\s+close\s*[?.!]*\s*$", re.I),
@@ -101,10 +107,13 @@ def _is_current_jobs_question(question: str) -> bool:
 
 
 def _history_job_id(history: Sequence[HistoryTurn]) -> str | None:
-    for turn in reversed(history):
-        match = JOB_ID_PATTERN.search(turn.content)
-        if match is not None:
-            return match.group(1)
+    if not history:
+        return None
+    matches = {
+        match.group(1) for match in JOB_ID_PATTERN.finditer(history[-1].content)
+    }
+    if len(matches) == 1:
+        return next(iter(matches))
     return None
 
 
@@ -232,6 +241,18 @@ class JobQueryService:
                     ),
                     request_id=request_id,
                 )
+
+        if selected is not None and REQUIREMENTS_PATTERN.search(question):
+            return InsufficientEvidenceResponse(
+                answer=(
+                    "The stored Jobs v1 record does not contain source-backed "
+                    f"requirements for {selected.title} (Job ID {selected.entity_id}). "
+                    "Please check the official job listing for the authoritative "
+                    "requirements."
+                ),
+                sources=[_source_from_record(selected)],
+                request_id=request_id,
+            )
 
         if selected is not None:
             return OkResponse(

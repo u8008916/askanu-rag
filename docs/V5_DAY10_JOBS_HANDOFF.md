@@ -4,7 +4,13 @@ Date: 14 September 2026
 
 Branch: `carmen/day-10-jobs-rag`
 
-Base SHA: `eecb177` (`20260914_0003` read-only compatibility view)
+PR base SHA: `45455a6c07116b778ef3b28e68253e3e09c7493b`
+
+Reviewed head before final cleanup: `2de15872e7853ebdbc4ce5bf064c35176cf53d03`
+
+Final PR head: the cleanup commit containing this handoff (`git rev-parse HEAD`;
+its immutable SHA is supplied in the review package because a commit cannot
+embed its own hash).
 
 Migration: `20260914_0004` after `20260914_0003`
 
@@ -106,8 +112,14 @@ broad Jobs read and uses no Gemini/vector dependency.
   deterministic Current Jobs query. An explicit Jobs message takes precedence
   over stale pending Scholarship scope even when it also contains Scholarship
   filter wording; that context is not treated as a Jobs suitability filter.
-- “this role” can inherit only a constrained Job ID from bounded current-session
-  history; all facts and URLs are freshly retrieved.
+- “this job”, “this ANU job” and equivalent `that`/`role` wording can inherit
+  only a constrained Job ID from bounded current-session history; all facts and
+  URLs are freshly retrieved. With no resolved Job, Ben's exact launcher prompt
+  `What are the requirements for this ANU job?` asks which role the user means.
+- Jobs v1 contains no structured requirements, qualifications or selection
+  criteria. If a Job is resolved but requirements evidence is absent, RAG uses
+  `insufficient_evidence`, retains the stored official source, and does not
+  infer requirements from title, classification, category, salary or summary.
 - Closed, unknown-status or date-expired records are never described as current.
 - Unsupported eligibility, suitability, hiring, visa, salary or deadline claims
   are not inferred.
@@ -121,11 +133,17 @@ Carmen/RAG owns validation, the shared migration, exact/current reads, ordering,
 endpoint, chat behavior and index-state interpretation. Qasim owns contract and
 cross-repo approval plus live migration/deployment ordering.
 
-Will's checked-in, source-backed normalized fixture is still required for the
-final known-role/source round-trip proof. Synthetic records in RAG are labelled
-unit-test-only and are not presented as ANU production facts. Will must align
-the writer specifically with plural `employment_types` and source-wording
-`salary`.
+Will's real source-backed fixture exists on unmerged Scraper branch
+`origin/will/day10-jobs` at
+`fixtures/jobs/normalized_job_record_sample.json` (commit `52a56f7`, Job ID
+`563693`). A direct read-only validation of that Git object passed unchanged
+through `CommonRecord`, `JobRecord`, exact repository lookup and Current Jobs;
+no field adaptation, identity/URL reconstruction or salary conversion was
+needed. It is not in Scraper `main` or a checked-out shared fixture path, so RAG
+does not add a brittle cross-repository/branch-dependent pytest. A committed
+source-backed compatibility regression remains pending Will's merge or an
+explicitly approved fixture-vendoring decision. Synthetic RAG records remain
+unit-test-only and are not presented as ANU production facts.
 
 ## Remaining live gates
 
@@ -133,7 +151,8 @@ the writer specifically with plural `employment_types` and source-wording
 2. Apply `20260914_0004` on PostgreSQL 18 under Qasim's control.
 3. Verify production-equivalent RAG reads, scraper writes and the unchanged
    structurally non-updatable Courses compatibility view.
-4. Land/use Will's contract-aligned source-backed fixture and writer.
+4. Merge Will's contract-aligned source-backed fixture/writer, then add the
+   stable cross-repo compatibility regression from the merged artifact.
 5. Deploy the separate expected `askanu-scraper-jobs` collector only after its
    own review; run dry-run and prove zero writes.
 6. Prove first bounded `NEW`, inspect `source_records`, repeat as `UNCHANGED`,
@@ -157,10 +176,16 @@ No other Jobs v1 contract decision is reopened.
 
 ## Local verification
 
-- Focused Jobs model/retrieval/API and migration suite: `41 passed`.
+- Focused Jobs model/retrieval/API and migration suite: `46 passed`. The five
+  final-cleanup cases cover Ben's exact requirements prompt without a selected
+  Job, selected-Job requirements abstention with stored source, rejection of
+  unrelated or multi-Job history, and a real `canberra_today()` rollover at
+  `2026-09-14T14:30:00Z` (Canberra date `2026-09-15`) including closing-today
+  currentness.
 - Final Day 9 Scholarship suite: `76 passed`; explicit COMP1110 regression:
-  `1 passed`; focused cross-domain routing suite: `8 passed`.
-- Full suite: `456 passed, 59 skipped` from 515 collected tests. One skip is the
+  `1 passed`; the selected pending Scholarship/Jobs/Courses routing and COMP1110
+  check is `5 passed`.
+- Full suite: `461 passed, 59 skipped` from 520 collected tests. One skip is the
   Windows symlink-privilege case; 58 are guarded PostgreSQL cases when
   `ASKANU_TEST_DATABASE_URL` is absent.
 - The complete guarded PostgreSQL module passed separately with `58 passed` on
@@ -174,5 +199,5 @@ No other Jobs v1 contract decision is reopened.
   `20260914_0004`.
 - Revisions `0001`, `0002` and `0003` retain their reviewed hashes. No secret or
   credential is part of the candidate diff.
-- PostgreSQL 18, Will's approved source-backed fixture and every cloud/live gate
-  above remain pending.
+- PostgreSQL 18, a stable merged path for Will's source-backed fixture pytest,
+  Qasim's final review and every cloud/live gate above remain pending.

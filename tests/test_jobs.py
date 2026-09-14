@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
+import askanu_rag.job_queries as job_queries
 from askanu_rag.main import create_app
 from askanu_rag.models import AskResponse, CommonRecord, JobMetadata, JobRecord
 from askanu_rag.retrieval import (
@@ -381,6 +382,116 @@ def test_role_followup_uses_history_only_for_identity_then_retrieves_record():
 
     assert body["status"] == "ok"
     assert body["sources"][0]["record_id"] == job.record_id
+
+
+def test_ben_exact_requirements_prompt_without_selected_job_clarifies():
+    body = ask(
+        CourseProgramRepository([]),
+        "What are the requirements for this ANU job?",
+    )
+
+    assert body["status"] == "needs_clarification"
+    assert body["answer"] == "Which job role do you mean?"
+    assert body["clarification"]["id"] == "clar-job-missing-role"
+    assert body["sources"] == []
+    assert "requirement" not in body["answer"].casefold()
+
+
+def test_selected_job_without_requirements_returns_grounded_insufficient_evidence():
+    job = make_job("563693", title="Senior Consultant")
+
+    body = ask(
+        CourseProgramRepository([job]),
+        "What are the requirements for this ANU job?",
+        history=(
+            {
+                "turn_id": "t1",
+                "role": "assistant",
+                "content": "Senior Consultant. Job ID: 563693.",
+            },
+        ),
+    )
+
+    assert body["status"] == "insufficient_evidence"
+    assert body["sources"] == [
+        {
+            "record_id": job.record_id,
+            "source_id": job.source_id,
+            "title": job.title,
+            "url": str(job.canonical_url),
+            "domain": job.domain,
+        }
+    ]
+    answer = body["answer"].casefold()
+    assert "does not contain source-backed requirements" in answer
+    assert "official job listing" in answer
+    for unsupported in (
+        job.metadata_json.classification,
+        job.metadata_json.salary,
+        *job.metadata_json.employment_types,
+        "eligible",
+        "qualified",
+        "suitable",
+    ):
+        assert unsupported.casefold() not in answer
+
+
+@pytest.mark.parametrize(
+    "latest_history",
+    [
+        {"turn_id": "t2", "role": "user", "content": "Tell me about parking."},
+        {
+            "turn_id": "t2",
+            "role": "assistant",
+            "content": "Job ID: 563693 or Job ID: 563694.",
+        },
+    ],
+)
+def test_referential_job_does_not_reuse_unrelated_or_ambiguous_history(
+    latest_history,
+):
+    body = ask(
+        CourseProgramRepository(
+            [make_job("563693"), make_job("563694", title="Second role")]
+        ),
+        "What are the requirements for this ANU job?",
+        history=(
+            {
+                "turn_id": "t1",
+                "role": "assistant",
+                "content": "Research Officer. Job ID: 563693.",
+            },
+            latest_history,
+        ),
+    )
+
+    assert body["status"] == "needs_clarification"
+    assert body["answer"] == "Which job role do you mean?"
+    assert body["sources"] == []
+
+
+def test_canberra_today_and_current_jobs_follow_canberra_midnight(monkeypatch):
+    utc_instant = datetime(2026, 9, 14, 14, 30, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is not None
+            return utc_instant.astimezone(tz)
+
+    monkeypatch.setattr(job_queries, "datetime", FixedDateTime)
+    assert job_queries.canberra_today() == date(2026, 9, 15)
+
+    closing_today = make_job("1", closing_date="2026-09-15")
+    closed_yesterday = make_job("2", closing_date="2026-09-14")
+    client = TestClient(
+        create_app(CourseProgramRepository([closing_today, closed_yesterday]))
+    )
+
+    response = client.get("/api/v1/jobs/current?limit=20")
+
+    assert response.status_code == 200
+    assert [item["job_id"] for item in response.json()["items"]] == ["1"]
 
 
 def test_status_null_without_deadline_is_never_promoted_to_current():
