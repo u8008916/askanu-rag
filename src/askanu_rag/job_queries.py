@@ -30,7 +30,8 @@ LIST_REQUEST_PATTERN = re.compile(
 )
 JOB_WORD_PATTERN = re.compile(r"\b(?:jobs?|roles?)\b", re.IGNORECASE)
 CURRENT_WORD_PATTERN = re.compile(
-    r"\b(?:current|currently|open|closing soon|fixed[-\s]term)\b", re.IGNORECASE
+    r"\b(?:current|currently|open|available|closing soon|fixed[-\s]term)\b",
+    re.IGNORECASE,
 )
 FIXED_TERM_PATTERN = re.compile(r"\bfixed[-\s]term\b", re.IGNORECASE)
 ROLE_REFERENCE_PATTERN = re.compile(r"\b(?:this|that)\s+(?:job|role)\b", re.I)

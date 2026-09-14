@@ -2,6 +2,7 @@
 
 import hashlib
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,9 +13,13 @@ from askanu_rag.models import AskResponse, CommonRecord, JobMetadata, JobRecord
 from askanu_rag.retrieval import (
     CourseProgramRepository,
     UnavailableCourseProgramRepository,
+    load_common_records,
 )
 
 TODAY = date(2026, 9, 14)
+SCHOLARSHIP_FIXTURE = (
+    Path(__file__).parents[1] / "fixtures/day9_scholarship_records.json"
+)
 
 
 def make_job(
@@ -301,6 +306,26 @@ def test_chat_current_fixed_term_and_index_states_are_deterministic():
         str(pending.canonical_url),
         str(failed.canonical_url),
     ]
+
+
+def test_pending_scholarship_scope_releases_explicit_jobs_with_filter_words():
+    job = make_job("123456")
+    repo = CourseProgramRepository(
+        (*load_common_records(SCHOLARSHIP_FIXTURE), job)
+    )
+    broad = ask(repo, "What scholarships can I apply for?")
+
+    body = ask(
+        repo,
+        "What jobs are available for international undergraduate students?",
+        pending=broad["clarification"],
+    )
+
+    assert broad["clarification"]["id"] == "clar-scholarship-scope"
+    assert body["status"] == "ok"
+    assert [source["record_id"] for source in body["sources"]] == [job.record_id]
+    assert body["items"][0]["job_id"] == job.entity_id
+    assert "eligible" not in body["answer"].casefold()
 
 
 def test_chat_numeric_id_exact_title_and_current_status_use_fresh_records():

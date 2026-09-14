@@ -102,8 +102,10 @@ broad Jobs read and uses no Gemini/vector dependency.
 - Duplicate exact titles return `needs_clarification`; options use Job ID and
   available stored location/classification. A selection is revalidated and
   retrieved from current repository evidence.
-- Current/open/closing-soon/fixed-term list questions use the deterministic
-  Current Jobs query.
+- Current/open/available/closing-soon/fixed-term list questions use the
+  deterministic Current Jobs query. An explicit Jobs message takes precedence
+  over stale pending Scholarship scope even when it also contains Scholarship
+  filter wording; that context is not treated as a Jobs suitability filter.
 - “this role” can inherit only a constrained Job ID from bounded current-session
   history; all facts and URLs are freshly retrieved.
 - Closed, unknown-status or date-expired records are never described as current.
@@ -155,14 +157,14 @@ No other Jobs v1 contract decision is reopened.
 
 ## Local verification
 
-- Focused Jobs model/retrieval/API and migration suite: `40 passed`.
-- Focused Courses, Scholarships, conversation and Day 9 read-only-view
-  regression suite: `108 passed`.
-- Full suite: `442 passed, 59 skipped` from 501 collected tests. One skip is the
+- Focused Jobs model/retrieval/API and migration suite: `41 passed`.
+- Final Day 9 Scholarship suite: `76 passed`; explicit COMP1110 regression:
+  `1 passed`; focused cross-domain routing suite: `8 passed`.
+- Full suite: `456 passed, 59 skipped` from 515 collected tests. One skip is the
   Windows symlink-privilege case; 58 are guarded PostgreSQL cases when
   `ASKANU_TEST_DATABASE_URL` is absent.
 - The complete guarded PostgreSQL module passed separately with `58 passed` on
-  a disposable PostgreSQL 12.20 instance bound only to `127.0.0.1:55442`.
+  a disposable PostgreSQL 12.20 instance bound only to `127.0.0.1:55443`.
   It covered actual `0004` upgrade/downgrade, strict Job constraints, SQL
   filter/order/limit, numeric ID ordering, endpoint/chat reads, downgrade
   refusal and the unchanged structurally read-only Courses view. The instance
