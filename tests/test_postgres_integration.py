@@ -2,7 +2,7 @@
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -25,6 +25,7 @@ from test_postgres_repository import (
     make_record,
     make_scholarship,
 )
+from test_jobs import make_job
 
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
 ROOT = Path(__file__).parents[1]
@@ -317,14 +318,19 @@ def test_view_migration_round_trip_preserves_schema_data_and_legacy_reads(monkey
     alembic_config = Config(ROOT / "alembic.ini")
 
     with psycopg.connect(database_url) as connection:
-        before = _compatibility_snapshot(connection)
+        head_before = _compatibility_snapshot(connection)
         assert _view_update_flags(connection) == ("NO", "NO")
 
-    command.downgrade(alembic_config, "20260913_0002")
+    command.downgrade(alembic_config, "20260914_0003")
     try:
         with psycopg.connect(database_url) as connection:
+            view_before = _compatibility_snapshot(connection)
+            assert _view_update_flags(connection) == ("NO", "NO")
+
+        command.downgrade(alembic_config, "20260913_0002")
+        with psycopg.connect(database_url) as connection:
             assert _view_update_flags(connection) == ("YES", "YES")
-            assert _compatibility_snapshot(connection) == before
+            assert _compatibility_snapshot(connection) == view_before
             assert connection.execute(
                 "SELECT count(*) FROM course_program_records WHERE domain <> 'courses'"
             ).fetchone()[0] == 0
@@ -333,7 +339,7 @@ def test_view_migration_round_trip_preserves_schema_data_and_legacy_reads(monkey
 
     with psycopg.connect(database_url) as connection:
         assert _view_update_flags(connection) == ("NO", "NO")
-        assert _compatibility_snapshot(connection) == before
+        assert _compatibility_snapshot(connection) == head_before
 
 
 def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
@@ -346,10 +352,157 @@ def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
     with psycopg.connect(database_url) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20260914_0003"
+        ).fetchone()[0] == "20260914_0004"
         assert connection.execute(
             "SELECT count(*) FROM source_records WHERE domain = 'scholarships'"
         ).fetchone()[0] == 1
+
+
+def test_real_jobs_repository_filter_order_limit_exact_lookup_and_endpoint():
+    database_url = _local_test_url()
+    config = DatabaseConnectionConfig.from_settings(
+        Settings(database_url=SecretStr(database_url))
+    )
+    jobs = (
+        make_job(
+            "10",
+            title="Same date ten",
+            closing_date="2026-09-20",
+            closing_at="2026-09-20T23:55:00+10:00",
+        ),
+        make_job("9", title="Same date nine", closing_date="2026-09-20"),
+        make_job("2", title="Undated current", closing_date=None),
+        make_job("7", title="Closing today", closing_date="2026-09-14"),
+        make_job("3", title="Expired", closing_date="2026-09-13"),
+        make_job("4", title="Closed", status="closed", closing_date="2026-09-30"),
+        make_job("5", title="Unknown", status=None, closing_date=None),
+    )
+    try:
+        with psycopg.connect(database_url) as connection:
+            connection.execute("DELETE FROM source_records WHERE domain = 'jobs'")
+            for job in jobs:
+                _insert_record(connection, job)
+
+        repository = PostgresCourseProgramRepository(config.connect)
+        assert repository.find_job_by_entity_id("9") == jobs[1]
+        assert repository.find_jobs_by_title("  SAME   date NINE ") == (jobs[1],)
+        assert [
+            record.entity_id
+            for record in repository.current_jobs(20, date(2026, 9, 14))
+        ] == ["7", "9", "10", "2"]
+        assert [
+            record.entity_id
+            for record in repository.current_jobs(2, date(2026, 9, 14))
+        ] == ["7", "9"]
+
+        with TestClient(
+            create_app(repository, jobs_today_provider=lambda: date(2026, 9, 14))
+        ) as client:
+            response = client.get("/api/v1/jobs/current?limit=3")
+            chat = client.post(
+                "/api/v1/ask",
+                json=ask_payload("Tell me about job 9"),
+            )
+        assert response.status_code == 200
+        assert [item["job_id"] for item in response.json()["items"]] == [
+            "7", "9", "10"
+        ]
+        assert chat.status_code == 200
+        assert chat.json()["sources"][0]["url"] == str(jobs[1].canonical_url)
+    finally:
+        with psycopg.connect(database_url) as connection:
+            connection.execute("DELETE FROM source_records WHERE domain = 'jobs'")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("extra", "not-approved"),
+        ("job_id", "different"),
+        ("status", "open"),
+        ("closing_date", "2026-02-30"),
+        ("closing_at", "2026-09-27T23:55:00"),
+        ("employment_types", ["Fixed Term", 7]),
+    ],
+)
+def test_database_rejects_jobs_metadata_outside_frozen_contract(field, value):
+    database_url = _local_test_url()
+    job = make_job()
+    values = _record_values(job)
+    metadata = job.metadata_json.model_dump(mode="python")
+    metadata[field] = value
+    values["metadata_json"] = Jsonb(metadata)
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises((psycopg.errors.CheckViolation, psycopg.DataError)):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "canonical_url",
+    [
+        "http://jobs.anu.edu.au/jobs/test-role",
+        "https://jobs.anu.edu.au/jobs/test-role/",
+        "https://jobs.anu.edu.au/jobs/test/role",
+        "https://jobs.anu.edu.au/jobs/test-role?ref=search",
+        "https://jobs.anu.edu.au/jobs/test-role#details",
+        "https://jobs.anu.edu.au/me",
+    ],
+)
+def test_database_rejects_noncanonical_job_url(canonical_url):
+    database_url = _local_test_url()
+    values = _record_values(make_job())
+    values["canonical_url"] = canonical_url
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_id", "not-numeric"),
+        ("record_id", "jobs:job:different"),
+        ("effective_from", datetime(2026, 9, 14, tzinfo=timezone.utc)),
+        ("effective_to", datetime(2026, 9, 14, tzinfo=timezone.utc)),
+    ],
+)
+def test_database_rejects_jobs_identity_and_effective_date_mismatches(field, value):
+    database_url = _local_test_url()
+    values = _record_values(make_job())
+    values[field] = value
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+def test_jobs_downgrade_refuses_without_deleting_rows(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    job = make_job("765432")
+    try:
+        with psycopg.connect(database_url) as connection:
+            _insert_record(connection, job)
+
+        with pytest.raises(DBAPIError, match="Cannot downgrade while Jobs"):
+            command.downgrade(Config(ROOT / "alembic.ini"), "20260914_0003")
+
+        with psycopg.connect(database_url) as connection:
+            assert connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()[0] == "20260914_0004"
+            assert connection.execute(
+                "SELECT count(*) FROM source_records WHERE record_id = %s",
+                (job.record_id,),
+            ).fetchone()[0] == 1
+    finally:
+        with psycopg.connect(database_url) as connection:
+            connection.execute("DELETE FROM source_records WHERE domain = 'jobs'")
 
 
 @pytest.mark.parametrize(

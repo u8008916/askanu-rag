@@ -1,6 +1,7 @@
 """PostgreSQL adapter for the existing deterministic course/program boundary."""
 
 from collections.abc import Mapping
+from datetime import date
 from typing import Any, Literal, TypeVar
 
 from askanu_rag.config import Settings
@@ -9,13 +10,22 @@ from askanu_rag.database import (
     DatabaseConnectionConfig,
     RepositoryUnavailableError,
 )
-from askanu_rag.models import CommonRecord, CourseProgramRecord, ScholarshipRecord
+from askanu_rag.models import (
+    CommonRecord,
+    CourseProgramRecord,
+    JobRecord,
+    ScholarshipRecord,
+)
 from askanu_rag.retrieval.identifiers import (
     normalize_course_code,
     normalize_program_code,
 )
-from askanu_rag.retrieval.repository import LookupResult
-from askanu_rag.retrieval.repository import ScholarshipLookupResult
+from askanu_rag.retrieval.repository import (
+    JobLookupResult,
+    LookupResult,
+    ScholarshipLookupResult,
+    normalize_job_title,
+)
 
 COURSE_PROGRAM_WHERE = """
 source_id = 'courses_programs_and_courses'
@@ -25,6 +35,11 @@ SCHOLARSHIP_WHERE = """
 source_id = 'scholarships_anu_finder'
 AND domain = 'scholarships'
 AND metadata_json ->> 'entity_type' = 'scholarship'
+"""
+JOB_WHERE = """
+source_id = 'jobs_anu_search'
+AND domain = 'jobs'
+AND metadata_json ->> 'entity_type' = 'job'
 """
 
 SELECT_COLUMNS = """
@@ -148,6 +163,69 @@ class PostgresCourseProgramRepository:
             model=ScholarshipRecord,
         )
 
+    def find_job_by_entity_id(self, entity_id: str) -> JobLookupResult:
+        records = self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE {JOB_WHERE}
+              AND entity_id = %s
+            ORDER BY record_id
+            """,
+            (entity_id.strip(),),
+            model=JobRecord,
+        )
+        return records[0] if records else None
+
+    def find_jobs_by_title(self, title: str) -> tuple[JobRecord, ...]:
+        return self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE {JOB_WHERE}
+              AND lower(regexp_replace(btrim(title), '[[:space:]]+', ' ', 'g')) = %s
+            ORDER BY entity_id::numeric
+            """,
+            (normalize_job_title(title),),
+            model=JobRecord,
+        )
+
+    def current_jobs(
+        self,
+        limit: int,
+        today: date,
+        employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        query = f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE {JOB_WHERE}
+              AND metadata_json ->> 'status' = 'current'
+              AND (
+                  metadata_json ->> 'closing_date' IS NULL
+                  OR (metadata_json ->> 'closing_date')::date >= %s
+              )
+        """
+        parameters: list[object] = [today]
+        if employment_type is not None:
+            query += " AND metadata_json -> 'employment_types' ? %s"
+            parameters.append(employment_type)
+        query += """
+            ORDER BY
+                (metadata_json ->> 'closing_date') IS NULL ASC,
+                (metadata_json ->> 'closing_date')::date ASC,
+                entity_id::numeric ASC
+            LIMIT %s
+        """
+        parameters.append(limit)
+        return self._fetch_records(
+            query,
+            tuple(parameters),
+            model=JobRecord,
+        )
+
 
 class UnavailableCourseProgramRepository:
     """Fail closed when production expects Cloud SQL but config is incomplete."""
@@ -175,4 +253,18 @@ class UnavailableCourseProgramRepository:
         self._raise()
 
     def all_scholarships(self) -> tuple[ScholarshipRecord, ...]:
+        self._raise()
+
+    def find_job_by_entity_id(self, _entity_id: str) -> JobLookupResult:
+        self._raise()
+
+    def find_jobs_by_title(self, _title: str) -> tuple[JobRecord, ...]:
+        self._raise()
+
+    def current_jobs(
+        self,
+        _limit: int,
+        _today: date,
+        _employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]:
         self._raise()

@@ -1,13 +1,14 @@
 """AskANU HTTP service with exact-first, grounded Day 4 synthesis."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import date
 import logging
 import re
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -18,6 +19,7 @@ from askanu_rag.conversation import resolve_current_session
 from askanu_rag.database import DatabaseConfigurationError, RepositoryUnavailableError
 from askanu_rag.gemini import GeminiSynthesisClient
 from askanu_rag.hybrid_queries import HybridQueryService
+from askanu_rag.job_queries import JobQueryService, canberra_today, current_job_item
 from askanu_rag.retrieval.catalog import CatalogReader
 from askanu_rag.synthesis import SynthesisClient, SynthesisError
 from askanu_rag.models import (
@@ -25,19 +27,21 @@ from askanu_rag.models import (
     AskResponse,
     Clarification,
     ClarificationOption,
+    CurrentJobsResponse,
     ErrorResponse,
     HealthResponse,
-    NeedsClarificationResponse,
     InsufficientEvidenceResponse,
+    NeedsClarificationResponse,
     OffTopicResponse,
 )
 from askanu_rag.retrieval import (
     CourseProgramReader,
-    create_default_course_program_repository,
     CourseProgramRepository,
+    JobReader,
     PostgresCourseProgramRepository,
-    UnavailableCourseProgramRepository,
     ScholarshipReader,
+    UnavailableCourseProgramRepository,
+    create_default_course_program_repository,
     load_course_program_record_file,
     load_course_program_records_directory,
 )
@@ -108,6 +112,7 @@ def create_app(
     semantic_retriever=None,
     semantic_top_k: int = 3,
     semantic_min_score: float = 0.2,
+    jobs_today_provider: Callable[[], date] | None = None,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
@@ -120,6 +125,12 @@ def create_app(
     scholarship_queries = (
         ScholarshipQueryService(repository)
         if isinstance(repository, ScholarshipReader)
+        else None
+    )
+    jobs_today_provider = jobs_today_provider or canberra_today
+    job_queries = (
+        JobQueryService(repository, jobs_today_provider)
+        if isinstance(repository, JobReader)
         else None
     )
 
@@ -193,6 +204,21 @@ def create_app(
     async def health() -> HealthResponse:
         return HealthResponse()
 
+    @app.get("/api/v1/jobs/current", response_model=CurrentJobsResponse)
+    async def current_jobs(
+        request: Request,
+        limit: int = Query(default=5, ge=1, le=20),
+    ) -> CurrentJobsResponse:
+        if job_queries is None:
+            raise RepositoryUnavailableError()
+        records = repository.current_jobs(limit, jobs_today_provider())
+        response = CurrentJobsResponse(
+            items=[current_job_item(record) for record in records],
+            request_id=_request_id(request),
+        )
+        request.state.response_status = response.status
+        return response
+
     @app.post("/api/v1/ask", response_model=AskResponse)
     async def ask(payload: AskRequest, request: Request) -> AskResponse:
         # Temporary Day 1 mock hook. It is not query-planning behaviour.
@@ -234,6 +260,16 @@ def create_app(
             resolved_question = resolution.question
         else:
             resolved_question = payload.question
+
+        if job_queries is not None:
+            job_response = await job_queries.answer(
+                resolved_question,
+                request_id,
+                payload.conversation_state.pending_clarification,
+                payload.history,
+            )
+            if job_response is not None:
+                return _mark_response(request, job_response)
 
         if scholarship_queries is not None:
             scholarship_response = await scholarship_queries.answer(

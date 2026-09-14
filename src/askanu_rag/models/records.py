@@ -23,6 +23,11 @@ SCHOLARSHIP_URL_PREFIX = (
 )
 SCHOLARSHIP_PATH_PREFIX = "/scholarships/find-scholarship/"
 SCHOLARSHIP_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+JOB_PATH_PATTERN = re.compile(r"^/jobs/[^/\s?#]+$")
+JOB_CLOSING_AT_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:[.]\d+)?)?"
+    r"(?:Z|[+-]\d{2}:\d{2})$"
+)
 
 
 class CourseMetadata(BaseModel):
@@ -91,12 +96,53 @@ class ScholarshipMetadata(BaseModel):
         return value
 
 
+class JobMetadata(BaseModel):
+    """Exact Day 10 Jobs metadata_json v1 boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entity_type: Literal["job"]
+    job_id: str = Field(pattern=r"^\d+$")
+    category: str | None
+    employment_types: list[str]
+    location: str | None
+    classification: str | None
+    salary: str | None
+    closing_text: str | None
+    closing_date: IsoDate | None
+    closing_at: str | None
+    status: Literal["current", "closed"] | None
+    summary: str | None
+
+    @field_validator("closing_date")
+    @classmethod
+    def validate_closing_date(cls, value: str | None) -> str | None:
+        if value is not None:
+            date.fromisoformat(value)
+        return value
+
+    @field_validator("closing_at")
+    @classmethod
+    def validate_closing_at(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if JOB_CLOSING_AT_PATTERN.fullmatch(value) is None:
+            raise ValueError("closing_at must use the frozen ISO-8601 shape")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("closing_at must be an ISO-8601 datetime") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("closing_at must include a timezone offset")
+        return value
+
+
 CourseProgramMetadata = Annotated[
     CourseMetadata | ProgramMetadata,
     Field(discriminator="entity_type"),
 ]
 CommonMetadata = Annotated[
-    CourseMetadata | ProgramMetadata | ScholarshipMetadata,
+    CourseMetadata | ProgramMetadata | ScholarshipMetadata | JobMetadata,
     Field(discriminator="entity_type"),
 ]
 
@@ -107,9 +153,13 @@ class CommonRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     record_id: str
-    source_id: Literal["courses_programs_and_courses", "scholarships_anu_finder"]
+    source_id: Literal[
+        "courses_programs_and_courses",
+        "scholarships_anu_finder",
+        "jobs_anu_search",
+    ]
     entity_id: str
-    domain: Literal["courses", "scholarships"]
+    domain: Literal["courses", "scholarships", "jobs"]
     title: str
     content: str = Field(min_length=1)
     canonical_url: HttpUrl
@@ -125,7 +175,7 @@ class CommonRecord(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def validate_raw_scholarship_url_boundary(cls, values: object) -> object:
+    def validate_raw_domain_url_boundary(cls, values: object) -> object:
         if not isinstance(values, dict):
             return values
         metadata = values.get("metadata_json")
@@ -134,14 +184,26 @@ class CommonRecord(BaseModel):
             if isinstance(metadata, dict)
             else getattr(metadata, "entity_type", None)
         )
-        if entity_type != "scholarship":
-            return values
-        entity_id = values.get("entity_id")
-        canonical_url = values.get("canonical_url")
-        if not isinstance(entity_id, str) or str(canonical_url) != (
-            f"{SCHOLARSHIP_URL_PREFIX}{entity_id}"
-        ):
-            raise ValueError("Scholarship canonical_url must use the exact boundary")
+        canonical_url = str(values.get("canonical_url"))
+        if entity_type == "scholarship":
+            entity_id = values.get("entity_id")
+            if not isinstance(entity_id, str) or canonical_url != (
+                f"{SCHOLARSHIP_URL_PREFIX}{entity_id}"
+            ):
+                raise ValueError(
+                    "Scholarship canonical_url must use the exact boundary"
+                )
+        elif entity_type == "job":
+            parsed = urlsplit(canonical_url)
+            if (
+                parsed.scheme != "https"
+                or parsed.netloc != "jobs.anu.edu.au"
+                or parsed.query
+                or parsed.fragment
+                or JOB_PATH_PATTERN.fullmatch(parsed.path) is None
+                or canonical_url != f"https://jobs.anu.edu.au{parsed.path}"
+            ):
+                raise ValueError("Job canonical_url must use the exact boundary")
         return values
 
     @field_validator(
@@ -171,7 +233,7 @@ class CommonRecord(BaseModel):
             expected_domain = "courses"
             entity_type = "program"
             expected_entity_id = f"{metadata.program_code}_{metadata.academic_year}"
-        else:
+        elif isinstance(metadata, ScholarshipMetadata):
             expected_source = "scholarships_anu_finder"
             expected_domain = "scholarships"
             entity_type = "scholarship"
@@ -180,6 +242,13 @@ class CommonRecord(BaseModel):
                 raise ValueError(
                     "Scholarship effective_from/effective_to must be null"
                 )
+        else:
+            expected_source = "jobs_anu_search"
+            expected_domain = "jobs"
+            entity_type = "job"
+            expected_entity_id = metadata.job_id
+            if self.effective_from is not None or self.effective_to is not None:
+                raise ValueError("Job effective_from/effective_to must be null")
 
         if self.source_id != expected_source or self.domain != expected_domain:
             raise ValueError("source_id/domain do not match metadata entity_type")
@@ -222,3 +291,11 @@ class ScholarshipRecord(CommonRecord):
     source_id: Literal["scholarships_anu_finder"]
     domain: Literal["scholarships"]
     metadata_json: ScholarshipMetadata
+
+
+class JobRecord(CommonRecord):
+    """Day 10 Job view of a shared record."""
+
+    source_id: Literal["jobs_anu_search"]
+    domain: Literal["jobs"]
+    metadata_json: JobMetadata

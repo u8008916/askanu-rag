@@ -4,7 +4,7 @@ Shared Scraper -> storage/DB -> RAG normalized record contract.
 
 ## Schema version
 
-**Courses/Programs schema v1**
+**Shared normalized record schema v1**
 
 Frozen for the first AskANU Courses/Programs vertical slice on 2026-09-06.
 
@@ -944,11 +944,11 @@ constant prefix plus `entity_id`, and compares the final path segment to
 `entity_id` using literal equality. Record data is never concatenated into a
 regular-expression pattern.
 
-`course_program_records` is a legacy read-compatibility view by usage contract,
-not a second authoritative store or an approved upsert target. Ordinary
-PostgreSQL views may be automatically updatable; this migration does not add
-permission/trigger enforcement. Exact old-RAG, new-RAG and scraper live-role
-permissions must be verified before migration rollout.
+`course_program_records` is a legacy read-compatibility view, not a second
+authoritative store or an approved upsert target. Revision `20260914_0003`
+recreates it with a semantics-neutral top-level `OFFSET 0`, so PostgreSQL
+classifies it as structurally non-updatable. Exact old-RAG, new-RAG and scraper
+live-role permissions must still be verified before migration rollout.
 
 ## Scholarship metadata_json v1
 
@@ -1017,3 +1017,53 @@ live migration/deployment ordering.
 
 A partially committed successful batch is invalid. The writer implementation
 remains in the scraper repository.
+
+---
+
+# Day 10 Jobs normalized contract v1
+
+Revision `20260914_0004` extends the shared `source_records` table without
+adding or changing any of its 16 top-level fields. The approved Jobs identity is:
+
+```text
+domain    = jobs
+source_id = jobs_anu_search
+entity_type = job
+entity_id = <digits-only ANU requisition/job ID as a string>
+record_id = jobs:job:<entity_id>
+metadata_json.job_id = entity_id
+```
+
+The public canonical URL is exactly `https://jobs.anu.edu.au/jobs/<slug>` with
+one non-empty final slug, no trailing slash, query, fragment, port, alternate
+host or extra path component. The slug is not the numeric job identity and RAG
+never derives one from the other.
+
+Jobs metadata has exactly these 12 keys:
+
+| Key | Serialized type | Missing value |
+|---|---|---|
+| `entity_type` | literal `job` | invalid |
+| `job_id` | digits-only string equal to `entity_id` | invalid |
+| `category` | string | `null` |
+| `employment_types` | array of strings | `[]` |
+| `location` | string | `null` |
+| `classification` | string | `null` |
+| `salary` | source wording string | `null` |
+| `closing_text` | source wording string | `null` |
+| `closing_date` | real ISO `YYYY-MM-DD` Canberra-local date | `null` |
+| `closing_at` | timezone-aware ISO-8601 datetime string | `null` |
+| `status` | `current`, `closed` or `null` | `null` |
+| `summary` | source/listing summary string | `null` |
+
+Unknown metadata keys are invalid. Fixed-term is represented only by stored
+`employment_types` wording and never determines currentness. Jobs top-level
+`effective_from` and `effective_to` are null. No opening/posting/start date is
+part of v1, and ingestion timestamps must not be reinterpreted as one.
+
+RAG includes a Job in Current Jobs only when metadata status is `current` and
+`closing_date` is null or on/after the Canberra evaluation date. It excludes
+`closed`, null status and past dates. It orders dated records by closing date and
+numeric entity ID, followed by undated records by numeric entity ID. This is
+deterministic relational retrieval and does not depend on `index_status`, Gemini
+or vector search.
