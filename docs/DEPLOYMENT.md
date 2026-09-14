@@ -396,33 +396,46 @@ Cloud Run, whose dedicated runtime identity invokes the private RAG service.
 
 ## Day 9 Scholarships migration contract (local only)
 
-Revision `20260913_0002` is a new revision after the already deployed
-`20260911_0001`; the deployed Day 7 file is not edited. It renames the existing
+Revision `20260913_0002` is followed by the narrow compatibility-view revision
+`20260914_0003`; neither it nor the already deployed `20260911_0001` is edited.
+Revision `0002` renames the existing
 physical table in place to writable `source_records`, widens only the approved
 source/domain and metadata constraints, preserves the course/program partial
 unique identity, adds Scholarship URL-slug identity, and creates the
 `course_program_records` Courses/Programs compatibility read view. It copies or
 deletes no rows. Downgrade refuses to proceed while Scholarship rows exist.
 
+Revision `0003` drops and recreates only `course_program_records` with the exact
+same 16 columns and Courses source/domain filter, adding a top-level `OFFSET 0`
+so PostgreSQL classifies the view as structurally non-updatable. It changes no
+table, row, constraint, index, API field, projected column or Scholarship
+contract. Its downgrade restores the exact prior simple-view definition from
+`0002`.
+
 Cloud SQL mutation still requires Qasim's operational approval. The safe live
-order is: merge and build the exact reviewed SHA; migrate Cloud SQL to
-`20260913_0002`; deploy the compatible RAG revision; regress Courses/Programs;
+order is: merge and build the exact reviewed SHA; migrate Cloud SQL through
+`20260913_0002` to `20260914_0003`; deploy the compatible RAG revision; regress
+Courses/Programs;
 verify Scholarship reads; then update/deploy Will's adapter to write
 `source_records` and enable only a controlled bounded proof. The old deployed
 RAG can continue Courses/Programs reads through the compatibility view after the
 migration; the new RAG must not deploy before the migration because it reads
 `source_records`. The compatibility view is not the approved upsert target.
 
-The view is read-only by usage intent only: this migration does not add grants,
-revokes or triggers, and ordinary PostgreSQL views can be automatically
-updatable. Before migration, Qasim must verify the actual live roles and record
-evidence that:
+Qasim's PostgreSQL 18 live check found the `0002` simple view reported
+`is_updatable = YES` and `is_insertable_into = YES`; `0003` corrects that
+structurally without adding grants, revokes or triggers. Before migration,
+Qasim must verify the actual live roles and record evidence that:
 
-1. the old RAG role can `SELECT` `course_program_records`;
-2. intended runtime roles cannot write through that compatibility view;
-3. the new RAG role can `SELECT` `source_records`;
-4. the scraper writer role can write `source_records`; and
-5. the existing COMP1110 path works under those exact permissions.
+1. `course_program_records` reports `is_updatable = NO` and
+   `is_insertable_into = NO`;
+2. the old RAG role can `SELECT` `course_program_records`;
+3. `INSERT` and `UPDATE` through that view fail under the intended runtime
+   roles, so structural protection and grants are both tested;
+4. the new RAG role can `SELECT` `source_records`;
+5. the scraper writer role can write `source_records`; and
+6. the existing COMP1110 path and stored values, hashes, timestamps and index
+   state are unchanged under those exact permissions.
 
 PostgreSQL 18 execution must also confirm the exact
 `https://study.anu.edu.au/scholarships/find-scholarship/<slug>` boundary, the

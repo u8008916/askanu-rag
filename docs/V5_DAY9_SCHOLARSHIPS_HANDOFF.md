@@ -2,13 +2,17 @@
 
 Date: 13 September 2026
 
+Read-only compatibility follow-up date: 14 September 2026
+
 Branch: `carmen/day-9-scholarships-rag`
+
+Read-only compatibility follow-up branch: `carmen/day-9-readonly-compat-view`
 
 Starting SHA: `13fc637`
 
 Final contract-alignment follow-up base SHA: `718317b8e52ca4c51e5cae14538d52eb41925fc9`
 
-Candidate migration: `20260913_0002` after deployed `20260911_0001`
+Candidate migration path: `20260911_0001 -> 20260913_0002 -> 20260914_0003`
 
 This is a local implementation candidate. It records Qasim's final contract
 alignment approval relayed after Will's cross-repository review. It does not claim a live
@@ -31,8 +35,8 @@ and the release sequence remain live integration gates.
 
 ### 2. Migration path, constraints, and downgrade
 
-The exact path is `20260911_0001 -> 20260913_0002`. The deployed `0001` file is
-unchanged. The new revision:
+The exact path is `20260911_0001 -> 20260913_0002 -> 20260914_0003`. The
+deployed `0001` and reviewed `0002` files are unchanged. Revision `0002`:
 
 - renames `course_program_records` to `source_records`;
 - retains and renames the primary key, required-text, lifecycle-status,
@@ -46,6 +50,13 @@ unchanged. The new revision:
 - adds the exact 13-key Scholarship metadata checks, exact canonical URL and
   slug-grammar identity checks, and the Scholarship null effective-date check; and
 - leaves `ingestion_runs` unchanged.
+
+Revision `0003` drops and recreates only the `course_program_records` view. It
+adds a top-level `OFFSET 0`, which preserves the exact 16-column projection,
+Courses source/domain filter, rows and values while making the view structurally
+non-updatable in PostgreSQL. Its downgrade recreates the exact prior `0002`
+simple-view definition. It changes no table, constraint, index, row or shared
+data/API contract.
 
 The Scholarship boundary is exactly
 `https://study.anu.edu.au/scholarships/find-scholarship/<slug>`, where `<slug>`
@@ -95,11 +106,13 @@ exact lookup, prerequisites, explicit years, multi-year ambiguity and stored
 source URL behavior. Course re-ingestion is not required merely because of the
 table generalisation.
 
-The view exists for read compatibility by contract. An ordinary PostgreSQL
-single-table view may be automatically updatable, so read-only behavior is not
-currently enforced by this migration. No current RAG path writes the view.
-The exact live-role `SELECT`/write permissions are a mandatory pre-migration
-gate. Old-runtime access also depends on verified view grants.
+The view exists for read compatibility by contract. Qasim's PostgreSQL 18 live
+check found the `0002` simple view reported `is_updatable = YES` and
+`is_insertable_into = YES`. Follow-up revision `0003` makes it structurally
+non-updatable while preserving the same legacy reads; `source_records` remains
+the sole approved write target. Structural protection does not replace the
+mandatory exact live-role `SELECT` and write-permission checks. Old-runtime
+access also depends on verified view grants.
 
 ### 5. Persisted RAG model structure
 
@@ -334,10 +347,12 @@ invoke Gemini.
 
 1. Carmen/Qasim review and merge the RAG/schema PR.
 2. Build an image from the exact merged SHA and record its digest.
-3. Apply `20260913_0002` to dev PostgreSQL 18 Cloud SQL.
-4. Before relying on compatibility, verify the exact live roles: old RAG can
-   `SELECT` the view, intended roles cannot write the view, new RAG can `SELECT`
-   `source_records`, and the scraper writer can write `source_records`.
+3. Apply `20260913_0002` and then `20260914_0003` to dev PostgreSQL 18 Cloud SQL.
+4. Before relying on compatibility, verify the view reports
+   `is_updatable = NO` and `is_insertable_into = NO`; prove `INSERT` and
+   `UPDATE` through it fail; and verify the exact live roles: old RAG can
+   `SELECT` the view, intended roles cannot write the view, new RAG can
+   `SELECT` `source_records`, and the scraper writer can write `source_records`.
 5. Deploy the compatible RAG revision; do not deploy it before the migration
    because it reads `source_records`.
 6. Regress existing Courses/Programs paths, including COMP1110 under those
@@ -364,8 +379,9 @@ No step above has been executed by Carmen in this task.
 
 All rollback choices involving live data or runtime access require Qasim
 operational approval. Before live work, verify PostgreSQL 18 migration behavior,
-view privileges, row counts/hashes, exact Courses behavior, downgrade guard and
-the exact image SHA/digest. PostgreSQL 12.20 evidence is supplementary only.
+view flags and rejected writes, view privileges, unchanged row counts/hashes/
+timestamps/index state, exact COMP1110 behavior, downgrade guard and the exact
+image SHA/digest. PostgreSQL 12.20 evidence is supplementary only.
 
 ## Future carry-over
 
@@ -382,17 +398,18 @@ the exact image SHA/digest. PostgreSQL 12.20 evidence is supplementary only.
   equality and null Scholarship effective dates. Static, model and guarded
   database tests cover wrong hosts/paths, extra components, queries, fragments,
   trailing slashes, malformed slugs and regex metacharacters.
-- Focused migration/model/repository/lifecycle/conversation/Courses/Scholarship
-  contract suite: `81 passed`.
-- Full suite: `397 passed, 39 skipped` from 436 collected tests. One skip is the
-  Windows symlink-privilege case; 38 are the guarded local PostgreSQL cases when
+- Focused Day 9 migration and structurally read-only compatibility-view suite:
+  `11 passed`.
+- Full suite: `401 passed, 41 skipped` from 442 collected tests. One skip is the
+  Windows symlink-privilege case; 40 are the guarded local PostgreSQL cases when
   `ASKANU_TEST_DATABASE_URL` is absent.
 - The complete guarded PostgreSQL integration module passed separately with
-  `38 passed` on a disposable PostgreSQL 12.20 instance bound only to
-  `127.0.0.1:55438`. This includes the exact URL/slug/effective-date checks,
-  literal mismatch and metacharacter rejection, compatibility view,
-  guarded downgrade refusal, Scholarship round-trip and existing COMP1110/API
-  behavior. The instance was stopped and removed.
+  `40 passed` on a disposable PostgreSQL 12.20 instance bound only to
+  `127.0.0.1:55439`. This includes `NO`/`NO` view-update flags, rejected
+  `INSERT`/`UPDATE`, the exact 16-column/filter contract, an unchanged
+  `0003 -> 0002 -> 0003` round trip, guarded Scholarship downgrade refusal,
+  Scholarship round-trip and existing COMP1110/API behavior. The instance was
+  stopped and removed.
 - `python -m pip check`, `python -m compileall -q src tests migrations`, Alembic
   single-head and offline SQL generation, and `git diff --check` passed.
 - PostgreSQL 18 and a Day 9 container/image smoke remain pending in Qasim's
