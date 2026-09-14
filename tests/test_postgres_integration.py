@@ -31,6 +31,12 @@ ROOT = Path(__file__).parents[1]
 SCHOLARSHIP_URL_PREFIX = (
     "https://study.anu.edu.au/scholarships/find-scholarship/"
 )
+COMPATIBILITY_VIEW_COLUMNS = (
+    "record_id", "source_id", "entity_id", "domain", "title", "content",
+    "canonical_url", "status", "effective_from", "effective_to",
+    "collected_at", "last_seen_at", "content_hash", "embedding_version",
+    "index_status", "metadata_json",
+)
 
 
 def _local_test_url() -> str:
@@ -78,6 +84,54 @@ def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
         _record_values(record),
         ignore_conflict=ignore_conflict,
     )
+
+
+def _compatibility_snapshot(connection) -> tuple[object, ...]:
+    source_count = connection.execute(
+        "SELECT count(*) FROM source_records"
+    ).fetchone()[0]
+    persisted_records = tuple(
+        connection.execute(
+            """
+            SELECT record_id, canonical_url, content_hash, collected_at,
+                   last_seen_at, index_status, embedding_version
+            FROM source_records
+            ORDER BY record_id
+            """
+        ).fetchall()
+    )
+    source_columns = tuple(
+        connection.execute(
+            """
+            SELECT column_name, data_type, udt_name, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'source_records'
+            ORDER BY ordinal_position
+            """
+        ).fetchall()
+    )
+    source_constraints = tuple(
+        connection.execute(
+            """
+            SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+            WHERE conrelid = 'public.source_records'::regclass
+            ORDER BY conname
+            """
+        ).fetchall()
+    )
+    return source_count, persisted_records, source_columns, source_constraints
+
+
+def _view_update_flags(connection) -> tuple[str, str]:
+    return connection.execute(
+        """
+        SELECT is_updatable, is_insertable_into
+        FROM information_schema.views
+        WHERE table_schema = 'public'
+          AND table_name = 'course_program_records'
+        """
+    ).fetchone()
 
 
 def test_real_local_migration_repository_and_api_path(caplog):
@@ -192,6 +246,96 @@ def test_real_local_migration_repository_and_api_path(caplog):
     assert repository.all_scholarships() == (scholarship,)
 
 
+def test_compatibility_view_is_structurally_read_only_but_selectable():
+    database_url = _local_test_url()
+
+    with psycopg.connect(database_url) as connection:
+        objects = dict(
+            connection.execute(
+                """
+                SELECT table_name, table_type
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name IN (
+                      'source_records', 'course_program_records', 'ingestion_runs'
+                  )
+                """
+            ).fetchall()
+        )
+        columns = tuple(
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'course_program_records'
+                ORDER BY ordinal_position
+                """
+            ).fetchall()
+        )
+        assert objects == {
+            "source_records": "BASE TABLE",
+            "course_program_records": "VIEW",
+            "ingestion_runs": "BASE TABLE",
+        }
+        assert columns == COMPATIBILITY_VIEW_COLUMNS
+        assert _view_update_flags(connection) == ("NO", "NO")
+        assert connection.execute(
+            "SELECT count(*) FROM course_program_records"
+        ).fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT count(*) FROM course_program_records WHERE domain <> 'courses'"
+        ).fetchone()[0] == 0
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
+            connection.execute(
+                """
+                INSERT INTO course_program_records
+                SELECT * FROM course_program_records
+                WHERE record_id = 'courses:course:COMP1110_2026'
+                """
+            )
+        connection.rollback()
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
+            connection.execute(
+                """
+                UPDATE course_program_records
+                SET title = title
+                WHERE record_id = 'courses:course:COMP1110_2026'
+                """
+            )
+        connection.rollback()
+
+
+def test_view_migration_round_trip_preserves_schema_data_and_legacy_reads(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    alembic_config = Config(ROOT / "alembic.ini")
+
+    with psycopg.connect(database_url) as connection:
+        before = _compatibility_snapshot(connection)
+        assert _view_update_flags(connection) == ("NO", "NO")
+
+    command.downgrade(alembic_config, "20260913_0002")
+    try:
+        with psycopg.connect(database_url) as connection:
+            assert _view_update_flags(connection) == ("YES", "YES")
+            assert _compatibility_snapshot(connection) == before
+            assert connection.execute(
+                "SELECT count(*) FROM course_program_records WHERE domain <> 'courses'"
+            ).fetchone()[0] == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    with psycopg.connect(database_url) as connection:
+        assert _view_update_flags(connection) == ("NO", "NO")
+        assert _compatibility_snapshot(connection) == before
+
+
 def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
     database_url = _local_test_url()
     monkeypatch.setenv("DATABASE_URL", database_url)
@@ -202,7 +346,7 @@ def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
     with psycopg.connect(database_url) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20260913_0002"
+        ).fetchone()[0] == "20260914_0003"
         assert connection.execute(
             "SELECT count(*) FROM source_records WHERE domain = 'scholarships'"
         ).fetchone()[0] == 1
