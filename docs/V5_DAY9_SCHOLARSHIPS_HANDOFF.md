@@ -4,7 +4,16 @@ Date: 13 September 2026
 
 Read-only compatibility follow-up date: 14 September 2026
 
-Branch: `carmen/day-9-scholarships-rag`
+Clarification-refinement follow-up date: 14 September 2026
+
+Current cleanup branch:
+`carmen/day-9-scholarship-clarification-refinement-clean`
+
+Current deployed main SHA: `1576c61935da9f303a3d6ef0aa16ebee52f0045e`
+
+Current live Alembic revision: `20260914_0003`
+
+Original implementation branch: `carmen/day-9-scholarships-rag`
 
 Read-only compatibility follow-up branch: `carmen/day-9-readonly-compat-view`
 
@@ -12,31 +21,53 @@ Starting SHA: `13fc637`
 
 Final contract-alignment follow-up base SHA: `718317b8e52ca4c51e5cae14538d52eb41925fc9`
 
-Candidate migration path: `20260911_0001 -> 20260913_0002 -> 20260914_0003`
+Deployed migration path: `20260911_0001 -> 20260913_0002 -> 20260914_0003`
 
-This is a local implementation candidate. It records Qasim's final contract
-alignment approval relayed after Will's cross-repository review. It does not claim a live
-Cloud SQL migration, a production write, deployment, IAM/secret/Scheduler work,
-or write-gate enablement. Physical naming, live permissions, migration execution,
-and the release sequence remain live integration gates.
+This handoff preserves the original local implementation evidence and records
+the later live acceptance state reported by Qasim. Carmen did not perform the
+Qasim-owned migration, deployment or live acceptance operations in this
+clarification follow-up. Shared migration `0002`, read-only follow-up `0003`,
+the RAG runtime path and the bounded Scholarship scraper acceptance have now
+completed. The only remaining Day 9 RAG acceptance gap is natural-language
+refinement after `clar-scholarship-scope`; this branch contains that RAG-only
+behavior fix and requires no migration, database mutation or scraper run.
+
+## Current live acceptance state — Qasim-reported
+
+- Alembic is current at `20260914_0003`; shared migration `0002` and the
+  read-only compatibility follow-up `0003` are deployed.
+- `course_program_records` is structurally read-only with
+  `is_updatable = NO` and `is_insertable_into = NO`; the `source_records`
+  runtime path and COMP1110 regression are verified.
+- The bounded scraper stored 8 real Scholarship rows: the first run produced
+  8 `NEW`, and the identical second run produced 8 `UNCHANGED`.
+- `collected_at` and content hashes were preserved while `last_seen_at`
+  advanced on the successful repeat observation.
+- A simulated listing/fetch failure recorded the run as `FAILED` and preserved
+  all last-known-good Scholarship rows.
+- Deployed RAG main SHA `1576c61` passed exact Scholarship lookup, broad
+  Scholarship clarification, explicit option selection, missing-eligibility
+  abstention and official persisted-source provenance checks.
+- Natural-language refinement of `clar-scholarship-scope` is the sole remaining
+  Day 9 RAG acceptance gap before this clean follow-up is merged and deployed.
 
 ## Qasim implementation handoff — 20 explicit items
 
 ### 1. Table strategy
 
-- Proposed canonical writable object: physical table `source_records`.
+- Canonical writable object: physical table `source_records`.
 - Compatibility object: `course_program_records`, a Courses/Programs-only view
   for legacy reads.
 - Revision `20260913_0002` renames the deployed table in place; it does not
   create a second record table or copy rows.
 - There is one authoritative physical record store. The compatibility view is
   not a second authority and is not the approved write/upsert target.
-- Final naming still requires Qasim approval.
+- The physical naming and runtime path are approved and live.
 
 ### 2. Migration path, constraints, and downgrade
 
 The exact path is `20260911_0001 -> 20260913_0002 -> 20260914_0003`. The
-deployed `0001` and reviewed `0002` files are unchanged. Revision `0002`:
+deployed `0001`, `0002` and `0003` files remain unchanged. Revision `0002`:
 
 - renames `course_program_records` to `source_records`;
 - retains and renames the primary key, required-text, lifecycle-status,
@@ -107,12 +138,12 @@ source URL behavior. Course re-ingestion is not required merely because of the
 table generalisation.
 
 The view exists for read compatibility by contract. Qasim's PostgreSQL 18 live
-check found the `0002` simple view reported `is_updatable = YES` and
-`is_insertable_into = YES`. Follow-up revision `0003` makes it structurally
-non-updatable while preserving the same legacy reads; `source_records` remains
-the sole approved write target. Structural protection does not replace the
-mandatory exact live-role `SELECT` and write-permission checks. Old-runtime
-access also depends on verified view grants.
+check found the earlier `0002` simple view reported `is_updatable = YES` and
+`is_insertable_into = YES`; follow-up revision `0003` was then deployed and
+verified with both values equal to `NO`. It preserves the same legacy reads,
+while `source_records` remains the sole approved write target. The live runtime
+path, view behavior and COMP1110 regression have been verified under the
+intended access boundary.
 
 ### 5. Persisted RAG model structure
 
@@ -268,14 +299,17 @@ update fails. For an unknown outcome, blind duplicate writes are forbidden.
 
 ### 14. Idempotency and timestamp policy
 
-Required live integration proof:
+Qasim-reported live integration evidence now satisfies this proof: the first
+bounded run stored 8 new logical Scholarship records as `NEW`; the identical
+second run kept the same 8 logical records as `UNCHANGED`. Identity and content
+hashes remained stable, `collected_at` was preserved and `last_seen_at`
+advanced. The simulated listing/fetch failure recorded `FAILED` and preserved
+the last-known-good rows.
 
-- first bounded run of N new logical records produces N `NEW` rows;
-- an identical second run produces the same N logical rows as `UNCHANGED`;
-- `record_id`, `entity_id`, `canonical_url` and `content_hash` stay stable;
-- no duplicate identity/canonical URL rows appear;
-- `index_status` and `embedding_version` are preserved; and
-- `last_seen_at` advances only after successful observation/write.
+The continuing contract requires `record_id`, `entity_id`, `canonical_url` and
+`content_hash` to stay stable, prohibits duplicate identity/canonical URL rows,
+preserves `index_status` and `embedding_version` for unchanged content, and
+advances `last_seen_at` only after successful observation/write.
 
 For `NEW`, set both `collected_at` and `last_seen_at`. For `CHANGED` and
 `UNCHANGED`, preserve `collected_at` and update `last_seen_at` only in the
@@ -336,6 +370,17 @@ context, and stored public ANU records. It creates no persistent profile,
 cross-session preference, account eligibility state or raw conversation store.
 History does not become factual Scholarship evidence.
 
+When the active clarification is `clar-scholarship-scope`, the immediate
+follow-up first retains the existing explicit option-selection behavior, then
+may reuse the deterministic Scholarship filters for values explicitly present
+in that follow-up. Supported metadata dimensions remain `student_type`,
+`study_level`, `study_stage` and `area_of_study`, together with the existing
+`open`, `closed` and `featured` filters. Independent dimensions combine with
+AND. The narrow frozen study-level wording treats `Undergraduate` and
+`Bachelor` as equivalent; no other semantic synonym layer is added. Earlier
+history is not merged into these filters and the refinement is a requested
+search scope, not evidence about the user's profile or eligibility.
+
 Response title, record/source IDs, domain and URL are mapped from the retrieved
 record. URLs come only from stored `canonical_url`; Gemini cannot generate or
 modify them. The existing response envelope supports multiple `sources`; Day 9
@@ -343,30 +388,24 @@ may return multiple stored Scholarship sources while leaving `items` within the
 frozen API contract. Scholarship Day 9 answers are deterministic and do not
 invoke Gemini.
 
-### 19. Deployment and write-enablement order
+### 19. Current live state and remaining RAG-only release
 
-1. Carmen/Qasim review and merge the RAG/schema PR.
-2. Build an image from the exact merged SHA and record its digest.
-3. Apply `20260913_0002` and then `20260914_0003` to dev PostgreSQL 18 Cloud SQL.
-4. Before relying on compatibility, verify the view reports
-   `is_updatable = NO` and `is_insertable_into = NO`; prove `INSERT` and
-   `UPDATE` through it fail; and verify the exact live roles: old RAG can
-   `SELECT` the view, intended roles cannot write the view, new RAG can
-   `SELECT` `source_records`, and the scraper writer can write `source_records`.
-5. Deploy the compatible RAG revision; do not deploy it before the migration
-   because it reads `source_records`.
-6. Regress existing Courses/Programs paths, including COMP1110 under those
-   verified permissions.
-7. Verify Scholarship model/read behavior with controlled data.
-8. Qasim approves Will's target switch to `source_records`.
-9. Deploy the reviewed Will scraper image with bounded limits and writes still
-   gated.
-10. Run the first bounded write and prove `NEW`.
-11. Run the identical bounded write and prove `UNCHANGED`/idempotency.
-12. Simulate and prove failure preservation and whole-batch rollback.
-13. Only then decide whether scheduled writes may be enabled.
+The shared migrations, structurally read-only view, runtime permissions,
+Courses regression and bounded Scholarship scraper acceptance described above
+are complete according to Qasim's live acceptance report. They remain recorded
+here as historical evidence and are not work for this refinement PR.
 
-No step above has been executed by Carmen in this task.
+After this clean branch is reviewed and merged, Qasim's remaining release path
+is to pull the exact merged main SHA, build and push an immutable RAG image,
+record its digest, update only `askanu-rag` while preserving its existing
+environment, secrets, service account and Cloud SQL attachment, and verify the
+new revision serves 100%. Qasim can then rerun COMP1110, exact Scholarship,
+broad clarification, `International undergraduate` continuation and missing
+eligibility abstention.
+
+This is a RAG-only behavior release. It requires no migration, database
+mutation, scraper execution or Scholarship job configuration change. Carmen
+has not performed any Qasim-owned live release action in this cleanup task.
 
 ### 20. Rollback matrix and verification gates
 
@@ -378,10 +417,11 @@ No step above has been executed by Carmen in this task.
 | Courses regression breaks | only if previous RAG + view regression succeeds; otherwise stop and assess | roll back image only after view permissions/behavior pass | keep disabled; do not add Scholarship rows | allowed only with no non-Courses rows; otherwise deliberately blocked |
 
 All rollback choices involving live data or runtime access require Qasim
-operational approval. Before live work, verify PostgreSQL 18 migration behavior,
-view flags and rejected writes, view privileges, unchanged row counts/hashes/
-timestamps/index state, exact COMP1110 behavior, downgrade guard and the exact
-image SHA/digest. PostgreSQL 12.20 evidence is supplementary only.
+operational approval. The PostgreSQL 18 migration, view flags, runtime path and
+acceptance checks are now complete; the matrix remains the safety policy for
+future rollback decisions. Any new release must still record and verify its
+exact image SHA/digest. PostgreSQL 12.20 evidence below is historical,
+supplementary local evidence only.
 
 ## Future carry-over
 
@@ -392,6 +432,10 @@ image SHA/digest. PostgreSQL 12.20 evidence is supplementary only.
    and evaluation results; no numeric K is frozen here.
 
 ## Local verification evidence
+
+The following migration/view results are historical local evidence from the
+original Day 9 implementation and read-only follow-up; they are retained rather
+than being recast as work performed during the clarification refinement.
 
 - The identity boundary is enforced consistently in migration and Pydantic:
   exact `study.anu.edu.au` host/path, frozen slug grammar, literal final-path
@@ -412,7 +456,11 @@ image SHA/digest. PostgreSQL 12.20 evidence is supplementary only.
   stopped and removed.
 - `python -m pip check`, `python -m compileall -q src tests migrations`, Alembic
   single-head and offline SQL generation, and `git diff --check` passed.
-- PostgreSQL 18 and a Day 9 container/image smoke remain pending in Qasim's
-  controlled integration environment. Docker and Podman are unavailable on the
-  current machine.
-- The scraper write gate remains disabled.
+- Qasim's later live acceptance completed the PostgreSQL 18 migration/view,
+  runtime, COMP1110, bounded scraper, failure-preservation and Scholarship read
+  checks listed in the current-live section. This refinement branch neither
+  repeats nor claims ownership of those live actions.
+- The clean clarification-refinement branch adds current-follow-up-only,
+  deterministic AND-filter, option-selection, zero-match, eligibility-safety,
+  source-provenance and Course-switch regression coverage. Exact clean-head
+  results belong to the branch/PR verification report.

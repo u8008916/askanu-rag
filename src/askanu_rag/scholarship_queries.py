@@ -2,7 +2,10 @@
 
 import re
 
-from askanu_rag.course_queries import _source_from_record
+from askanu_rag.course_queries import (
+    COURSE_CODE_CANDIDATE_PATTERN,
+    _source_from_record,
+)
 from askanu_rag.models import (
     AskResponse,
     Clarification,
@@ -20,6 +23,12 @@ ELIGIBILITY_PATTERN = re.compile(
     r"\b(?:am i|eligible|eligibility|qualify|qualification)\b", re.IGNORECASE
 )
 FILTER_FIELDS = ("study_stage", "student_type", "study_level", "area_of_study")
+UNDERGRADUATE_STUDY_LEVELS = frozenset({"undergraduate", "bachelor"})
+OTHER_DOMAIN_PATTERN = re.compile(
+    r"\b(?:courses?|programs?|prerequisites?|requisites?|jobs?|events?|"
+    r"accommodation|support|honours)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalize(value: str) -> str:
@@ -32,6 +41,28 @@ def _contains_phrase(question: str, value: str) -> bool:
     return bool(phrase) and re.search(
         r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])", normalized
     ) is not None
+
+
+def _filter_value(field: str, value: str) -> str:
+    """Normalize only the frozen Undergraduate/Bachelor study-level wording."""
+
+    normalized = _normalize(value)
+    if field == "study_level" and normalized in UNDERGRADUATE_STUDY_LEVELS:
+        return "undergraduate"
+    return normalized
+
+
+def _filter_value_is_explicit(question: str, field: str, value: str) -> bool:
+    if _contains_phrase(question, value):
+        return True
+    return (
+        field == "study_level"
+        and _filter_value(field, value) == "undergraduate"
+        and any(
+            _contains_phrase(question, alias)
+            for alias in UNDERGRADUATE_STUDY_LEVELS
+        )
+    )
 
 
 def _identity_matches(
@@ -52,7 +83,10 @@ def _identity_matches(
 
 
 def _explicit_filters(
-    question: str, records: tuple[ScholarshipRecord, ...]
+    question: str,
+    records: tuple[ScholarshipRecord, ...],
+    *,
+    scope_refinement: bool = False,
 ) -> dict[str, object]:
     filters: dict[str, object] = {}
     normalized = _normalize(question)
@@ -62,7 +96,7 @@ def _explicit_filters(
         filters["status"] = "open"
     elif re.search(r"\bclosed\b", normalized):
         filters["status"] = "closed"
-    if re.search(r"\bapplication required\b", normalized):
+    if not scope_refinement and re.search(r"\bapplication required\b", normalized):
         filters["application_required"] = True
 
     for field in FILTER_FIELDS:
@@ -73,7 +107,11 @@ def _explicit_filters(
             if value.strip()
         }
         selected = tuple(
-            sorted(value for value in known_values if _contains_phrase(question, value))
+            sorted(
+                value
+                for value in known_values
+                if _filter_value_is_explicit(question, field, value)
+            )
         )
         if selected:
             filters[field] = selected
@@ -85,8 +123,10 @@ def _matches_filters(record: ScholarshipRecord, filters: dict[str, object]) -> b
     for field, expected in filters.items():
         actual = getattr(metadata, field)
         if field in FILTER_FIELDS:
-            actual_values = {_normalize(value) for value in actual}
-            if not all(_normalize(value) in actual_values for value in expected):
+            actual_values = {_filter_value(field, value) for value in actual}
+            if not all(
+                _filter_value(field, value) in actual_values for value in expected
+            ):
                 return False
         elif field == "status":
             if not isinstance(actual, str) or _normalize(actual) != expected:
@@ -184,28 +224,46 @@ class ScholarshipQueryService:
         pending: Clarification | None = None,
     ) -> AskResponse | None:
         records = self._repository.all_scholarships()
-        identities = _identity_matches(question, records)
         selected_pending = _pending_selection(question, records, pending)
+        pending_scope = pending is not None and pending.id == "clar-scholarship-scope"
+        identities = _identity_matches(question, records)
+        filters = _explicit_filters(
+            question,
+            records,
+            scope_refinement=pending_scope,
+        )
         if (
             not SCHOLARSHIP_PATTERN.search(question)
             and not identities
             and not selected_pending
+            and not pending_scope
+        ):
+            return None
+
+        if (
+            pending_scope
+            and not selected_pending
+            and not identities
+            and (
+                COURSE_CODE_CANDIDATE_PATTERN.search(question)
+                or OTHER_DOMAIN_PATTERN.search(question)
+            )
+            and not filters
         ):
             return None
 
         eligibility = ELIGIBILITY_PATTERN.search(question) is not None
-        if len(identities) > 1:
+        if selected_pending:
+            selected = selected_pending
+        elif len(identities) > 1:
             return _clarification(
                 identities,
                 request_id,
                 "Which scholarship do you mean?",
             )
-        if len(identities) == 1:
+        elif len(identities) == 1:
             selected = identities
-        elif selected_pending:
-            selected = selected_pending
         else:
-            filters = _explicit_filters(question, records)
             if not filters:
                 return _clarification(
                     records,

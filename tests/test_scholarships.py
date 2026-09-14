@@ -39,6 +39,63 @@ def repo(scholarships):
     )
 
 
+def scholarship_variant(base, *, entity_id, title, **metadata_updates):
+    values = base.model_dump(mode="python")
+    values.update(
+        entity_id=entity_id,
+        record_id=f"scholarships:scholarship:{entity_id}",
+        canonical_url=f"{SCHOLARSHIP_URL_PREFIX}{entity_id}",
+        title=title,
+    )
+    values["metadata_json"].update(metadata_updates)
+    return ScholarshipRecord.model_validate(values)
+
+
+@pytest.fixture
+def refinement_records(scholarships):
+    international_engineering = scholarship_variant(
+        scholarships[0],
+        entity_id="day9-international-bachelor-engineering",
+        title="Day 9 Test International Bachelor Engineering Scholarship",
+        student_type=["International"],
+        study_level=["Bachelor"],
+        area_of_study=["Engineering"],
+        featured=True,
+        status="open",
+        eligibility=None,
+    )
+    international_science = scholarship_variant(
+        scholarships[1],
+        entity_id="day9-international-bachelor-science",
+        title="Day 9 Test International Bachelor Science Scholarship",
+        student_type=["International"],
+        study_level=["Bachelor"],
+        area_of_study=["Science"],
+        featured=False,
+        status="open",
+    )
+    domestic_postgraduate = scholarship_variant(
+        scholarships[2],
+        entity_id="day9-domestic-postgraduate-engineering",
+        title="Day 9 Test Domestic Postgraduate Engineering Scholarship",
+        student_type=["Domestic"],
+        study_level=["Postgraduate"],
+        area_of_study=["Engineering"],
+        featured=False,
+        status="open",
+    )
+    return (
+        international_engineering,
+        international_science,
+        domestic_postgraduate,
+    )
+
+
+@pytest.fixture
+def refinement_repo(refinement_records):
+    return CourseProgramRepository(refinement_records)
+
+
 def ask(repo, question, *, history=(), pending=None, vector=None):
     with TestClient(create_app(repo, semantic_retriever=vector)) as client:
         response = client.post(
@@ -346,6 +403,185 @@ def test_broad_query_and_ambiguous_title_clarify_without_guessing(
     )
     assert selected["status"] == "ok"
     assert len(selected["sources"]) == 1
+
+
+def test_pending_scope_accepts_current_international_undergraduate_refinement(
+    refinement_repo,
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+
+    body = ask(
+        refinement_repo,
+        "International undergraduate",
+        pending=broad["clarification"],
+    )
+
+    assert broad["status"] == "needs_clarification"
+    assert broad["clarification"]["id"] == "clar-scholarship-scope"
+    assert body["status"] == "ok"
+    assert {source["record_id"] for source in body["sources"]} == {
+        "scholarships:scholarship:day9-international-bachelor-engineering",
+        "scholarships:scholarship:day9-international-bachelor-science",
+    }
+    assert all(
+        source["url"].startswith(SCHOLARSHIP_URL_PREFIX)
+        for source in body["sources"]
+    )
+    assert "you are eligible" not in body["answer"].casefold()
+
+
+def test_pending_scope_combines_independent_filter_dimensions_with_and(
+    refinement_repo,
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    body = ask(
+        refinement_repo,
+        "International undergraduate engineering",
+        pending=broad["clarification"],
+    )
+
+    assert body["status"] == "ok"
+    assert [source["record_id"] for source in body["sources"]] == [
+        "scholarships:scholarship:day9-international-bachelor-engineering"
+    ]
+
+
+@pytest.mark.parametrize(
+    "unsupported_refinement",
+    ["Something completely unrelated", "application required"],
+)
+def test_pending_scope_unsupported_refinement_stays_safe(
+    refinement_repo, unsupported_refinement
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    body = ask(
+        refinement_repo,
+        unsupported_refinement,
+        pending=broad["clarification"],
+    )
+
+    assert body["status"] == "needs_clarification"
+    assert body["clarification"]["id"] == "clar-scholarship-scope"
+    assert body["sources"] == []
+
+
+def test_pending_scope_preserves_first_second_label_and_id_selection(
+    refinement_repo,
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    options = broad["clarification"]["options"]
+    selections = (
+        ("first", options[0]["id"]),
+        ("second", options[1]["id"]),
+        (options[0]["label"], options[0]["id"]),
+        (options[1]["id"], options[1]["id"]),
+    )
+
+    for selection, expected_id in selections:
+        body = ask(
+            refinement_repo,
+            selection,
+            pending=broad["clarification"],
+        )
+        assert body["status"] == "ok"
+        assert [source["record_id"] for source in body["sources"]] == [
+            expected_id
+        ]
+
+
+def test_pending_scope_uses_current_refinement_not_profile_like_history(
+    refinement_repo,
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    body = ask(
+        refinement_repo,
+        "Domestic postgraduate",
+        history=(
+            {
+                "turn_id": "old-user",
+                "role": "user",
+                "content": "I am an international undergraduate engineering student.",
+            },
+        ),
+        pending=broad["clarification"],
+    )
+
+    assert body["status"] == "ok"
+    assert [source["record_id"] for source in body["sources"]] == [
+        "scholarships:scholarship:day9-domestic-postgraduate-engineering"
+    ]
+
+
+def test_pending_scope_valid_filters_with_no_match_do_not_relax(refinement_repo):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    body = ask(
+        refinement_repo,
+        "closed international engineering",
+        pending=broad["clarification"],
+    )
+
+    assert body["status"] == "insufficient_evidence"
+    assert body["sources"] == []
+
+
+def test_pending_scope_supports_existing_featured_filter(refinement_repo):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    body = ask(
+        refinement_repo,
+        "featured international undergraduate",
+        pending=broad["clarification"],
+    )
+
+    assert body["status"] == "ok"
+    assert [source["record_id"] for source in body["sources"]] == [
+        "scholarships:scholarship:day9-international-bachelor-engineering"
+    ]
+
+
+def test_refinement_does_not_become_personal_eligibility_evidence(
+    refinement_repo,
+):
+    broad = ask(refinement_repo, "What scholarships can I apply for?")
+    narrowed = ask(
+        refinement_repo,
+        "International undergraduate engineering",
+        pending=broad["clarification"],
+    )
+    follow_up = ask(
+        refinement_repo,
+        "Am I eligible for the Day 9 Test International Bachelor Engineering "
+        "Scholarship?",
+        history=(
+            {
+                "turn_id": "scope",
+                "role": "user",
+                "content": "International undergraduate engineering",
+            },
+            {
+                "turn_id": "result",
+                "role": "assistant",
+                "content": narrowed["answer"],
+            },
+        ),
+    )
+
+    assert narrowed["status"] == "ok"
+    assert follow_up["status"] == "ok"
+    assert "cannot determine your personal eligibility" in follow_up["answer"]
+    assert "Official eligibility information" not in follow_up["answer"]
+    assert "you are eligible" not in follow_up["answer"].casefold()
+
+
+def test_pending_scholarship_scope_does_not_intercept_course_switch(repo):
+    broad = ask(repo, "What scholarships can I apply for?")
+    body = ask(
+        repo,
+        "What are the prerequisites for COMP1110?",
+        pending=broad["clarification"],
+    )
+
+    assert body["status"] == "ok"
+    assert body["sources"][0]["record_id"].endswith("COMP1110_2026")
 
 
 def test_personal_eligibility_returns_official_text_without_decision(repo):
