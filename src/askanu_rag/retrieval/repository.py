@@ -11,17 +11,24 @@ from typing import Literal, Protocol, TypeAlias, runtime_checkable
 from pydantic import ValidationError
 
 from askanu_rag.models import (
+    AccommodationMetadata,
+    AccommodationRecord,
     CommonRecord,
     CourseMetadata,
     CourseProgramRecord,
     JobMetadata,
     JobRecord,
+    ProgramMetadata,
     ScholarshipMetadata,
     ScholarshipRecord,
+    SubplanMetadata,
+    SupportMetadata,
+    SupportRecord,
 )
 from askanu_rag.retrieval.identifiers import (
     normalize_course_code,
     normalize_program_code,
+    normalize_subplan_code,
 )
 
 LookupResult: TypeAlias = (
@@ -29,8 +36,12 @@ LookupResult: TypeAlias = (
 )
 ScholarshipLookupResult: TypeAlias = ScholarshipRecord | None
 JobLookupResult: TypeAlias = JobRecord | None
-LookupKey: TypeAlias = tuple[Literal["course", "program"], str, str]
-CodeKey: TypeAlias = tuple[Literal["course", "program"], str]
+ResourceRecord: TypeAlias = AccommodationRecord | SupportRecord
+CoursesEntityType: TypeAlias = Literal[
+    "course", "program", "major", "minor", "specialisation"
+]
+LookupKey: TypeAlias = tuple[CoursesEntityType, str, str]
+CodeKey: TypeAlias = tuple[CoursesEntityType, str]
 
 
 class CourseProgramReader(Protocol):
@@ -42,7 +53,6 @@ class CourseProgramReader(Protocol):
         """Return an exact course match or preserve multi-year ambiguity."""
 
         ...
-
 
 @runtime_checkable
 class ScholarshipReader(Protocol):
@@ -57,7 +67,7 @@ class ScholarshipReader(Protocol):
 
 @runtime_checkable
 class JobReader(Protocol):
-    """Minimal read boundary for exact and deterministic Jobs retrieval."""
+    """Minimal read boundary for exact and current Jobs candidates."""
 
     def find_job_by_entity_id(self, entity_id: str) -> JobLookupResult: ...
 
@@ -69,6 +79,25 @@ class JobReader(Protocol):
         today: date,
         employment_type: str | None = None,
     ) -> tuple[JobRecord, ...]: ...
+
+    def current_job_candidates(
+        self,
+        today: date,
+        employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]: ...
+
+
+@runtime_checkable
+class ResourceReader(Protocol):
+    """Shared exact/list boundary for Accommodation and Support records."""
+
+    def all_domain_records(
+        self, domain: Literal["accommodation", "support"]
+    ) -> tuple[ResourceRecord, ...]: ...
+
+    def find_domain_by_title(
+        self, domain: Literal["accommodation", "support"], title: str
+    ) -> tuple[ResourceRecord, ...]: ...
 
 
 def normalize_job_title(value: str) -> str:
@@ -151,9 +180,27 @@ class CourseProgramRepository:
         self._scholarships: dict[str, ScholarshipRecord] = {}
         self._jobs: dict[str, JobRecord] = {}
         self._jobs_by_title: dict[str, list[JobRecord]] = {}
+        self._resources: dict[str, ResourceRecord] = {}
+        self._resources_by_title: dict[
+            tuple[str, str], list[ResourceRecord]
+        ] = {}
 
         for record in records:
             metadata = record.metadata_json
+            if isinstance(metadata, (AccommodationMetadata, SupportMetadata)):
+                model = (
+                    AccommodationRecord
+                    if isinstance(metadata, AccommodationMetadata)
+                    else SupportRecord
+                )
+                resource = model.model_validate(record.model_dump(mode="python"))
+                if resource.record_id in self._resources:
+                    raise ValueError(f"Duplicate record_id: {resource.record_id}")
+                self._resources[resource.record_id] = resource
+                self._resources_by_title.setdefault(
+                    (resource.domain, normalize_job_title(resource.title)), []
+                ).append(resource)
+                continue
             if isinstance(metadata, JobMetadata):
                 job = JobRecord.model_validate(record.model_dump(mode="python"))
                 if job.entity_id in self._jobs:
@@ -178,11 +225,14 @@ class CourseProgramRepository:
                 record.model_dump(mode="python")
             )
             if isinstance(metadata, CourseMetadata):
-                entity_type: Literal["course", "program"] = "course"
+                entity_type: CoursesEntityType = "course"
                 code = metadata.course_code
-            else:
+            elif isinstance(metadata, ProgramMetadata):
                 entity_type = "program"
                 code = metadata.program_code
+            else:
+                entity_type = metadata.entity_type
+                code = metadata.subplan_code
 
             lookup_key = (entity_type, code, metadata.academic_year)
             if lookup_key in self._records:
@@ -195,7 +245,7 @@ class CourseProgramRepository:
 
     def _find(
         self,
-        entity_type: Literal["course", "program"],
+        entity_type: CoursesEntityType,
         code: str,
         academic_year: str | None,
     ) -> LookupResult:
@@ -233,6 +283,37 @@ class CourseProgramRepository:
         if not canonical:
             return None
         return self._find("program", canonical, academic_year)
+
+    def find_by_code(
+        self,
+        entity_type: CoursesEntityType,
+        identifier: str,
+        academic_year: str | None = None,
+    ) -> LookupResult:
+        if entity_type == "course":
+            canonical = normalize_course_code(identifier)
+        elif entity_type == "program":
+            canonical = normalize_program_code(identifier)
+        else:
+            canonical = normalize_subplan_code(identifier)
+        if not canonical:
+            return None
+        return self._find(entity_type, canonical, academic_year)
+
+    def find_major_by_code(
+        self, identifier: str, academic_year: str | None = None
+    ) -> LookupResult:
+        return self.find_by_code("major", identifier, academic_year)
+
+    def find_minor_by_code(
+        self, identifier: str, academic_year: str | None = None
+    ) -> LookupResult:
+        return self.find_by_code("minor", identifier, academic_year)
+
+    def find_specialisation_by_code(
+        self, identifier: str, academic_year: str | None = None
+    ) -> LookupResult:
+        return self.find_by_code("specialisation", identifier, academic_year)
 
     def all_records(self) -> tuple[CourseProgramRecord, ...]:
         """Read-only catalog snapshot for bounded Day 5 name/metadata planning."""
@@ -277,6 +358,15 @@ class CourseProgramRepository:
 
         if limit < 1:
             raise ValueError("limit must be positive")
+        return self.current_job_candidates(today, employment_type)[:limit]
+
+    def current_job_candidates(
+        self,
+        today: date,
+        employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]:
+        """Return every current hard-filter match before response limiting."""
+
         wanted_type = employment_type.casefold() if employment_type else None
         current = (
             record
@@ -302,7 +392,29 @@ class CourseProgramRepository:
                 int(record.entity_id),
             ),
         )
-        return tuple(ordered[:limit])
+        return tuple(ordered)
+
+    def all_domain_records(
+        self, domain: Literal["accommodation", "support"]
+    ) -> tuple[ResourceRecord, ...]:
+        return tuple(
+            sorted(
+                (record for record in self._resources.values() if record.domain == domain),
+                key=lambda record: record.record_id,
+            )
+        )
+
+    def find_domain_by_title(
+        self, domain: Literal["accommodation", "support"], title: str
+    ) -> tuple[ResourceRecord, ...]:
+        return tuple(
+            sorted(
+                self._resources_by_title.get(
+                    (domain, normalize_job_title(title)), ()
+                ),
+                key=lambda record: record.record_id,
+            )
+        )
 
 
 def create_default_course_program_repository() -> CourseProgramRepository:

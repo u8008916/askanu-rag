@@ -11,19 +11,24 @@ from askanu_rag.database import (
     RepositoryUnavailableError,
 )
 from askanu_rag.models import (
+    AccommodationRecord,
     CommonRecord,
     CourseProgramRecord,
     JobRecord,
     ScholarshipRecord,
+    SupportRecord,
 )
 from askanu_rag.retrieval.identifiers import (
     normalize_course_code,
     normalize_program_code,
+    normalize_subplan_code,
 )
 from askanu_rag.retrieval.repository import (
     JobLookupResult,
+    CoursesEntityType,
     LookupResult,
     ScholarshipLookupResult,
+    ResourceRecord,
     normalize_job_title,
 )
 
@@ -41,6 +46,10 @@ source_id = 'jobs_anu_search'
 AND domain = 'jobs'
 AND metadata_json ->> 'entity_type' = 'job'
 """
+RESOURCE_SOURCES = {
+    "accommodation": "accommodation_anu_study",
+    "support": "support_anusa_student_assistance",
+}
 
 SELECT_COLUMNS = """
 record_id, source_id, entity_id, domain, title, content, canonical_url,
@@ -65,11 +74,17 @@ class PostgresCourseProgramRepository:
 
     def _find(
         self,
-        entity_type: Literal["course", "program"],
+        entity_type: CoursesEntityType,
         code: str,
         academic_year: str | None,
     ) -> LookupResult:
-        code_key = "course_code" if entity_type == "course" else "program_code"
+        code_key = (
+            "course_code"
+            if entity_type == "course"
+            else "program_code"
+            if entity_type == "program"
+            else "subplan_code"
+        )
         query = f"""
             SELECT {SELECT_COLUMNS}
             FROM source_records
@@ -124,6 +139,31 @@ class PostgresCourseProgramRepository:
         if not canonical:
             return None
         return self._find("program", canonical, academic_year)
+
+    def find_by_code(
+        self,
+        entity_type: CoursesEntityType,
+        identifier: str,
+        academic_year: str | None = None,
+    ) -> LookupResult:
+        if entity_type == "course":
+            canonical = normalize_course_code(identifier)
+        elif entity_type == "program":
+            canonical = normalize_program_code(identifier)
+        else:
+            canonical = normalize_subplan_code(identifier)
+        if not canonical:
+            return None
+        return self._find(entity_type, canonical, academic_year)
+
+    def find_major_by_code(self, identifier: str, academic_year: str | None = None) -> LookupResult:
+        return self.find_by_code("major", identifier, academic_year)
+
+    def find_minor_by_code(self, identifier: str, academic_year: str | None = None) -> LookupResult:
+        return self.find_by_code("minor", identifier, academic_year)
+
+    def find_specialisation_by_code(self, identifier: str, academic_year: str | None = None) -> LookupResult:
+        return self.find_by_code("specialisation", identifier, academic_year)
 
     def all_records(self) -> tuple[CourseProgramRecord, ...]:
         return self._fetch_records(
@@ -220,10 +260,68 @@ class PostgresCourseProgramRepository:
             LIMIT %s
         """
         parameters.append(limit)
+        return self._fetch_records(query, tuple(parameters), model=JobRecord)
+
+    def current_job_candidates(
+        self,
+        today: date,
+        employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]:
+        query = f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE {JOB_WHERE}
+              AND metadata_json ->> 'status' = 'current'
+              AND (
+                  metadata_json ->> 'closing_date' IS NULL
+                  OR (metadata_json ->> 'closing_date')::date >= %s
+              )
+        """
+        parameters: list[object] = [today]
+        if employment_type is not None:
+            query += " AND metadata_json -> 'employment_types' ? %s"
+            parameters.append(employment_type)
+        query += """
+            ORDER BY
+                (metadata_json ->> 'closing_date') IS NULL ASC,
+                (metadata_json ->> 'closing_date')::date ASC,
+                entity_id::numeric ASC
+        """
         return self._fetch_records(
             query,
             tuple(parameters),
             model=JobRecord,
+        )
+
+    def all_domain_records(
+        self, domain: Literal["accommodation", "support"]
+    ) -> tuple[ResourceRecord, ...]:
+        model = AccommodationRecord if domain == "accommodation" else SupportRecord
+        return self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE domain = %s AND source_id = %s
+            ORDER BY record_id
+            """,
+            (domain, RESOURCE_SOURCES[domain]),
+            model=model,
+        )
+
+    def find_domain_by_title(
+        self, domain: Literal["accommodation", "support"], title: str
+    ) -> tuple[ResourceRecord, ...]:
+        model = AccommodationRecord if domain == "accommodation" else SupportRecord
+        return self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE domain = %s AND source_id = %s
+              AND lower(regexp_replace(btrim(title), '[[:space:]]+', ' ', 'g')) = %s
+            ORDER BY record_id
+            """,
+            (domain, RESOURCE_SOURCES[domain], normalize_job_title(title)),
+            model=model,
         )
 
 
@@ -267,4 +365,40 @@ class UnavailableCourseProgramRepository:
         _today: date,
         _employment_type: str | None = None,
     ) -> tuple[JobRecord, ...]:
+        self._raise()
+
+    def current_job_candidates(
+        self,
+        _today: date,
+        _employment_type: str | None = None,
+    ) -> tuple[JobRecord, ...]:
+        self._raise()
+
+    def find_by_code(
+        self,
+        _entity_type: CoursesEntityType,
+        _identifier: str,
+        _academic_year: str | None = None,
+    ) -> LookupResult:
+        self._raise()
+
+    def find_major_by_code(self, _identifier: str, _academic_year: str | None = None) -> LookupResult:
+        self._raise()
+
+    def find_minor_by_code(self, _identifier: str, _academic_year: str | None = None) -> LookupResult:
+        self._raise()
+
+    def find_specialisation_by_code(self, _identifier: str, _academic_year: str | None = None) -> LookupResult:
+        self._raise()
+
+    def all_domain_records(
+        self, _domain: Literal["accommodation", "support"]
+    ) -> tuple[ResourceRecord, ...]:
+        self._raise()
+
+    def find_domain_by_title(
+        self,
+        _domain: Literal["accommodation", "support"],
+        _title: str,
+    ) -> tuple[ResourceRecord, ...]:
         self._raise()

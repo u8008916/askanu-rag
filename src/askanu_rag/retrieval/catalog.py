@@ -19,7 +19,11 @@ def normalize_title(value: str) -> str:
 
 def record_code(record: CourseProgramRecord) -> str:
     metadata = record.metadata_json
-    return metadata.course_code if metadata.entity_type == "course" else metadata.program_code
+    if metadata.entity_type == "course":
+        return metadata.course_code
+    if metadata.entity_type == "program":
+        return metadata.program_code
+    return metadata.subplan_code
 
 
 def matches_session(record: CourseProgramRecord, session: str | None) -> bool:
@@ -28,13 +32,20 @@ def matches_session(record: CourseProgramRecord, session: str | None) -> bool:
     offerings = getattr(record.metadata_json, "offerings", None)
     if not offerings:
         return False
+    normalized_session = normalize_title(session).replace(
+        "semester 1", "first semester"
+    ).replace("semester 2", "second semester")
     # Only explicit stored session text; no dates, IDs or URL-derived inference.
     for offering in offerings:
         value = offering.get("session")
         if not isinstance(value, str):
             continue
-        clean = normalize_title(value)
-        if re.fullmatch(re.escape(session) + r"(?:,?\s+\d{4})?", clean):
+        clean = normalize_title(value).replace(
+            "semester 1", "first semester"
+        ).replace("semester 2", "second semester")
+        if re.fullmatch(
+            re.escape(normalized_session) + r"(?:,?\s+\d{4})?", clean
+        ):
             years = re.findall(r"\b\d{4}\b", clean)
             if not years or years == [record.metadata_json.academic_year]:
                 return True

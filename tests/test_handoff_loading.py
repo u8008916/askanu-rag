@@ -33,11 +33,16 @@ def synthetic_payload(code="COMP1110", year="2026", entity_type="course"):
     }
     if entity_type == "course":
         metadata.update(
+            description=None, learning_outcomes=None,
             prerequisites=None, incompatibilities=None,
-            assumed_knowledge=None, offerings=None,
+            corequisites=None, assumed_knowledge=None, offerings=None,
         )
     else:
-        metadata.update(duration=None, learning_outcomes=None)
+        metadata.update(
+            duration=None, overview=None, learning_outcomes=None,
+            program_requirements=None, admission_requirements=None,
+            prerequisites=None,
+        )
     return {
         "record_id": f"courses:{entity_type}:{code}_{year}",
         "source_id": "courses_programs_and_courses",
@@ -45,7 +50,7 @@ def synthetic_payload(code="COMP1110", year="2026", entity_type="course"):
         "domain": "courses",
         "title": f"Synthetic {code} handoff test record",
         "content": content,
-        "canonical_url": f"https://programsandcourses.anu.edu.au/{year}/{entity_type}/{code}",
+        "canonical_url": f"https://programsandcourses.anu.edu.au/{year}/{entity_type}/{code.lower()}",
         "status": "UNCHANGED",
         "effective_from": None,
         "effective_to": None,
@@ -130,14 +135,22 @@ def test_required_field_is_not_invented(tmp_path):
         load_course_program_record_file(path)
 
 
-def test_hash_and_url_are_preserved_without_recalculation_or_reconstruction(tmp_path):
+def test_hash_and_extension_metadata_are_preserved_without_recalculation(tmp_path):
     payload = synthetic_payload()
     # Existing RAG model validates hash shape, not hash equality; loader must reuse it.
     payload["content_hash"] = "0" * 64
-    payload["canonical_url"] = "https://programsandcourses.anu.edu.au/Stored/Canonical?version=one"
     payload["metadata_json"]["source_note"] = "Synthetic extension evidence"
     record = load_course_program_record_file(write_record(tmp_path / "opaque.json", payload))
     assert record.model_dump(mode="json") == payload
+
+
+def test_noncanonical_handoff_url_is_rejected(tmp_path):
+    payload = synthetic_payload()
+    payload["canonical_url"] = (
+        "https://programsandcourses.anu.edu.au/Stored/Canonical?version=one"
+    )
+    with pytest.raises(ValidationError, match="canonical_url"):
+        load_course_program_record_file(write_record(tmp_path / "bad-url.json", payload))
 
 
 def test_identity_comes_from_json_not_filename(tmp_path):

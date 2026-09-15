@@ -26,6 +26,7 @@ from test_postgres_repository import (
     make_scholarship,
 )
 from test_jobs import make_job
+from test_courses_family import make_subplan
 
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
 ROOT = Path(__file__).parents[1]
@@ -312,6 +313,42 @@ def test_compatibility_view_is_structurally_read_only_but_selectable():
         connection.rollback()
 
 
+def test_subplans_persist_in_source_records_but_not_compatibility_view():
+    database_url = _local_test_url()
+    records = (
+        make_subplan("major", "ACCT-MAJ"),
+        make_subplan("minor", "AAGR-MIN", title="Agricultural Innovation Minor"),
+        make_subplan(
+            "specialisation", "MEAS-SPEC", title="Measurement Specialisation"
+        ),
+    )
+
+    with psycopg.connect(database_url) as connection:
+        for record in records:
+            _insert_record(connection, record)
+        stored_types = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT metadata_json ->> 'entity_type'
+                FROM source_records
+                WHERE record_id = ANY(%s)
+                """,
+                ([record.record_id for record in records],),
+            ).fetchall()
+        }
+        visible = connection.execute(
+            """
+            SELECT count(*) FROM course_program_records
+            WHERE record_id = ANY(%s)
+            """,
+            ([record.record_id for record in records],),
+        ).fetchone()[0]
+        assert stored_types == {"major", "minor", "specialisation"}
+        assert visible == 0
+        connection.rollback()
+
+
 def test_view_migration_round_trip_preserves_schema_data_and_legacy_reads(monkeypatch):
     database_url = _local_test_url()
     monkeypatch.setenv("DATABASE_URL", database_url)
@@ -352,7 +389,7 @@ def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
     with psycopg.connect(database_url) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20260914_0004"
+        ).fetchone()[0] == "20260915_0005"
         assert connection.execute(
             "SELECT count(*) FROM source_records WHERE domain = 'scholarships'"
         ).fetchone()[0] == 1
@@ -495,7 +532,7 @@ def test_jobs_downgrade_refuses_without_deleting_rows(monkeypatch):
         with psycopg.connect(database_url) as connection:
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone()[0] == "20260914_0004"
+            ).fetchone()[0] == "20260915_0005"
             assert connection.execute(
                 "SELECT count(*) FROM source_records WHERE record_id = %s",
                 (job.record_id,),

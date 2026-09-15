@@ -51,7 +51,7 @@ def build_source_supported_test_record() -> CourseProgramRecord:
         title="Day 3 deterministic test course",
         content=content,
         canonical_url=(
-            "https://programsandcourses.anu.edu.au/2026/course/TEST1234"
+            "https://programsandcourses.anu.edu.au/2026/course/test1234"
         ),
         status="NEW",
         effective_from=None,
@@ -236,7 +236,7 @@ def test_explicit_academic_year_resolves_without_inference(client: TestClient) -
     assert body["status"] == "insufficient_evidence"
     assert body["sources"][0]["record_id"] == "courses:course:COMP1100_2026"
     assert body["sources"][0]["url"] == (
-        "https://programsandcourses.anu.edu.au/2026/course/COMP1100"
+        "https://programsandcourses.anu.edu.au/2026/course/comp1100"
     )
 
 

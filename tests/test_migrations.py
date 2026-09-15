@@ -51,7 +51,7 @@ def test_alembic_revision_is_single_versioned_head():
         capture_output=True,
         text=True,
     )
-    assert "20260914_0004 (head)" in result.stdout
+    assert "20260915_0006 (head)" in result.stdout
 
 
 def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
@@ -76,7 +76,10 @@ def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
     assert "ALTER TABLE course_program_records RENAME TO source_records" in sql
     assert "CREATE VIEW course_program_records AS" in sql
     assert "INSERT INTO alembic_version" in sql
-    assert "CREATE EXTENSION" not in sql
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in sql
+    assert "CREATE TABLE source_record_embeddings" in sql
+    assert "role_requirements" in sql
+    assert "uq_source_records_courses_identity" in sql
 
 
 def test_migration_creates_frozen_schema_and_identity_guards(monkeypatch):

@@ -1,5 +1,6 @@
 """Deterministic, source-grounded Scholarship retrieval for Day 9."""
 
+import math
 import re
 
 from askanu_rag.course_queries import (
@@ -16,6 +17,7 @@ from askanu_rag.models import (
     ScholarshipRecord,
 )
 from askanu_rag.retrieval import ScholarshipReader
+from askanu_rag.retrieval.hybrid import SharedHybridRetriever
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
 
 SCHOLARSHIP_PATTERN = re.compile(r"\bscholarships?\b", re.IGNORECASE)
@@ -30,10 +32,45 @@ OTHER_DOMAIN_PATTERN = re.compile(
     r"accommodation)\b",
     re.IGNORECASE,
 )
+SEMANTIC_DISCOVERY_PATTERN = re.compile(
+    r"\b(?:related\s+to|interested\s+in|focus(?:ed)?\s+on|about)\b",
+    re.IGNORECASE,
+)
+SCHOLARSHIP_FACT_LABELS = {
+    "featured": "Featured",
+    "application_required": "Application required",
+    "study_stage": "Study stage",
+    "student_type": "Student type",
+    "study_level": "Study level",
+    "area_of_study": "Area of study",
+    "value": "Value",
+    "selection_basis": "Selection basis",
+    "opening_date": "Opening date",
+    "closing_date": "Closing date",
+    "status": "Official status",
+}
 
 
 def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def is_plausible_scholarship_question(
+    question: str, pending: Clarification | None = None
+) -> bool:
+    """Cheap routing guard that performs no repository reads."""
+
+    if SCHOLARSHIP_PATTERN.search(question):
+        return True
+    pending_scope = pending is not None and (
+        pending.id == "clar-scholarship-scope"
+        or pending.type == "scholarship_selection"
+    )
+    return bool(
+        pending_scope
+        and not COURSE_CODE_CANDIDATE_PATTERN.search(question)
+        and not OTHER_DOMAIN_PATTERN.search(question)
+    )
 
 
 def _contains_phrase(question: str, value: str) -> bool:
@@ -42,6 +79,63 @@ def _contains_phrase(question: str, value: str) -> bool:
     return bool(phrase) and re.search(
         r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])", normalized
     ) is not None
+
+
+def _requested_fact(question: str) -> str | None:
+    """Return one explicit frozen Scholarship fact intent, most specific first."""
+
+    patterns = (
+        ("opening_date", r"\bopening date\b|\bwhen\b.+\bopen(?:s)?\b"),
+        ("closing_date", r"\bclosing date\b|\bwhen\b.+\bclos(?:e|es)\b"),
+        (
+            "application_required",
+            r"\bapplication required\b|\b(?:require(?:s|d)?|need)\b.+\bapplication\b",
+        ),
+        ("selection_basis", r"\bselection basis\b|\bselection criteria\b"),
+        ("student_type", r"\bstudent type\b|\b(?:international|domestic) students?\b"),
+        ("study_stage", r"\bstudy stage\b|\b(?:future|current) students?\b"),
+        ("featured", r"\bfeatured\b"),
+        ("study_level", r"\bstudy level\b"),
+        ("area_of_study", r"\barea of study\b"),
+        ("value", r"\b(?:value|worth)\b|\bhow much\b"),
+        ("status", r"\bofficial status\b|\bscholarship status\b"),
+    )
+    return next(
+        (field for field, pattern in patterns if re.search(pattern, question, re.I)),
+        None,
+    )
+
+
+def _fact_response(
+    record: ScholarshipRecord, fact: str, request_id: str
+) -> AskResponse:
+    """Project exactly one stored fact without substituting unrelated metadata."""
+
+    value = getattr(record.metadata_json, fact)
+    label = SCHOLARSHIP_FACT_LABELS[fact]
+    if value is None or value == []:
+        return InsufficientEvidenceResponse(
+            answer=(
+                f"The stored Scholarship record does not contain source-backed "
+                f"{label.casefold()} information for {record.title}."
+            ),
+            sources=[_source_from_record(record)],
+            request_id=request_id,
+        )
+    if isinstance(value, bool):
+        rendered = "yes" if value else "no"
+    elif isinstance(value, list):
+        rendered = ", ".join(value)
+    else:
+        rendered = str(value)
+    answer = f"{record.title}. {label}: {rendered}."
+    if len(answer) > 3000 or UNSAFE_EVIDENCE.search(answer):
+        raise SynthesisError()
+    return OkResponse(
+        answer=answer,
+        sources=[_source_from_record(record)],
+        request_id=request_id,
+    )
 
 
 def _filter_value(field: str, value: str) -> str:
@@ -215,8 +309,16 @@ def _answer(records: tuple[ScholarshipRecord, ...], *, eligibility: bool) -> str
 class ScholarshipQueryService:
     """Answer only bounded Scholarship identity and metadata-filter queries."""
 
-    def __init__(self, repository: ScholarshipReader) -> None:
+    def __init__(
+        self,
+        repository: ScholarshipReader,
+        vector_retriever=None,
+        *,
+        max_candidates: int = 10,
+    ) -> None:
         self._repository = repository
+        self._vector = vector_retriever
+        self._merger = SharedHybridRetriever(max_candidates=max_candidates)
 
     async def answer(
         self,
@@ -253,6 +355,8 @@ class ScholarshipQueryService:
             return None
 
         eligibility = ELIGIBILITY_PATTERN.search(question) is not None
+        requested_fact = _requested_fact(question)
+        semantic_intent = SEMANTIC_DISCOVERY_PATTERN.search(question) is not None
         if selected_pending:
             selected = selected_pending
         elif len(identities) > 1:
@@ -264,7 +368,7 @@ class ScholarshipQueryService:
         elif len(identities) == 1:
             selected = identities
         else:
-            if not filters:
+            if not filters and not (semantic_intent and self._vector is not None):
                 return _clarification(
                     records,
                     request_id,
@@ -273,13 +377,49 @@ class ScholarshipQueryService:
             matches = tuple(
                 record for record in records if _matches_filters(record, filters)
             )
+            if semantic_intent and self._vector is not None:
+                try:
+                    vector_hits = self._vector.search(
+                        question,
+                        domain="scholarships",
+                        allowed_records=matches,
+                    )
+                except Exception:
+                    vector_hits = ()
+                by_id = {record.record_id: record for record in matches}
+                selected = tuple(
+                    candidate.record
+                    for candidate in self._merger.merge(
+                        semantic=(
+                            (
+                                by_id[hit.record.record_id],
+                                hit.score,
+                                hit.retrieval_unit_ids,
+                            )
+                            for hit in vector_hits
+                            if hit.record.record_id in by_id
+                            and math.isfinite(hit.score)
+                            and 0 < hit.score <= 1
+                        )
+                    )
+                )
+                if not selected:
+                    return InsufficientEvidenceResponse(
+                        answer=(
+                            "I could not find sufficiently relevant stored Scholarship "
+                            "evidence matching the requested hard filters."
+                        ),
+                        request_id=request_id,
+                    )
+            else:
+                selected = matches
             limit = (
                 9
                 if filters.get("featured") is True
                 and filters.get("status") == "open"
                 else 20
             )
-            selected = matches[:limit]
+            selected = selected[:limit]
 
         if not selected:
             return InsufficientEvidenceResponse(
@@ -289,6 +429,10 @@ class ScholarshipQueryService:
                 ),
                 request_id=request_id,
             )
+        if requested_fact is not None and not eligibility and (
+            selected_pending or identities
+        ):
+            return _fact_response(selected[0], requested_fact, request_id)
         return OkResponse(
             answer=_answer(selected, eligibility=eligibility),
             sources=[_source_from_record(record) for record in selected],

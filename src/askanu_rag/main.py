@@ -19,7 +19,16 @@ from askanu_rag.conversation import resolve_current_session
 from askanu_rag.database import DatabaseConfigurationError, RepositoryUnavailableError
 from askanu_rag.gemini import GeminiSynthesisClient
 from askanu_rag.hybrid_queries import HybridQueryService
-from askanu_rag.job_queries import JobQueryService, canberra_today, current_job_item
+from askanu_rag.job_queries import (
+    JobQueryService,
+    canberra_today,
+    current_job_item,
+    is_plausible_job_question,
+)
+from askanu_rag.resource_queries import (
+    DomainResourceQueryService,
+    is_plausible_resource_question,
+)
 from askanu_rag.retrieval.catalog import CatalogReader
 from askanu_rag.synthesis import SynthesisClient, SynthesisError
 from askanu_rag.models import (
@@ -39,13 +48,17 @@ from askanu_rag.retrieval import (
     CourseProgramRepository,
     JobReader,
     PostgresCourseProgramRepository,
+    ResourceReader,
     ScholarshipReader,
     UnavailableCourseProgramRepository,
     create_default_course_program_repository,
     load_course_program_record_file,
     load_course_program_records_directory,
 )
-from askanu_rag.scholarship_queries import ScholarshipQueryService
+from askanu_rag.scholarship_queries import (
+    ScholarshipQueryService,
+    is_plausible_scholarship_question,
+)
 
 MOCK_CLARIFICATION_TRIGGER = "mock:needs_clarification"
 SAFE_ERROR_ANSWER = "The request could not be completed."
@@ -110,27 +123,61 @@ def create_app(
     *,
     timeout_seconds: float = 30,
     semantic_retriever=None,
+    vector_retriever=None,
     semantic_top_k: int = 3,
     semantic_min_score: float = 0.2,
     jobs_today_provider: Callable[[], date] | None = None,
+    max_merged_candidates: int = 10,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
     repository = repository if repository is not None else create_default_course_program_repository()
     if isinstance(repository, CatalogReader):
         course_queries = HybridQueryService(repository, synthesis_client, semantic_retriever,
-            timeout_seconds=timeout_seconds, top_k=semantic_top_k, min_score=semantic_min_score)
+            vector_retriever=vector_retriever, timeout_seconds=timeout_seconds,
+            top_k=semantic_top_k, min_score=semantic_min_score,
+            max_candidates=max_merged_candidates)
     else:
         course_queries = CourseQueryService(repository, synthesis_client, timeout_seconds)
     scholarship_queries = (
-        ScholarshipQueryService(repository)
+        ScholarshipQueryService(
+            repository,
+            vector_retriever,
+            max_candidates=max_merged_candidates,
+        )
         if isinstance(repository, ScholarshipReader)
         else None
     )
     jobs_today_provider = jobs_today_provider or canberra_today
     job_queries = (
-        JobQueryService(repository, jobs_today_provider)
+        JobQueryService(
+            repository,
+            jobs_today_provider,
+            vector_retriever,
+            max_candidates=max_merged_candidates,
+            min_score=semantic_min_score,
+        )
         if isinstance(repository, JobReader)
+        else None
+    )
+    accommodation_queries = (
+        DomainResourceQueryService(
+            repository,
+            "accommodation",
+            vector_retriever,
+            max_candidates=max_merged_candidates,
+        )
+        if isinstance(repository, ResourceReader)
+        else None
+    )
+    support_queries = (
+        DomainResourceQueryService(
+            repository,
+            "support",
+            vector_retriever,
+            max_candidates=max_merged_candidates,
+        )
+        if isinstance(repository, ResourceReader)
         else None
     )
 
@@ -261,7 +308,10 @@ def create_app(
         else:
             resolved_question = payload.question
 
-        if job_queries is not None:
+        pending = payload.conversation_state.pending_clarification
+        if job_queries is not None and is_plausible_job_question(
+            resolved_question, pending
+        ):
             job_response = await job_queries.answer(
                 resolved_question,
                 request_id,
@@ -271,7 +321,9 @@ def create_app(
             if job_response is not None:
                 return _mark_response(request, job_response)
 
-        if scholarship_queries is not None:
+        if scholarship_queries is not None and is_plausible_scholarship_question(
+            resolved_question, pending
+        ):
             scholarship_response = await scholarship_queries.answer(
                 resolved_question,
                 request_id,
@@ -279,6 +331,28 @@ def create_app(
             )
             if scholarship_response is not None:
                 return _mark_response(request, scholarship_response)
+
+        if accommodation_queries is not None and is_plausible_resource_question(
+            resolved_question, "accommodation", pending
+        ):
+            accommodation_response = await accommodation_queries.answer(
+                resolved_question,
+                request_id,
+                payload.conversation_state.pending_clarification,
+            )
+            if accommodation_response is not None:
+                return _mark_response(request, accommodation_response)
+
+        if support_queries is not None and is_plausible_resource_question(
+            resolved_question, "support", pending
+        ):
+            support_response = await support_queries.answer(
+                resolved_question,
+                request_id,
+                payload.conversation_state.pending_clarification,
+            )
+            if support_response is not None:
+                return _mark_response(request, support_response)
 
         course_response = await course_queries.answer(resolved_question, request_id)
         if course_response is not None:
@@ -289,7 +363,8 @@ def create_app(
         if (
             COURSE_CODE_CANDIDATE_PATTERN.search(payload.question)
             or re.search(
-                r"\b(?:ANU|course|courses|program|prerequisites?|requisites?|"
+                r"\b(?:ANU|course|courses|program|major|minor|speciali[sz]ation|"
+                r"prerequisites?|requisites?|"
                 r"scholarships?|accommodation|jobs?|events?|support)\b",
                 payload.question,
                 re.IGNORECASE,
@@ -346,6 +421,7 @@ def create_configured_app() -> FastAPI:
         timeout_seconds=settings.timeout_seconds,
         semantic_top_k=settings.semantic_top_k,
         semantic_min_score=settings.semantic_min_score,
+        max_merged_candidates=settings.max_merged_candidates,
     )
 
 

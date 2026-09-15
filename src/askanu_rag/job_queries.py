@@ -1,5 +1,6 @@
 """Deterministic, source-grounded Jobs retrieval and chat handling."""
 
+import math
 import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
@@ -18,6 +19,7 @@ from askanu_rag.models import (
     OkResponse,
 )
 from askanu_rag.retrieval import JobReader
+from askanu_rag.retrieval.hybrid import SharedHybridRetriever
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
 
 CANBERRA = ZoneInfo("Australia/Canberra")
@@ -34,11 +36,24 @@ CURRENT_WORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FIXED_TERM_PATTERN = re.compile(r"\bfixed[-\s]term\b", re.IGNORECASE)
+EMPLOYMENT_TYPE_PATTERN = re.compile(
+    r"\b(fixed[-\s]term|continuing|casual)\b", re.IGNORECASE
+)
 ROLE_REFERENCE_PATTERN = re.compile(
     r"\b(?:this|that)\s+(?:ANU\s+)?(?:job|role)\b", re.I
 )
 REQUIREMENTS_PATTERN = re.compile(
     r"\b(?:requirements?|qualifications?|selection\s+criteria|essential\s+criteria)\b",
+    re.I,
+)
+SEMANTIC_JOB_PATTERN = re.compile(
+    r"\b(?:related\s+to|interested\s+in|focus(?:ed)?\s+on|about|"
+    r"involv(?:e|es|ing))\b",
+    re.I,
+)
+JOB_TITLE_SHAPE_PATTERN = re.compile(
+    r"\b(?:officer|fellow|manager|director|coordinator|assistant|lead|"
+    r"analyst|engineer|developer|researcher|administrator|role)\b",
     re.I,
 )
 TITLE_PATTERNS = (
@@ -197,16 +212,231 @@ def _job_answer(record: JobRecord, today: date) -> str:
     return answer
 
 
+def _requirements_answer(record: JobRecord) -> str | None:
+    requirements = record.metadata_json.role_requirements
+    if not requirements:
+        return None
+    answer = (
+        f"Official requirements published for {record.title} "
+        f"(Job ID {record.entity_id}):\n- " + "\n- ".join(requirements)
+    )
+    if len(answer) > 3000 or UNSAFE_EVIDENCE.search(answer):
+        raise SynthesisError()
+    return answer
+
+
+def _normalize(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _contains_phrase(question: str, value: str) -> bool:
+    normalized = _normalize(question)
+    phrase = _normalize(value)
+    return bool(phrase) and re.search(
+        r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])",
+        normalized,
+    ) is not None
+
+
+def _job_filters(
+    question: str, records: Sequence[JobRecord]
+) -> tuple[dict[str, tuple[str, ...]], bool]:
+    """Extract only explicit values already present in current stored Jobs."""
+
+    filters: dict[str, tuple[str, ...]] = {}
+    normalized = _normalize(question)
+
+    employment_types = {
+        value
+        for record in records
+        for value in record.metadata_json.employment_types
+        if value.strip() and _contains_phrase(question, value.replace("-", " "))
+    }
+    if FIXED_TERM_PATTERN.search(question):
+        employment_types.update(
+            value
+            for record in records
+            for value in record.metadata_json.employment_types
+            if _normalize(value).replace("-", " ") == "fixed term"
+        )
+    requested_employment_types = {
+        _normalize(match.group(1)).replace("-", " ").title()
+        for match in EMPLOYMENT_TYPE_PATTERN.finditer(question)
+    }
+    employment_types.update(requested_employment_types)
+    if employment_types:
+        filters["employment_types"] = tuple(sorted(employment_types))
+
+    locations = set()
+    for record in records:
+        value = record.metadata_json.location
+        if value is None:
+            continue
+        aliases = {value, *re.split(r"\s*(?:/|,|;|\|)\s*", value)}
+        if any(
+            alias.strip()
+            and re.search(
+                r"\b(?:in|at|location(?:\s+is)?)\s+(?:the\s+)?"
+                + re.escape(_normalize(alias))
+                + r"(?![a-z0-9])",
+                normalized,
+            )
+            for alias in aliases
+        ):
+            locations.add(value)
+    if locations:
+        filters["location"] = tuple(sorted(locations))
+
+    categories = {
+        record.metadata_json.category
+        for record in records
+        if record.metadata_json.category is not None
+        and _contains_phrase(question, record.metadata_json.category)
+        and (
+            re.search(r"\bcategory\b", question, re.I)
+            or re.search(
+                r"\b(?:jobs?|roles?)\s+in\s+"
+                + re.escape(_normalize(record.metadata_json.category))
+                + r"(?![a-z0-9])",
+                normalized,
+            )
+        )
+    }
+    if categories:
+        filters["category"] = tuple(sorted(categories))
+
+    classifications = {
+        record.metadata_json.classification
+        for record in records
+        if record.metadata_json.classification is not None
+        and _contains_phrase(question, record.metadata_json.classification)
+        and re.search(r"\bclassification\b", question, re.I)
+    }
+    if classifications:
+        filters["classification"] = tuple(sorted(classifications))
+
+    salaries = {
+        record.metadata_json.salary
+        for record in records
+        if record.metadata_json.salary is not None
+        and _normalize(record.metadata_json.salary) in normalized
+        and re.search(r"\bsalary\b", question, re.I)
+    }
+    if salaries:
+        filters["salary"] = tuple(sorted(salaries))
+
+    closing_values = set()
+    if re.search(r"\bclos(?:e|es|ing)\b", question, re.I):
+        for record in records:
+            metadata = record.metadata_json
+            if metadata.closing_date and _contains_phrase(question, metadata.closing_date):
+                closing_values.add(metadata.closing_date)
+            if metadata.closing_text and _normalize(metadata.closing_text) in normalized:
+                closing_values.add(metadata.closing_text)
+    if closing_values:
+        filters["closing"] = tuple(sorted(closing_values))
+
+    requirements = {
+        item
+        for record in records
+        for item in (record.metadata_json.role_requirements or ())
+        if _normalize(item) in normalized
+        and re.search(r"\brequir(?:e|es|ed|ing|ements?)\b", question, re.I)
+    }
+    if requirements:
+        filters["role_requirements"] = tuple(sorted(requirements))
+
+    unmatched_explicit = bool(
+        (re.search(r"\bclassification\b", question, re.I) and not classifications)
+        or (re.search(r"\bcategory\b", question, re.I) and not categories)
+        or (re.search(r"\bsalary\b", question, re.I) and not salaries)
+        or (
+            re.search(r"\bclos(?:e|es|ing)\b.+\b\d{4}-\d{2}-\d{2}\b", question, re.I)
+            and not closing_values
+        )
+        or (
+            re.search(r"\b(?:jobs?|roles?)\s+in\s+[^?.!]+", question, re.I)
+            and not locations
+            and not categories
+        )
+        or (
+            re.search(r"\brequir(?:e|es|ed|ing)\b", question, re.I)
+            and not requirements
+        )
+    )
+    return filters, unmatched_explicit
+
+
+def _matches_job_filters(
+    record: JobRecord, filters: dict[str, tuple[str, ...]]
+) -> bool:
+    metadata = record.metadata_json
+    for field, expected in filters.items():
+        if field == "employment_types":
+            actual = {
+                _normalize(value).replace("-", " ")
+                for value in metadata.employment_types
+            }
+            if not all(
+                _normalize(value).replace("-", " ") in actual
+                for value in expected
+            ):
+                return False
+        elif field == "closing":
+            actual = {
+                value
+                for value in (metadata.closing_date, metadata.closing_text)
+                if value is not None
+            }
+            if not all(value in actual for value in expected):
+                return False
+        elif field == "role_requirements":
+            actual = {_normalize(value) for value in metadata.role_requirements or ()}
+            if not all(_normalize(value) in actual for value in expected):
+                return False
+        else:
+            actual_value = getattr(metadata, field)
+            if actual_value is None or not all(
+                _normalize(value) == _normalize(actual_value) for value in expected
+            ):
+                return False
+    return True
+
+
+def is_plausible_job_question(
+    question: str, pending: Clarification | None = None
+) -> bool:
+    """Cheap routing guard that performs no repository reads."""
+
+    pending_job = pending is not None and pending.type == "job_selection"
+    return bool(
+        pending_job
+        or JOB_ID_PATTERN.search(question)
+        or JOB_WORD_PATTERN.search(question)
+        or ROLE_REFERENCE_PATTERN.search(question)
+        or (_title_candidate(question) and JOB_TITLE_SHAPE_PATTERN.search(question))
+    )
+
+
 class JobQueryService:
-    """Answer bounded Jobs questions without Gemini or vector retrieval."""
+    """Answer Jobs with exact/current retrieval and optional bounded vectors."""
 
     def __init__(
         self,
         repository: JobReader,
         today_provider: Callable[[], date] = canberra_today,
+        vector_retriever=None,
+        *,
+        max_candidates: int = 10,
+        min_score: float = 0.2,
     ) -> None:
+        if not 0 < min_score <= 1:
+            raise ValueError("min_score must be in (0, 1]")
         self._repository = repository
         self._today_provider = today_provider
+        self._vector = vector_retriever
+        self._merger = SharedHybridRetriever(max_candidates=max_candidates)
+        self._min_score = min_score
 
     async def answer(
         self,
@@ -243,9 +473,17 @@ class JobQueryService:
                 )
 
         if selected is not None and REQUIREMENTS_PATTERN.search(question):
+            requirements_answer = _requirements_answer(selected)
+            if requirements_answer is not None:
+                return OkResponse(
+                    answer=requirements_answer,
+                    sources=[_source_from_record(selected)],
+                    request_id=request_id,
+                )
             return InsufficientEvidenceResponse(
                 answer=(
-                    "The stored Jobs v1 record does not contain source-backed "
+                    "The stored Jobs record does not contain direct-page, "
+                    "source-backed "
                     f"requirements for {selected.title} (Job ID {selected.entity_id}). "
                     "Please check the official job listing for the authoritative "
                     "requirements."
@@ -273,13 +511,70 @@ class JobQueryService:
                     request_id=request_id,
                 )
 
-        if _is_current_jobs_question(question):
-            employment_type = (
-                "Fixed Term" if FIXED_TERM_PATTERN.search(question) else None
+        semantic_intent = bool(
+            candidate is None and SEMANTIC_JOB_PATTERN.search(question)
+        )
+        current_records = self._repository.current_job_candidates(today)
+        filters, unmatched_explicit = _job_filters(question, current_records)
+        if (
+            _is_current_jobs_question(question)
+            or semantic_intent
+            or filters
+            or unmatched_explicit
+        ):
+            records = (
+                ()
+                if unmatched_explicit
+                else tuple(
+                    record
+                    for record in current_records
+                    if _matches_job_filters(record, filters)
+                )
             )
-            records = self._repository.current_jobs(
-                20, today, employment_type=employment_type
-            )
+            if semantic_intent:
+                if self._vector is None or not records:
+                    return InsufficientEvidenceResponse(
+                        answer=(
+                            "I could not establish sufficiently relevant current "
+                            "Jobs evidence for that topic."
+                        ),
+                        request_id=request_id,
+                    )
+                try:
+                    vector_hits = self._vector.search(
+                        question,
+                        domain="jobs",
+                        allowed_records=records,
+                        top_k=self._merger.max_candidates,
+                        min_score=self._min_score,
+                    )
+                except Exception:
+                    return InsufficientEvidenceResponse(
+                        answer=(
+                            "I could not establish sufficiently relevant current "
+                            "Jobs evidence for that topic."
+                        ),
+                        request_id=request_id,
+                    )
+                by_id = {record.record_id: record for record in records}
+                records = tuple(
+                    ranked.record
+                    for ranked in self._merger.merge(
+                        semantic=(
+                            (
+                                by_id[hit.record.record_id],
+                                hit.score,
+                                hit.retrieval_unit_ids,
+                            )
+                            for hit in vector_hits
+                            if hit.record.record_id in by_id
+                            and math.isfinite(hit.score)
+                            and self._min_score <= hit.score <= 1
+                        )
+                    )
+                )
+            else:
+                records = records[:20]
             if not records:
                 return InsufficientEvidenceResponse(
                     answer="I could not find stored current Jobs evidence.",

@@ -177,7 +177,13 @@ class FakeCursor:
             )
             return
         entity_type, code, *year = parameters
-        code_key = "course_code" if entity_type == "course" else "program_code"
+        code_key = (
+            "course_code"
+            if entity_type == "course"
+            else "program_code"
+            if entity_type == "program"
+            else "subplan_code"
+        )
         self.results = [
             row
             for row in self.rows

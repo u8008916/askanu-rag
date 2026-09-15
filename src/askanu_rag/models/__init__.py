@@ -19,6 +19,8 @@ from askanu_rag.models.contracts import (
     Source,
 )
 from askanu_rag.models.records import (
+    AccommodationMetadata,
+    AccommodationRecord,
     CommonMetadata,
     CommonRecord,
     CourseMetadata,
@@ -31,9 +33,14 @@ from askanu_rag.models.records import (
     RecordStatus,
     ScholarshipMetadata,
     ScholarshipRecord,
+    SubplanMetadata,
+    SupportMetadata,
+    SupportRecord,
 )
 
 __all__ = [
+    "AccommodationMetadata",
+    "AccommodationRecord",
     "AskRequest",
     "AskResponse",
     "Clarification",
@@ -61,5 +68,8 @@ __all__ = [
     "RecordStatus",
     "ScholarshipMetadata",
     "ScholarshipRecord",
+    "SubplanMetadata",
     "Source",
+    "SupportMetadata",
+    "SupportRecord",
 ]

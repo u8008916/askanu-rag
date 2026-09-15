@@ -16,6 +16,7 @@ from askanu_rag.retrieval import (
     UnavailableCourseProgramRepository,
     load_common_records,
 )
+from askanu_rag.retrieval.vector import VectorHit
 
 TODAY = date(2026, 9, 14)
 SCHOLARSHIP_FIXTURE = (
@@ -33,6 +34,11 @@ def make_job(
     employment_types: tuple[str, ...] = ("Fixed Term",),
     index_status: str = "PENDING",
     url_slug: str | None = None,
+    role_requirements: list[str] | None = None,
+    category: str | None = None,
+    location: str | None = "Canberra / ACT",
+    classification: str | None = "ANU Officer 6/7",
+    salary: str | None = "$95,000 - $105,000",
 ) -> JobRecord:
     content = f"{title}\nJob ID: {entity_id}\nSource-supported test evidence"
     observed = datetime(2026, 9, 14, 2, 0, tzinfo=timezone.utc)
@@ -57,11 +63,11 @@ def make_job(
         metadata_json=JobMetadata(
             entity_type="job",
             job_id=entity_id,
-            category=None,
+            category=category,
             employment_types=list(employment_types),
-            location="Canberra / ACT",
-            classification="ANU Officer 6/7",
-            salary="$95,000 - $105,000",
+            location=location,
+            classification=classification,
+            salary=salary,
             closing_text=(
                 f"Closes {closing_date}" if closing_date is not None else None
             ),
@@ -69,13 +75,18 @@ def make_job(
             closing_at=closing_at,
             status=status,
             summary="Synthetic unit-test role.",
+            role_requirements=role_requirements,
         ),
     )
 
 
-def ask(repo, question: str, *, pending=None, history=()):
+def ask(repo, question: str, *, pending=None, history=(), vector=None):
     with TestClient(
-        create_app(repo, jobs_today_provider=lambda: TODAY)
+        create_app(
+            repo,
+            jobs_today_provider=lambda: TODAY,
+            vector_retriever=vector,
+        )
     ) as client:
         response = client.post(
             "/api/v1/ask",
@@ -98,7 +109,7 @@ def ask(repo, question: str, *, pending=None, history=()):
     return response.json()
 
 
-def test_job_metadata_has_exact_frozen_twelve_keys_and_missing_values():
+def test_job_metadata_has_exact_approved_v2_keys_and_missing_values():
     metadata = make_job(closing_date=None, employment_types=()).metadata_json
 
     assert set(metadata.model_dump()) == {
@@ -114,11 +125,13 @@ def test_job_metadata_has_exact_frozen_twelve_keys_and_missing_values():
         "closing_at",
         "status",
         "summary",
+        "role_requirements",
     }
     assert metadata.category is None
     assert metadata.employment_types == []
     assert metadata.closing_date is None
     assert metadata.closing_at is None
+    assert metadata.role_requirements is None
 
 
 def test_job_metadata_preserves_source_supported_timezone_aware_closing_at():
@@ -423,7 +436,7 @@ def test_selected_job_without_requirements_returns_grounded_insufficient_evidenc
         }
     ]
     answer = body["answer"].casefold()
-    assert "does not contain source-backed requirements" in answer
+    assert "does not contain direct-page" in answer
     assert "official job listing" in answer
     for unsupported in (
         job.metadata_json.classification,
@@ -434,6 +447,56 @@ def test_selected_job_without_requirements_returns_grounded_insufficient_evidenc
         "suitable",
     ):
         assert unsupported.casefold() not in answer
+
+
+def test_direct_page_role_requirements_are_returned_verbatim_with_source():
+    job = make_job(
+        "563412",
+        title="Capability Lead",
+        role_requirements=[
+            "Demonstrated experience leading agile practice.",
+            "Strong stakeholder communication skills.",
+        ],
+    )
+
+    body = ask(
+        CourseProgramRepository([job]),
+        "What are the requirements for job 563412?",
+    )
+
+    assert body["status"] == "ok"
+    assert body["sources"][0]["record_id"] == job.record_id
+    assert "Demonstrated experience leading agile practice." in body["answer"]
+    assert "Strong stakeholder communication skills." in body["answer"]
+
+
+def test_current_hybrid_jobs_hard_filter_excludes_closed_semantic_match():
+    current = make_job("563556", title="Cybersecurity Network Engineer")
+    closed = make_job(
+        "563557",
+        title="Closed Cybersecurity Architect",
+        status="closed",
+        closing_date="2026-09-30",
+    )
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            from askanu_rag.retrieval.vector import VectorHit
+
+            assert domain == "jobs"
+            assert current in allowed_records
+            assert closed not in allowed_records
+            return (VectorHit(current, 0.9, ("whole",)),)
+
+    body = ask(
+        CourseProgramRepository([current, closed]),
+        "Are there current jobs related to cybersecurity or networks?",
+        vector=FixedVector(),
+    )
+
+    assert body["status"] == "ok"
+    assert [item["job_id"] for item in body["items"]] == ["563556"]
+    assert all(source["record_id"] != closed.record_id for source in body["sources"])
 
 
 @pytest.mark.parametrize(
@@ -494,6 +557,34 @@ def test_canberra_today_and_current_jobs_follow_canberra_midnight(monkeypatch):
     assert [item["job_id"] for item in response.json()["items"]] == ["1"]
 
 
+def test_semantic_current_jobs_rank_over_complete_hard_filtered_pool():
+    current = [
+        make_job(str(100000 + index), title=f"Current Role {index}")
+        for index in range(1, 26)
+    ]
+    best = current[24]
+    closed = make_job("100026", title="Closed Semantic Decoy", status="closed")
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            assert domain == "jobs"
+            assert len(allowed_records) == 25
+            assert best in allowed_records
+            assert closed not in allowed_records
+            return (
+                VectorHit(closed, 0.99, ("whole",)),
+                VectorHit(best, 0.98, ("whole",)),
+            )
+
+    body = ask(
+        CourseProgramRepository([*current, closed]),
+        "What current jobs are related to quantum computing?",
+        vector=FixedVector(),
+    )
+
+    assert [item["record_id"] for item in body["items"]] == [best.record_id]
+    assert closed.record_id not in {source["record_id"] for source in body["sources"]}
+
 def test_status_null_without_deadline_is_never_promoted_to_current():
     unknown = make_job("55", status=None, closing_date=None)
 
@@ -501,3 +592,287 @@ def test_status_null_without_deadline_is_never_promoted_to_current():
 
     assert body["status"] == "insufficient_evidence"
     assert body["sources"] == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Jobs related to cybersecurity",
+        "What ANU jobs are about networks?",
+        "Are there roles focused on machine learning?",
+        "What ANU jobs involve data science?",
+    ],
+)
+def test_general_topic_jobs_reach_semantic_current_retrieval(question):
+    job = make_job("610001", title="Cybersecurity Data Engineer")
+
+    class SemanticSpy:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query, *, domain, allowed_records, top_k, min_score):
+            self.calls += 1
+            assert query == question
+            assert domain == "jobs"
+            assert allowed_records == (job,)
+            assert top_k == 10
+            assert min_score == 0.2
+            return (VectorHit(job, 0.9, ("whole",)),)
+
+    vector = SemanticSpy()
+    body = ask(CourseProgramRepository([job]), question, vector=vector)
+
+    assert body["status"] == "ok"
+    assert [item["job_id"] for item in body["items"]] == [job.entity_id]
+    assert vector.calls == 1
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "error", "weak", "empty"])
+def test_semantic_job_failure_never_falls_back_to_arbitrary_current_list(failure):
+    first = make_job("610010", title="Unrelated First Current Job")
+    second = make_job("610011", title="Unrelated Second Current Job")
+
+    class FailingOrIrrelevantVector:
+        def search(self, *_args, **_kwargs):
+            if failure == "error":
+                raise RuntimeError("semantic provider unavailable")
+            if failure == "weak":
+                return (VectorHit(first, 0.1, ("whole",)),)
+            return ()
+
+    vector = None if failure == "unavailable" else FailingOrIrrelevantVector()
+    body = ask(
+        CourseProgramRepository([first, second]),
+        "What current ANU jobs are related to cybersecurity?",
+        vector=vector,
+    )
+
+    assert body["status"] == "insufficient_evidence"
+    assert body["items"] == []
+    assert body["sources"] == []
+    assert first.title not in body["answer"]
+
+
+def test_structured_job_filters_use_only_explicit_stored_values():
+    canberra_continuing = make_job(
+        "610020",
+        title="Canberra Continuing Role",
+        employment_types=("Continuing",),
+        location="Canberra / ACT",
+        category="Information Technology",
+        classification="ANU08",
+        salary="$112,000 - $120,000 plus 17% superannuation",
+    )
+    sydney_casual = make_job(
+        "610021",
+        title="Sydney Casual Role",
+        employment_types=("Casual",),
+        location="Sydney / NSW",
+        category="Administration",
+        classification="ANU05",
+        salary="$52.50 per hour",
+    )
+    repository = CourseProgramRepository([canberra_continuing, sydney_casual])
+
+    cases = (
+        ("Show me current jobs in Canberra", canberra_continuing),
+        ("Show me current continuing jobs", canberra_continuing),
+        ("Show me current casual jobs", sydney_casual),
+        ("Show jobs with classification ANU08", canberra_continuing),
+        ("Show current jobs in Information Technology", canberra_continuing),
+        (
+            "Show current jobs with salary $112,000 - $120,000 plus 17% superannuation",
+            canberra_continuing,
+        ),
+    )
+    for question, expected in cases:
+        body = ask(repository, question)
+        assert body["status"] == "ok", question
+        assert [item["job_id"] for item in body["items"]] == [expected.entity_id]
+
+    no_match = ask(repository, "Show me current jobs in Darwin")
+    assert no_match["status"] == "insufficient_evidence"
+    assert no_match["items"] == []
+    assert no_match["sources"] == []
+
+
+def test_closing_and_direct_role_requirement_filters_are_source_backed():
+    matching = make_job(
+        "610025",
+        title="Source-backed Requirements Role",
+        closing_date="2026-09-22",
+        role_requirements=["Demonstrated Python security engineering experience."],
+    )
+    other = make_job(
+        "610026",
+        title="Other Role",
+        closing_date="2026-09-29",
+        role_requirements=["Demonstrated finance administration experience."],
+    )
+    repository = CourseProgramRepository([matching, other])
+
+    by_closing = ask(repository, "Show current jobs closing 2026-09-22")
+    by_requirement = ask(
+        repository,
+        "Show current jobs requiring Demonstrated Python security engineering experience.",
+    )
+
+    assert [item["job_id"] for item in by_closing["items"]] == [matching.entity_id]
+    assert [item["job_id"] for item in by_requirement["items"]] == [matching.entity_id]
+
+
+def test_structured_filters_remain_hard_inside_semantic_job_discovery():
+    allowed = make_job(
+        "610030",
+        title="Canberra Security Engineer",
+        location="Canberra / ACT",
+        employment_types=("Continuing",),
+    )
+    disallowed_location = make_job(
+        "610031",
+        title="Sydney Security Engineer",
+        location="Sydney / NSW",
+        employment_types=("Continuing",),
+    )
+    closed = make_job(
+        "610032",
+        title="Closed Canberra Security Architect",
+        status="closed",
+        location="Canberra / ACT",
+        employment_types=("Continuing",),
+    )
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            assert domain == "jobs"
+            assert allowed_records == (allowed,)
+            return (
+                VectorHit(closed, 1.0, ("whole",)),
+                VectorHit(disallowed_location, 0.99, ("whole",)),
+                VectorHit(allowed, 0.9, ("whole",)),
+            )
+
+    body = ask(
+        CourseProgramRepository([allowed, disallowed_location, closed]),
+        "What current continuing jobs in Canberra are related to cybersecurity?",
+        vector=FixedVector(),
+    )
+
+    assert body["status"] == "ok"
+    assert [item["job_id"] for item in body["items"]] == [allowed.entity_id]
+
+
+def test_unknown_in_constraint_blocks_semantic_jobs_before_vector_search():
+    canberra = make_job(
+        "610033",
+        title="Canberra Cybersecurity Engineer",
+        location="Canberra / ACT",
+    )
+    sydney = make_job(
+        "610034",
+        title="Sydney Cybersecurity Engineer",
+        location="Sydney / NSW",
+    )
+
+    class MustNotRun:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, *_args, **_kwargs):
+            self.calls += 1
+            return (VectorHit(canberra, 0.99, ("whole",)),)
+
+    vector = MustNotRun()
+    body = ask(
+        CourseProgramRepository([canberra, sydney]),
+        "What jobs in Darwin are related to cybersecurity?",
+        vector=vector,
+    )
+
+    assert body["status"] == "insufficient_evidence"
+    assert body["items"] == []
+    assert body["sources"] == []
+    assert canberra.title not in body["answer"]
+    assert sydney.title not in body["answer"]
+    assert vector.calls == 0
+
+
+def test_expired_by_date_high_score_job_is_excluded_before_semantic_ranking():
+    valid = make_job(
+        "610035",
+        title="Current Network Security Engineer",
+        closing_date="2026-09-20",
+    )
+    expired = make_job(
+        "610036",
+        title="Expired Cybersecurity Architect",
+        status="current",
+        closing_date="2026-09-13",
+    )
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            assert domain == "jobs"
+            assert allowed_records == (valid,)
+            return (
+                VectorHit(expired, 0.99, ("whole",)),
+                VectorHit(valid, 0.8, ("whole",)),
+            )
+
+    body = ask(
+        CourseProgramRepository([valid, expired]),
+        "What jobs are related to cybersecurity and network security?",
+        vector=FixedVector(),
+    )
+
+    assert body["status"] == "ok"
+    assert [item["job_id"] for item in body["items"]] == [valid.entity_id]
+    assert expired.record_id not in {
+        source["record_id"] for source in body["sources"]
+    }
+
+
+def test_exact_job_id_and_title_bypass_semantic_discovery():
+    job = make_job("610040", title="Cybersecurity Research Officer")
+
+    class MustNotRun:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("exact Jobs lookup must precede semantic discovery")
+
+    vector = MustNotRun()
+    repository = CourseProgramRepository([job])
+
+    by_id = ask(repository, "Tell me about job 610040", vector=vector)
+    by_title = ask(repository, "Tell me about Cybersecurity Research Officer", vector=vector)
+
+    assert by_id["sources"][0]["record_id"] == job.record_id
+    assert by_title["sources"][0]["record_id"] == job.record_id
+    assert vector.calls == 0
+
+
+def test_generic_current_jobs_remain_deterministic_without_vector_relevance():
+    first = make_job("610050", title="First", closing_date="2026-09-15")
+    second = make_job("610051", title="Second", closing_date="2026-09-16")
+
+    class MustNotRun:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("generic current listing must not require vectors")
+
+    vector = MustNotRun()
+    body = ask(
+        CourseProgramRepository([second, first]),
+        "Show me current jobs",
+        vector=vector,
+    )
+
+    assert body["status"] == "ok"
+    assert [item["job_id"] for item in body["items"]] == ["610050", "610051"]
+    assert vector.calls == 0

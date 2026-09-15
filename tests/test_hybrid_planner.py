@@ -198,13 +198,11 @@ def test_local_vector_description_and_grounded_gemini(repo, question, expected):
         assert source == {"record_id": stored.record_id, "source_id": stored.source_id, "title": stored.title, "url": str(stored.canonical_url), "domain": stored.domain}
 
 
-def test_semantic_unapproved_canonical_host_not_indexed(records):
+def test_unapproved_canonical_host_is_rejected_before_indexing(records):
     values = records[0].model_dump(mode="json")
     values["canonical_url"] = "https://evil.example.com"
-    repo = CourseProgramRepository([CourseProgramRecord.model_validate(values)])
-    vector = SpyVectors((SemanticHit(values["record_id"], 1.0),))
-    body = post(repo, "Which course teaches programming?", vector).json()
-    assert body["status"] == "insufficient_evidence" and not vector.calls
+    with pytest.raises(ValidationError, match="canonical_url"):
+        CourseProgramRecord.model_validate(values)
 
 
 def test_vector_top_k_threshold_ties_empty_and_unknown_words(records):
@@ -297,7 +295,29 @@ def test_program_identity_does_not_acquire_stricter_schema_grammar(records):
     value["metadata_json"]["program_code"] = "B-ACCT.X"
     value["entity_id"] = "B-ACCT.X_2026"
     value["record_id"] = "courses:program:B-ACCT.X_2026"
+    value["canonical_url"] = (
+        "https://programsandcourses.anu.edu.au/2026/program/b-acct.x"
+    )
     repo = CourseProgramRepository([CourseProgramRecord.model_validate(value)])
     vector = SpyVectors()
     body = post(repo, "Tell me about b-acct.x", vector).json()
     assert body["status"] == "ok" and not vector.calls
+
+
+def test_one_identity_with_multiple_facts_is_not_misclassified_as_a_list(repo):
+    plan = plan_query(
+        "What are the prerequisites and offerings for COMP1110?", repo
+    )
+    assert plan.identifiers == (("course", "COMP1110"),)
+    assert plan.list_shaped is False
+
+
+def test_multiple_explicit_identities_are_list_shaped_without_keyword(repo):
+    plan = plan_query("COMP1110 and COMP1100 prerequisites", repo)
+    assert len(plan.identifiers) == 2
+    assert plan.list_shaped is True
+
+
+def test_plural_discovery_and_explicit_list_are_list_shaped(repo):
+    assert plan_query("Which courses involve programming?", repo).list_shaped
+    assert plan_query("List majors", repo).list_shaped
