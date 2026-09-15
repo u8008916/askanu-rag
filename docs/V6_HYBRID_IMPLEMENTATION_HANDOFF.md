@@ -408,7 +408,7 @@ Exact Scholarships/Jobs/conversation/resources regression command:
 .venv\Scripts\python.exe -m pytest tests/test_scholarships.py tests/test_jobs.py tests/test_conversation.py tests/test_resources.py tests/test_domain_routing.py -o addopts= --basetemp <workspace-temp>
 ```
 
-Result: `186 passed`.
+Result: `188 passed`.
 
 Full suite:
 
@@ -416,7 +416,7 @@ Full suite:
 .venv\Scripts\python.exe -m pytest --basetemp <workspace-temp>
 ```
 
-Result: `569 passed, 60 skipped` (`629 collected`). Fifty-nine skips are guarded PostgreSQL
+Result: `571 passed, 60 skipped` (`631 collected`). Fifty-nine skips are guarded PostgreSQL
 integration cases because no disposable local test URL is configured; the
 remaining skip is the existing Windows symlink-privilege case.
 The three warnings are existing dependency deprecations.

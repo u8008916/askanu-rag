@@ -571,9 +571,9 @@ The correction changes exactly `job_queries.py`, `scholarship_queries.py`,
 handoff. No migration/schema/public API/provider/Events/Position Description
 work was added.
 
-- Jobs focused: `57 passed`.
+- Jobs focused: `59 passed`.
 - Scholarships focused: `90 passed`.
-- Full suite: `569 passed, 60 skipped, 3 warnings` (`629 collected`).
+- Full suite: `571 passed, 60 skipped, 3 warnings` (`631 collected`).
 - The 59 guarded PostgreSQL tests remain skipped without a disposable test
   database; the other skip is the Windows symlink-privilege case.
 - Offline Alembic SQL compilation is not PostgreSQL 18 or live migration

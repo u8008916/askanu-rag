@@ -356,7 +356,6 @@ def _job_filters(
         )
         or (
             re.search(r"\b(?:jobs?|roles?)\s+in\s+[^?.!]+", question, re.I)
-            and not SEMANTIC_JOB_PATTERN.search(question)
             and not locations
             and not categories
         )

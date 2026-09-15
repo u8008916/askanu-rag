@@ -762,6 +762,76 @@ def test_structured_filters_remain_hard_inside_semantic_job_discovery():
     assert [item["job_id"] for item in body["items"]] == [allowed.entity_id]
 
 
+def test_unknown_in_constraint_blocks_semantic_jobs_before_vector_search():
+    canberra = make_job(
+        "610033",
+        title="Canberra Cybersecurity Engineer",
+        location="Canberra / ACT",
+    )
+    sydney = make_job(
+        "610034",
+        title="Sydney Cybersecurity Engineer",
+        location="Sydney / NSW",
+    )
+
+    class MustNotRun:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, *_args, **_kwargs):
+            self.calls += 1
+            return (VectorHit(canberra, 0.99, ("whole",)),)
+
+    vector = MustNotRun()
+    body = ask(
+        CourseProgramRepository([canberra, sydney]),
+        "What jobs in Darwin are related to cybersecurity?",
+        vector=vector,
+    )
+
+    assert body["status"] == "insufficient_evidence"
+    assert body["items"] == []
+    assert body["sources"] == []
+    assert canberra.title not in body["answer"]
+    assert sydney.title not in body["answer"]
+    assert vector.calls == 0
+
+
+def test_expired_by_date_high_score_job_is_excluded_before_semantic_ranking():
+    valid = make_job(
+        "610035",
+        title="Current Network Security Engineer",
+        closing_date="2026-09-20",
+    )
+    expired = make_job(
+        "610036",
+        title="Expired Cybersecurity Architect",
+        status="current",
+        closing_date="2026-09-13",
+    )
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            assert domain == "jobs"
+            assert allowed_records == (valid,)
+            return (
+                VectorHit(expired, 0.99, ("whole",)),
+                VectorHit(valid, 0.8, ("whole",)),
+            )
+
+    body = ask(
+        CourseProgramRepository([valid, expired]),
+        "What jobs are related to cybersecurity and network security?",
+        vector=FixedVector(),
+    )
+
+    assert body["status"] == "ok"
+    assert [item["job_id"] for item in body["items"]] == [valid.entity_id]
+    assert expired.record_id not in {
+        source["record_id"] for source in body["sources"]
+    }
+
+
 def test_exact_job_id_and_title_bypass_semantic_discovery():
     job = make_job("610040", title="Cybersecurity Research Officer")
 
