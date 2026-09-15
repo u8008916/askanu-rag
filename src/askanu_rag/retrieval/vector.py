@@ -270,8 +270,13 @@ class InMemoryVectorRepository:
         target_version: str,
     ) -> None:
         current = self.records.get(record.record_id)
-        if current is None or current.content_hash != record.content_hash:
-            raise ValueError("source record changed before embedding commit")
+        if (
+            current is None
+            or current.content_hash != record.content_hash
+            or current.index_status != record.index_status
+            or current.embedding_version != record.embedding_version
+        ):
+            raise ValueError("source/index state changed before embedding commit")
         for row in rows:
             key = (
                 row.source_record_id,
@@ -445,11 +450,21 @@ class PostgresVectorRepository:
                         UPDATE source_records
                         SET index_status = 'INDEXED', embedding_version = %s
                         WHERE record_id = %s AND content_hash = %s
+                          AND index_status = %s
+                          AND embedding_version IS NOT DISTINCT FROM %s
                         """,
-                        (target_version, record.record_id, record.content_hash),
+                        (
+                            target_version,
+                            record.record_id,
+                            record.content_hash,
+                            record.index_status,
+                            record.embedding_version,
+                        ),
                     )
                     if cursor.rowcount != 1:
-                        raise ValueError("source record changed before embedding commit")
+                        raise ValueError(
+                            "source/index state changed before embedding commit"
+                        )
         except Exception:
             raise RepositoryUnavailableError() from None
 

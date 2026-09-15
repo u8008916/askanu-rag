@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from askanu_rag.database import RepositoryUnavailableError
 from askanu_rag.retrieval import load_course_program_records
-from askanu_rag.retrieval.vector import PostgresVectorRepository
+from askanu_rag.retrieval.vector import (
+    PersistedEmbedding,
+    PostgresVectorRepository,
+)
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/day5_course_program_records.json"
 
@@ -41,6 +47,52 @@ class FakeConnection:
 
     def cursor(self):
         return self._cursor
+
+
+class StatefulSuccessCursor(FakeCursor):
+    def __init__(self, state):
+        super().__init__([])
+        self.state = state
+        self.pending_rows = []
+        self.committed_rows = []
+
+    def execute(self, query, parameters=()):
+        self.calls.append((query, parameters))
+        if "INSERT INTO source_record_embeddings" in query:
+            self.pending_rows.append(parameters)
+            self.rowcount = 1
+            return
+        if "UPDATE source_records" in query and "embedding_version = %s" in query:
+            target, record_id, content_hash, index_status, embedding_version = (
+                parameters
+            )
+            matches = (
+                self.state["record_id"] == record_id
+                and self.state["content_hash"] == content_hash
+                and self.state["index_status"] == index_status
+                and self.state["embedding_version"] == embedding_version
+            )
+            self.rowcount = int(matches)
+            if matches:
+                self.state.update(
+                    index_status="INDEXED", embedding_version=target
+                )
+
+
+class TransactionalFakeConnection(FakeConnection):
+    def __enter__(self):
+        self._original_state = dict(self._cursor.state)
+        return self
+
+    def __exit__(self, exc_type, *_args):
+        if exc_type is not None:
+            self._cursor.state.clear()
+            self._cursor.state.update(self._original_state)
+            self._cursor.pending_rows.clear()
+        else:
+            self._cursor.committed_rows.extend(self._cursor.pending_rows)
+            self._cursor.pending_rows.clear()
+        return False
 
 
 def test_postgres_vector_search_hard_filters_and_rehydrates_source_record():
@@ -162,4 +214,98 @@ def test_postgres_failure_uses_index_state_compare_and_set():
         record.content_hash,
         "PENDING",
         None,
+    )
+
+
+def persisted_row(record, version="v2"):
+    return PersistedEmbedding(
+        record.record_id,
+        "whole",
+        record.content_hash,
+        "a" * 64,
+        "model",
+        version,
+        (1.0, 0.0),
+    )
+
+
+@pytest.mark.parametrize(
+    ("index_status", "embedding_version"),
+    [("PENDING", None), ("INDEXED", "v1")],
+)
+def test_postgres_success_cas_commits_matching_start_state(
+    index_status, embedding_version
+):
+    snapshot = load_course_program_records(FIXTURE)[0].model_copy(
+        update={
+            "status": "CHANGED" if index_status == "PENDING" else "UNCHANGED",
+            "index_status": index_status,
+            "embedding_version": embedding_version,
+        }
+    )
+    state = {
+        "record_id": snapshot.record_id,
+        "content_hash": snapshot.content_hash,
+        "index_status": index_status,
+        "embedding_version": embedding_version,
+    }
+    cursor = StatefulSuccessCursor(state)
+    repository = PostgresVectorRepository(
+        lambda: TransactionalFakeConnection(cursor)
+    )
+
+    repository.persist_success(snapshot, (persisted_row(snapshot),), "v2")
+
+    assert (state["index_status"], state["embedding_version"]) == (
+        "INDEXED",
+        "v2",
+    )
+    assert len(cursor.committed_rows) == 1
+    update_query, update_parameters = cursor.calls[-1]
+    assert "content_hash = %s" in update_query
+    assert "index_status = %s" in update_query
+    assert "embedding_version IS NOT DISTINCT FROM %s" in update_query
+    assert update_parameters == (
+        "v2",
+        snapshot.record_id,
+        snapshot.content_hash,
+        index_status,
+        embedding_version,
+    )
+
+
+def test_postgres_late_v2_success_cannot_overwrite_committed_v3():
+    snapshot = load_course_program_records(FIXTURE)[0].model_copy(
+        update={
+            "status": "UNCHANGED",
+            "index_status": "INDEXED",
+            "embedding_version": "v1",
+        }
+    )
+    state = {
+        "record_id": snapshot.record_id,
+        "content_hash": snapshot.content_hash,
+        "index_status": "INDEXED",
+        "embedding_version": "v3",
+    }
+    cursor = StatefulSuccessCursor(state)
+    repository = PostgresVectorRepository(
+        lambda: TransactionalFakeConnection(cursor)
+    )
+
+    with pytest.raises(RepositoryUnavailableError):
+        repository.persist_success(snapshot, (persisted_row(snapshot),), "v2")
+
+    assert (state["index_status"], state["embedding_version"]) == (
+        "INDEXED",
+        "v3",
+    )
+    assert cursor.committed_rows == []
+    assert cursor.pending_rows == []
+    assert cursor.calls[-1][1] == (
+        "v2",
+        snapshot.record_id,
+        snapshot.content_hash,
+        "INDEXED",
+        "v1",
     )

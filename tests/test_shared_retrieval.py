@@ -193,6 +193,39 @@ def test_late_failure_cannot_overwrite_concurrent_index_success():
     )
 
 
+def test_late_success_cannot_overwrite_newer_committed_version_in_memory():
+    source = records()[0]
+    snapshot = source.model_copy(
+        update={
+            "status": "UNCHANGED",
+            "index_status": "INDEXED",
+            "embedding_version": "v1",
+        }
+    )
+    repository = InMemoryVectorRepository([snapshot])
+    repository.records[source.record_id] = snapshot.model_copy(
+        update={"embedding_version": "v3"}
+    )
+    late_v2 = PersistedEmbedding(
+        source.record_id,
+        "whole",
+        source.content_hash,
+        "a" * 64,
+        "model",
+        "v2",
+        (1.0, 0.0),
+    )
+
+    with pytest.raises(
+        ValueError, match="source/index state changed before embedding commit"
+    ):
+        repository.persist_success(snapshot, (late_v2,), "v2")
+
+    current = repository.records[source.record_id]
+    assert (current.index_status, current.embedding_version) == ("INDEXED", "v3")
+    assert repository.rows == {}
+
+
 def test_persisted_semantic_search_dedupes_units_and_rejects_stale_or_weak_rows():
     first, second = records()[:2]
     version = effective_embedding_version(

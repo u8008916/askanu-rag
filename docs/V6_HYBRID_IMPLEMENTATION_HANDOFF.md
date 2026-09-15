@@ -449,27 +449,31 @@ The targeted Carmen-owned review findings requested for PR #25 are resolved in
 the local correction diff and verified by the results above. This statement
 does not clear the production/provider/PostgreSQL gates below.
 
-### Day 11 second-pass local delta
+### Day 11 second pass and PR #27 review correction
 
-The follow-up uncommitted review tree adds LKG-safe `persist_failure` behavior
-and shared richer-record handoff loading. Focused lifecycle/vector/handoff
-verification passed with `71 passed, 1 skipped`. The complete local suite then
-passed with `577 passed, 60 skipped` (`637 collected`); the skip split remains
-59 guarded PostgreSQL integration cases plus the existing Windows symlink case.
+The previous reviewed PR head was `a6f75e0`. Its final pre-correction evidence
+was `584 passed, 61 skipped, 3 warnings`, with Alembic head
+`20260915_0007`.
 
-Also passed after the delta:
+The PR #27 review correction adds success-path compare-and-set protection on
+the task's starting source hash, index status and embedding version. A late v2
+success can no longer overwrite an already committed v3 state, and PostgreSQL
+rolls back the stale worker's vector writes in the same transaction. Focused
+lifecycle/vector repository verification passed with `40 passed`. The complete
+suite after the correction passed with `588 passed, 61 skipped, 3 warnings`.
+
+The following checks also passed after the correction:
 
 ```text
 .venv\Scripts\python.exe -m pip check
 .venv\Scripts\python.exe -m compileall -q src tests migrations
-.venv\Scripts\python.exe -m alembic upgrade head --sql
 .venv\Scripts\python.exe -m alembic heads
 git diff --check
 ```
 
-Offline Alembic generation used a non-secret placeholder URL, performed no
-connection, and reached the unchanged single head `20260915_0006`. No real
-embedding provider, database migration, deployment or production data was used.
+`alembic heads` returned the existing single head `20260915_0007`. No final
+post-correction commit SHA is claimed here. No real embedding provider,
+database operation, migration change, deployment or production data was used.
 
 ## 12. Cross-repository dependencies and release gates
 
