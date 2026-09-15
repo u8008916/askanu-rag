@@ -112,3 +112,16 @@ def test_downgrade_refuses_subplan_data_and_restores_0005_shapes():
     assert "DELETE FROM" not in executed
     assert "upper(canonical_url)" not in executed
     assert "UPDATE source_records" not in executed
+
+
+def test_0006_nullable_course_and_subplan_arrays_are_null_safe():
+    text = REVISION.read_text(encoding="utf-8")
+
+    assert (
+        "jsonb_typeof(metadata_json -> 'learning_outcomes') = 'null'"
+        in text
+    )
+    assert (
+        "jsonb_typeof(metadata_json -> 'relevant_degrees') = 'null'"
+        in text
+    )

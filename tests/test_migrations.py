@@ -51,7 +51,7 @@ def test_alembic_revision_is_single_versioned_head():
         capture_output=True,
         text=True,
     )
-    assert "20260915_0006 (head)" in result.stdout
+    assert "20260915_0007 (head)" in result.stdout
 
 
 def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
@@ -193,3 +193,11 @@ def test_container_includes_explicit_migration_entrypoint_files():
     assert "COPY migrations ./migrations" in dockerfile
     assert "!alembic.ini" in dockerignore
     assert "!migrations/**" in dockerignore
+
+
+def test_alembic_logging_preserves_existing_application_loggers():
+    env_text = (
+        ROOT / "migrations" / "env.py"
+    ).read_text(encoding="utf-8")
+
+    assert "disable_existing_loggers=False" in env_text
