@@ -469,3 +469,71 @@ contract-aligned source-backed fixture/writer; run dry-run/zero-write evidence;
 then prove controlled `NEW`, repeat `UNCHANGED`, failure preservation, Current
 Jobs ordering, exact lookup and canonical URLs before discussing Scheduler or
 write-gate enablement. No live/cloud step is performed by this local task.
+
+## V6 revision 20260915_0005 — local only
+
+`20260915_0005` is append-only after `20260914_0004`. It backfills Jobs
+`role_requirements` to JSON null, adds the approved Accommodation/Support shared
+record checks, enables pgvector and creates `source_record_embeddings`. It does
+not change the 16 source-record columns or the read-only
+`course_program_records` compatibility view, and it creates no ANN index.
+
+Do not apply this revision to Cloud SQL until Qasim has reviewed:
+
+1. Will's Jobs v2 and Accommodation/Support normalized contracts/fixtures;
+2. the production embedding provider/model/version/dimension and secret path;
+3. worker ownership and bounded invocation;
+4. PostgreSQL 18 upgrade and downgrade on a disposable database;
+5. old/new RAG reads, scraper writes, compatibility-view non-updatability and
+   least-privilege grants; and
+6. a frozen corpus evaluation supporting the selected threshold/top-k.
+
+The table, indexer and query adapter are implemented and test-covered locally,
+but are not wired into normal production startup. Production enablement remains
+blocked on provider/model/dimension, effective retrieval-policy version,
+credentials, worker ownership/invocation, evaluation thresholds and rollout
+approval. V6 intentionally defines no historical-vector garbage collection.
+
+Normal web startup never runs this migration or indexing. No production
+migration, Cloud Run, IAM, Secret Manager, Scheduler or source-data change was
+performed by the local V6 implementation.
+
+## V6 revision 20260915_0006 — Courses-family local candidate
+
+`20260915_0006` is append-only after `20260915_0005`; the migration graph has a
+single head. It expands the existing Courses source/domain to Course, Program,
+Major, Minor and Specialisation, normalizes the previously accepted exact
+uppercase Course/Program URL path form to lowercase, and rejects unexpected
+existing Courses URLs before changing constraints. It adds no table or public
+API field and does not invent effective dates.
+
+The revision recreates the structurally read-only `course_program_records` view
+with an explicit `entity_type IN ('course', 'program')` predicate. Subplans are
+stored in `source_records` and deliberately excluded from the compatibility
+view. Downgrade refuses while any Subplan row exists.
+
+Before any production migration, Qasim must verify on disposable PostgreSQL 18:
+
+1. upgrade `0004 -> 0005 -> 0006` and the one-head graph;
+2. preservation of existing Course/Program rows and lowercase canonical URLs;
+3. acceptance/rejection of valid/invalid Subplan identity and URLs;
+4. Course+Program visibility and Subplan exclusion in the compatibility view;
+5. `is_updatable = NO`, `is_insertable_into = NO`, and intended role grants;
+6. safe downgrade refusal with Subplan data; and
+7. Will's synchronized deterministic content/metadata and independent 99%
+   source-present coverage evidence for all five entity families.
+
+The live URL migration also requires a read-only preflight before `0006`:
+
+1. count every existing Course/Program row and group canonical URLs into the
+   exact legacy uppercase form, already-lowercase target form, and unexpected
+   form;
+2. require the unexpected count to be zero and retain the IDs/URLs in the
+   release evidence;
+3. after upgrade, prove row count/identity/hash/timestamps are unchanged and
+   every Courses-family URL exactly matches its lowercased metadata code; and
+4. treat downgrade as schema rollback only: it does not uppercase URLs.
+   Lowercase Course/Program URLs remain readable under the restored `0005`
+   database shape and the compatible RAG URL model.
+
+No production migration, deployment, push or external data write was performed.

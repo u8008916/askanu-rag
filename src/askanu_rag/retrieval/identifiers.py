@@ -21,3 +21,9 @@ def normalize_program_code(identifier: str) -> str:
     """Apply conservative normalization without inventing a program grammar."""
 
     return identifier.strip().upper()
+
+
+def normalize_subplan_code(identifier: str) -> str:
+    """Normalize a source SubPlanCode without inventing a new grammar."""
+
+    return identifier.strip().upper()

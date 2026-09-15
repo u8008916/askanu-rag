@@ -43,7 +43,7 @@ A normalized record contains these top-level fields:
 | `collected_at` | ISO-8601 datetime | no | Time this source record was collected |
 | `last_seen_at` | ISO-8601 datetime | no | Most recent successful observation of this record |
 | `content_hash` | string | no | Lowercase SHA-256 hex digest of `content` |
-| `embedding_version` | string | yes | Embedding version if/when embedding has occurred |
+| `embedding_version` | string | yes | Effective model plus retrieval-policy rollout version if/when embedding has occurred |
 | `index_status` | string enum | no | Indexing state |
 | `metadata_json` | JSON object | no | Domain-specific normalized metadata |
 
@@ -101,6 +101,10 @@ accommodation
 support
 events
 ```
+
+`events` is reserved/planned contract vocabulary. It is not accepted by the
+current `CommonRecord` runtime union and no Events ingestion/retrieval behavior
+is implemented by the V6 work.
 
 ANU Courses and ANU Programs both use:
 
@@ -531,7 +535,7 @@ changes.
 
 ---
 
-# 13. Courses metadata v1
+# 13. Courses metadata (V6 Courses-family addendum)
 
 For a course record, these keys are REQUIRED inside `metadata_json`:
 
@@ -548,7 +552,10 @@ Schema-v1 currently recognises these optional course metadata keys:
 | `career` | string | yes |
 | `units` | string | yes |
 | `delivery_mode` | string | yes |
+| `description` | string | yes |
+| `learning_outcomes` | array of strings | yes |
 | `prerequisites` | string | yes |
+| `corequisites` | string | yes |
 | `incompatibilities` | string | yes |
 | `assumed_knowledge` | string | yes |
 | `offerings` | array of JSON objects | yes |
@@ -563,7 +570,10 @@ Representative structure:
   "career": "UGRD",
   "units": "6",
   "delivery_mode": "In Person",
+  "description": null,
+  "learning_outcomes": null,
   "prerequisites": null,
+  "corequisites": null,
   "incompatibilities": "COMP1130",
   "assumed_knowledge": null,
   "offerings": null
@@ -592,7 +602,7 @@ in later schema versions without adding arbitrary new top-level fields.
 
 ---
 
-# 14. Programs metadata v1
+# 14. Programs metadata (V6 Courses-family addendum)
 
 For a program record, these keys are REQUIRED inside `metadata_json`:
 
@@ -610,7 +620,11 @@ Schema-v1 currently recognises these optional program metadata keys:
 | `units` | string | yes |
 | `duration` | string | yes |
 | `delivery_mode` | string | yes |
+| `overview` | string | yes |
 | `learning_outcomes` | array of strings | yes |
+| `program_requirements` | string | yes |
+| `admission_requirements` | string | yes |
+| `prerequisites` | string | yes |
 
 Representative structure:
 
@@ -623,7 +637,11 @@ Representative structure:
   "units": null,
   "duration": null,
   "delivery_mode": null,
-  "learning_outcomes": null
+  "overview": null,
+  "learning_outcomes": null,
+  "program_requirements": null,
+  "admission_requirements": null,
+  "prerequisites": null
 }
 ```
 
@@ -631,6 +649,61 @@ Optional metadata follows the same missing-value rule as course metadata.
 
 Unknown/missing source evidence is represented as `null`, never as an invented
 answer.
+
+Source-present `Minors`, `Elective Study`, and `Study Options` sections remain
+in deterministic `content` even when they do not have dedicated metadata keys.
+
+## 14.1 Major, Minor and Specialisation metadata
+
+The 363 reviewed 2026 subplans are first-class records in the existing Courses
+domain and source. They are not Programs and do not use separate tables or
+vector stores.
+
+```text
+domain = courses
+source_id = courses_programs_and_courses
+entity_type = major | minor | specialisation
+entity_id = <SUBPLAN_CODE>_<ACADEMIC_YEAR>
+record_id = courses:<entity_type>:<entity_id>
+```
+
+`SubplanMetadata` contains:
+
+| Key | Type | Nullable |
+|---|---|---:|
+| `entity_type` | `major`, `minor`, or `specialisation` | no |
+| `subplan_code` | trimmed uppercase string | no |
+| `academic_year` | four-digit string | no |
+| `career` | string | yes |
+| `units` | string | yes |
+| `subplan_type` | string | yes |
+| `overview` | string | yes |
+| `learning_outcomes` | array of strings | yes |
+| `requirements` | faithful source text | yes |
+| `relevant_degrees` | array of strings | yes |
+| `other_information` | string | yes |
+
+This key set is exact: Subplan metadata rejects unknown keys in both the model
+and the `20260915_0006` database check. Course and Program metadata retain their
+previous extension-compatible behavior.
+
+The same code in two different entity types remains distinct because logical
+uniqueness is `(entity_type, code, academic_year)`. Requirements stay as
+faithful normalized source text; complex rules are not reduced to lossy or
+inferred structures.
+
+## 14.2 Courses-family canonical URLs
+
+Metadata codes are trimmed uppercase. The canonical URL path code is exactly
+the lowercase metadata code:
+
+```text
+https://programsandcourses.anu.edu.au/<year>/<entity_type>/<code.lower()>
+```
+
+Only HTTPS on the exact host is accepted, with no credentials, port, query,
+fragment, trailing slash, mismatched year/entity/code, or alternate origin.
+This rule applies equally to Course, Program, Major, Minor and Specialisation.
 
 ---
 
@@ -683,8 +756,9 @@ Australia/Canberra
 
 `collected_at` and `last_seen_at` are required.
 
-`effective_from` and `effective_to` remain nullable because many course/program
-pages do not provide source-supported effective dates.
+`effective_from` and `effective_to` remain nullable because many Courses-family
+pages do not provide source-supported effective dates. Academic year must never
+be converted into invented start/end dates.
 
 ---
 
@@ -705,11 +779,42 @@ units         = 6
 delivery_mode = In Person
 ```
 
-The canonical URL is the URL stored from the official ANU Programs & Courses
-source.
+The canonical URL is the exact official lower-path form:
+`https://programsandcourses.anu.edu.au/2026/course/comp1100`.
 
 The exact `content_hash`, timestamps and optional metadata depend on the
 normalized record instance and MUST NOT be invented in documentation.
+
+## 17.1 Frozen 2026 Courses-family coverage gates
+
+| Entity family | Frozen count | Independent 99% gate |
+|---|---:|---:|
+| Courses | 500 | at least 495 |
+| Programs | 393 | at least 390 |
+| Majors | 109 | at least 108 |
+| Minors | 126 | at least 125 |
+| Specialisations | 128 | at least 127 |
+| **Total** | **1,256** | evaluated per family, not as one pooled gate |
+
+Required source-present field coverage is at least 99%; identity and provenance
+correctness is 100%. A field absent on the ANU page is not a failure. A required
+published field that is not preserved correctly is a coverage failure. The V6
+denominator is limited to the identity, academic/delivery, descriptive,
+learning-outcome, academic-rule, offering, and subplan fields documented above.
+Workload, fees, prescribed readings and similar optional sections are not added
+to that mandatory denominator.
+
+Courses-family `content` is deterministic, source-backed section serialization,
+never a model summary or title/code-only placeholder. It retains all
+source-present required fields and the specified Program/Subplan sections so
+that `content_hash` remains a meaningful indexing-freshness identity.
+
+Revision `20260915_0006` follows `20260915_0005`, expands Courses constraints
+and uniqueness to all five entity types, and preserves the historical
+`course_program_records` view as Course + Program only using an explicit
+entity-type predicate plus the existing structural `OFFSET 0` read-only guard.
+Subplans remain readable from `source_records` and enter the shared embedding
+pipeline, but never leak into that compatibility view.
 
 ---
 
@@ -1000,10 +1105,12 @@ The Day 8 lifecycle applies to every `source_records` row:
 - `INDEXED`: usable only when the successful version represents current content
   and the requested target version.
 
-No `STALE` column/enum, embedding worker, pgvector pipeline, or writer is added.
-Will continues to own scraper upserts/change detection; Carmen owns this shared
-migration, RAG reads, and index-state meaning; Qasim owns contract approval and
-live migration/deployment ordering.
+Revision `20260915_0005` adds the explicit RAG-side indexing primitive and the
+shared `source_record_embeddings` table described below. It does not add a
+`STALE` column/enum or change scraper ownership. Will continues to own scraper
+upserts/change detection; Carmen owns the shared migrations, RAG reads and
+index-state meaning; Qasim owns contract approval and live migration/deployment
+ordering.
 
 ## Frozen bounded-run transaction contract
 
@@ -1020,7 +1127,7 @@ remains in the scraper repository.
 
 ---
 
-# Day 10 Jobs normalized contract v1
+# Jobs normalized contract v1 plus approved V6 requirements v2
 
 Revision `20260914_0004` extends the shared `source_records` table without
 adding or changing any of its 16 top-level fields. The approved Jobs identity is:
@@ -1039,7 +1146,10 @@ one non-empty final slug, no trailing slash, query, fragment, port, alternate
 host or extra path component. The slug is not the numeric job identity and RAG
 never derives one from the other.
 
-Jobs metadata has exactly these 12 keys:
+Revision `20260914_0004` introduced the exact 12-key v1 shape. Revision
+`20260915_0005` adds one approved nullable key, backfilling existing Jobs rows
+with JSON null rather than inferring content. Jobs metadata v2 has exactly these
+13 keys:
 
 | Key | Serialized type | Missing value |
 |---|---|---|
@@ -1055,6 +1165,7 @@ Jobs metadata has exactly these 12 keys:
 | `closing_at` | timezone-aware ISO-8601 datetime string | `null` |
 | `status` | `current`, `closed` or `null` | `null` |
 | `summary` | source/listing summary string | `null` |
+| `role_requirements` | array of direct-page source strings | `null` |
 
 Unknown metadata keys are invalid. Fixed-term is represented only by stored
 `employment_types` wording and never determines currentness. Jobs top-level
@@ -1067,3 +1178,83 @@ RAG includes a Job in Current Jobs only when metadata status is `current` and
 numeric entity ID, followed by undated records by numeric entity ID. This is
 deterministic relational retrieval and does not depend on `index_status`, Gemini
 or vector search.
+
+`role_requirements` is populated only when the approved public canonical ANU
+Jobs page directly publishes usable requirement or selection content. It
+preserves source meaning and order. It is never inferred from title,
+classification, summary, category, salary or employment type. Missing or
+Position-Description-only content is stored as `null`; a requirements question
+then returns `insufficient_evidence` with the stored official source. Position
+Description collection remains outside the approved source boundary.
+
+---
+
+# V6 Accommodation metadata v1
+
+Identity uses the active scraper-registry source `accommodation_anu_study`,
+`domain = accommodation`, slug `entity_id`, and
+`record_id = accommodation:accommodation:<entity_id>`. Canonical URLs remain
+under `https://study.anu.edu.au/accommodation`.
+
+Metadata contains exactly: `entity_type = accommodation`,
+`source_authority = official_anu`, nullable `accommodation_type`, `location`,
+`catering`, `advertised_rate`, `application_information`, `eligibility`,
+`contract_term` and `contact`, plus source-string arrays `audience`,
+`room_types`, `rate_inclusions`, `rate_exclusions` and `facilities`.
+
+Advertised rates are source wording, not guaranteed prices. No live-vacancy
+field exists and neither RAG nor vector similarity may infer availability.
+
+# V6 Support metadata v1
+
+Identity uses the active scraper-registry source
+`support_anusa_student_assistance`, `domain = support`, slug `entity_id`, and
+`record_id = support:support_service:<entity_id>`. Canonical URLs remain under
+`https://anusa.com.au/student-assistance`.
+
+Metadata contains exactly: `entity_type = support_service`,
+`source_authority = approved_anusa`, arrays `categories` and `audience`, and
+nullable source strings `contact`, `location`, `hours`, `access_instructions`
+and `cost`. Null hours/contact/location stay unknown; RAG does not infer them or
+make clinical/emergency/professional-availability assurances.
+
+# V6 shared retrieval-unit embeddings
+
+Revision `20260915_0005` enables pgvector and creates one shared table:
+
+```text
+source_record_embeddings
+  source_record_id        FK -> source_records.record_id ON DELETE CASCADE
+  retrieval_unit_id       stable whole/chunk identity
+  source_content_hash     source snapshot hash
+  retrieval_content_hash  exact retrieval-unit text hash
+  embedding_model         provider/model identity
+  embedding_version       preprocessing/model rollout identity
+  embedding               vector (dimension intentionally not frozen yet)
+  created_at              timestamptz
+  updated_at              timestamptz
+```
+
+The composite primary key is `(source_record_id, retrieval_unit_id,
+retrieval_content_hash, embedding_model, embedding_version)`. One source record
+may have many retrieval units. Historical hashes and versions are retained
+intentionally; V6 defines no garbage-collection policy. Index-time existence
+checks therefore treat each unit as a set of stored retrieval hashes rather
+than selecting an arbitrary historical row, scoped to the current source
+`content_hash`.
+
+Retrieval units are built only from canonical `content`, because `content_hash`
+is exactly SHA-256 of that field. Display `title` is not independently embedded,
+so a title-only mutation cannot change embedding input without changing the
+freshness identity. Scraper canonical content remains responsible for retaining
+all source text required for retrieval.
+
+`embedding_version` is the effective combination of provider/model rollout and
+retrieval-unit policy (including chunk bounds). A model-stable chunking or
+normalization policy change therefore requires a new effective version and an
+explicit reindex; old-policy rows cannot satisfy the new query version.
+
+Semantic queries join to `source_records` and accept a row only when source ID,
+current source hash, effective model/policy version, embedding model and
+`INDEXED` state all match. Vector rows are candidate-ranking data, never
+independent factual authority.

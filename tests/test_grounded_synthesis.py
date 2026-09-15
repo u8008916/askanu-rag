@@ -34,7 +34,9 @@ def record(prerequisites=PREREQUISITES, year="2026", content=None):
     values["content"] = content or f"Synthetic Day 4 evidence: {prerequisites}"
     values["content_hash"] = hashlib.sha256(values["content"].encode()).hexdigest()
     # Deliberately source-stored, never rebuilt by the service/model.
-    values["canonical_url"] = "https://programsandcourses.anu.edu.au/2026/course/comp1110"
+    values["canonical_url"] = (
+        f"https://programsandcourses.anu.edu.au/{year}/course/comp1110"
+    )
     return CourseProgramRecord.model_validate(values)
 
 

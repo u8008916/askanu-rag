@@ -16,6 +16,7 @@ from askanu_rag.retrieval import (
     UnavailableCourseProgramRepository,
     load_common_records,
 )
+from askanu_rag.retrieval.vector import VectorHit
 
 TODAY = date(2026, 9, 14)
 SCHOLARSHIP_FIXTURE = (
@@ -33,6 +34,7 @@ def make_job(
     employment_types: tuple[str, ...] = ("Fixed Term",),
     index_status: str = "PENDING",
     url_slug: str | None = None,
+    role_requirements: list[str] | None = None,
 ) -> JobRecord:
     content = f"{title}\nJob ID: {entity_id}\nSource-supported test evidence"
     observed = datetime(2026, 9, 14, 2, 0, tzinfo=timezone.utc)
@@ -69,13 +71,18 @@ def make_job(
             closing_at=closing_at,
             status=status,
             summary="Synthetic unit-test role.",
+            role_requirements=role_requirements,
         ),
     )
 
 
-def ask(repo, question: str, *, pending=None, history=()):
+def ask(repo, question: str, *, pending=None, history=(), vector=None):
     with TestClient(
-        create_app(repo, jobs_today_provider=lambda: TODAY)
+        create_app(
+            repo,
+            jobs_today_provider=lambda: TODAY,
+            vector_retriever=vector,
+        )
     ) as client:
         response = client.post(
             "/api/v1/ask",
@@ -98,7 +105,7 @@ def ask(repo, question: str, *, pending=None, history=()):
     return response.json()
 
 
-def test_job_metadata_has_exact_frozen_twelve_keys_and_missing_values():
+def test_job_metadata_has_exact_approved_v2_keys_and_missing_values():
     metadata = make_job(closing_date=None, employment_types=()).metadata_json
 
     assert set(metadata.model_dump()) == {
@@ -114,11 +121,13 @@ def test_job_metadata_has_exact_frozen_twelve_keys_and_missing_values():
         "closing_at",
         "status",
         "summary",
+        "role_requirements",
     }
     assert metadata.category is None
     assert metadata.employment_types == []
     assert metadata.closing_date is None
     assert metadata.closing_at is None
+    assert metadata.role_requirements is None
 
 
 def test_job_metadata_preserves_source_supported_timezone_aware_closing_at():
@@ -423,7 +432,7 @@ def test_selected_job_without_requirements_returns_grounded_insufficient_evidenc
         }
     ]
     answer = body["answer"].casefold()
-    assert "does not contain source-backed requirements" in answer
+    assert "does not contain direct-page" in answer
     assert "official job listing" in answer
     for unsupported in (
         job.metadata_json.classification,
@@ -434,6 +443,56 @@ def test_selected_job_without_requirements_returns_grounded_insufficient_evidenc
         "suitable",
     ):
         assert unsupported.casefold() not in answer
+
+
+def test_direct_page_role_requirements_are_returned_verbatim_with_source():
+    job = make_job(
+        "563412",
+        title="Capability Lead",
+        role_requirements=[
+            "Demonstrated experience leading agile practice.",
+            "Strong stakeholder communication skills.",
+        ],
+    )
+
+    body = ask(
+        CourseProgramRepository([job]),
+        "What are the requirements for job 563412?",
+    )
+
+    assert body["status"] == "ok"
+    assert body["sources"][0]["record_id"] == job.record_id
+    assert "Demonstrated experience leading agile practice." in body["answer"]
+    assert "Strong stakeholder communication skills." in body["answer"]
+
+
+def test_current_hybrid_jobs_hard_filter_excludes_closed_semantic_match():
+    current = make_job("563556", title="Cybersecurity Network Engineer")
+    closed = make_job(
+        "563557",
+        title="Closed Cybersecurity Architect",
+        status="closed",
+        closing_date="2026-09-30",
+    )
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            from askanu_rag.retrieval.vector import VectorHit
+
+            assert domain == "jobs"
+            assert current in allowed_records
+            assert closed not in allowed_records
+            return (VectorHit(current, 0.9, ("whole",)),)
+
+    body = ask(
+        CourseProgramRepository([current, closed]),
+        "Are there current jobs related to cybersecurity or networks?",
+        vector=FixedVector(),
+    )
+
+    assert body["status"] == "ok"
+    assert [item["job_id"] for item in body["items"]] == ["563556"]
+    assert all(source["record_id"] != closed.record_id for source in body["sources"])
 
 
 @pytest.mark.parametrize(
@@ -493,6 +552,34 @@ def test_canberra_today_and_current_jobs_follow_canberra_midnight(monkeypatch):
     assert response.status_code == 200
     assert [item["job_id"] for item in response.json()["items"]] == ["1"]
 
+
+def test_semantic_current_jobs_rank_over_complete_hard_filtered_pool():
+    current = [
+        make_job(str(100000 + index), title=f"Current Role {index}")
+        for index in range(1, 26)
+    ]
+    best = current[24]
+    closed = make_job("100026", title="Closed Semantic Decoy", status="closed")
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            assert domain == "jobs"
+            assert len(allowed_records) == 25
+            assert best in allowed_records
+            assert closed not in allowed_records
+            return (
+                VectorHit(closed, 0.99, ("whole",)),
+                VectorHit(best, 0.98, ("whole",)),
+            )
+
+    body = ask(
+        CourseProgramRepository([*current, closed]),
+        "What current jobs are related to quantum computing?",
+        vector=FixedVector(),
+    )
+
+    assert [item["record_id"] for item in body["items"]] == [best.record_id]
+    assert closed.record_id not in {source["record_id"] for source in body["sources"]}
 
 def test_status_null_without_deadline_is_never_promoted_to_current():
     unknown = make_job("55", status=None, closing_date=None)

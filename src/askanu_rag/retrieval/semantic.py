@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol
 
-from askanu_rag.models import CourseProgramRecord
+from askanu_rag.models import CommonRecord
 
 STOP_WORDS = frozenset("which what is are a an the course courses program programs teaches covers about in of and or for me tell learn study".split())
 
@@ -19,7 +19,7 @@ class SemanticHit:
 
 class SemanticRetriever(Protocol):
     def search(
-        self, query: str, candidates: tuple[CourseProgramRecord, ...],
+        self, query: str, candidates: tuple[CommonRecord, ...],
         *, top_k: int, min_score: float,
     ) -> tuple[SemanticHit, ...]: ...
 

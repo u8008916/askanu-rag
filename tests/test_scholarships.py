@@ -103,8 +103,14 @@ def refinement_repo(refinement_records):
     return CourseProgramRepository(refinement_records)
 
 
-def ask(repo, question, *, history=(), pending=None, vector=None):
-    with TestClient(create_app(repo, semantic_retriever=vector)) as client:
+def ask(repo, question, *, history=(), pending=None, vector=None, dense=None):
+    with TestClient(
+        create_app(
+            repo,
+            semantic_retriever=vector,
+            vector_retriever=dense,
+        )
+    ) as client:
         response = client.post(
             "/api/v1/ask",
             json={
@@ -845,3 +851,46 @@ def test_pending_scope_ambiguous_terms_do_not_force_domain_switch(
     assert response is not None
     assert response.status == "needs_clarification"
     assert response.clarification.id == "clar-scholarship-scope"
+
+
+def test_hybrid_scholarships_apply_open_student_filters_before_semantic_rank(
+    scholarships,
+):
+    open_match = scholarship_variant(
+        scholarships[0],
+        entity_id="open-international-undergraduate-ai",
+        title="Open International Undergraduate AI Scholarship",
+        status="open",
+        student_type=["International"],
+        study_level=["Undergraduate"],
+        area_of_study=["Computing"],
+    )
+    closed_match = scholarship_variant(
+        scholarships[2],
+        entity_id="closed-international-undergraduate-ai",
+        title="Closed International Undergraduate AI Scholarship",
+        status="closed",
+        student_type=["International"],
+        study_level=["Undergraduate"],
+        area_of_study=["Computing"],
+    )
+
+    class FixedVector:
+        def search(self, _question, *, domain, allowed_records, **_kwargs):
+            from askanu_rag.retrieval.vector import VectorHit
+
+            assert domain == "scholarships"
+            assert open_match in allowed_records
+            assert closed_match not in allowed_records
+            return (VectorHit(open_match, 0.91, ("whole",)),)
+
+    body = ask(
+        CourseProgramRepository([open_match, closed_match]),
+        "Open scholarships for an international undergraduate interested in AI",
+        dense=FixedVector(),
+    )
+
+    assert body["status"] == "ok"
+    assert [source["record_id"] for source in body["sources"]] == [
+        open_match.record_id
+    ]

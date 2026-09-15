@@ -1,5 +1,6 @@
 """Deterministic, source-grounded Jobs retrieval and chat handling."""
 
+import math
 import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
@@ -18,6 +19,7 @@ from askanu_rag.models import (
     OkResponse,
 )
 from askanu_rag.retrieval import JobReader
+from askanu_rag.retrieval.hybrid import SharedHybridRetriever
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
 
 CANBERRA = ZoneInfo("Australia/Canberra")
@@ -39,6 +41,15 @@ ROLE_REFERENCE_PATTERN = re.compile(
 )
 REQUIREMENTS_PATTERN = re.compile(
     r"\b(?:requirements?|qualifications?|selection\s+criteria|essential\s+criteria)\b",
+    re.I,
+)
+SEMANTIC_JOB_PATTERN = re.compile(
+    r"\b(?:related\s+to|interested\s+in|focus(?:ed)?\s+on|about)\b",
+    re.I,
+)
+JOB_TITLE_SHAPE_PATTERN = re.compile(
+    r"\b(?:officer|fellow|manager|director|coordinator|assistant|lead|"
+    r"analyst|engineer|developer|researcher|administrator|role)\b",
     re.I,
 )
 TITLE_PATTERNS = (
@@ -197,16 +208,49 @@ def _job_answer(record: JobRecord, today: date) -> str:
     return answer
 
 
+def _requirements_answer(record: JobRecord) -> str | None:
+    requirements = record.metadata_json.role_requirements
+    if not requirements:
+        return None
+    answer = (
+        f"Official requirements published for {record.title} "
+        f"(Job ID {record.entity_id}):\n- " + "\n- ".join(requirements)
+    )
+    if len(answer) > 3000 or UNSAFE_EVIDENCE.search(answer):
+        raise SynthesisError()
+    return answer
+
+
+def is_plausible_job_question(
+    question: str, pending: Clarification | None = None
+) -> bool:
+    """Cheap routing guard that performs no repository reads."""
+
+    pending_job = pending is not None and pending.type == "job_selection"
+    return bool(
+        pending_job
+        or JOB_ID_PATTERN.search(question)
+        or JOB_WORD_PATTERN.search(question)
+        or ROLE_REFERENCE_PATTERN.search(question)
+        or (_title_candidate(question) and JOB_TITLE_SHAPE_PATTERN.search(question))
+    )
+
+
 class JobQueryService:
-    """Answer bounded Jobs questions without Gemini or vector retrieval."""
+    """Answer Jobs with exact/current retrieval and optional bounded vectors."""
 
     def __init__(
         self,
         repository: JobReader,
         today_provider: Callable[[], date] = canberra_today,
+        vector_retriever=None,
+        *,
+        max_candidates: int = 10,
     ) -> None:
         self._repository = repository
         self._today_provider = today_provider
+        self._vector = vector_retriever
+        self._merger = SharedHybridRetriever(max_candidates=max_candidates)
 
     async def answer(
         self,
@@ -243,9 +287,17 @@ class JobQueryService:
                 )
 
         if selected is not None and REQUIREMENTS_PATTERN.search(question):
+            requirements_answer = _requirements_answer(selected)
+            if requirements_answer is not None:
+                return OkResponse(
+                    answer=requirements_answer,
+                    sources=[_source_from_record(selected)],
+                    request_id=request_id,
+                )
             return InsufficientEvidenceResponse(
                 answer=(
-                    "The stored Jobs v1 record does not contain source-backed "
+                    "The stored Jobs record does not contain direct-page, "
+                    "source-backed "
                     f"requirements for {selected.title} (Job ID {selected.entity_id}). "
                     "Please check the official job listing for the authoritative "
                     "requirements."
@@ -277,9 +329,37 @@ class JobQueryService:
             employment_type = (
                 "Fixed Term" if FIXED_TERM_PATTERN.search(question) else None
             )
-            records = self._repository.current_jobs(
-                20, today, employment_type=employment_type
+            records = self._repository.current_job_candidates(
+                today, employment_type=employment_type
             )
+            if SEMANTIC_JOB_PATTERN.search(question) and self._vector is not None:
+                try:
+                    vector_hits = self._vector.search(
+                        question,
+                        domain="jobs",
+                        allowed_records=records,
+                    )
+                except Exception:
+                    vector_hits = ()
+                by_id = {record.record_id: record for record in records}
+                records = tuple(
+                    candidate.record
+                    for candidate in self._merger.merge(
+                        semantic=(
+                            (
+                                by_id[hit.record.record_id],
+                                hit.score,
+                                hit.retrieval_unit_ids,
+                            )
+                            for hit in vector_hits
+                            if hit.record.record_id in by_id
+                            and math.isfinite(hit.score)
+                            and 0 < hit.score <= 1
+                        )
+                    )
+                )
+            else:
+                records = records[:20]
             if not records:
                 return InsufficientEvidenceResponse(
                     answer="I could not find stored current Jobs evidence.",

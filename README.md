@@ -114,10 +114,14 @@ run status and persisted NEW/CHANGED/UNCHANGED/MISSING counts using the frozen
 ingestion-run field names. The container includes the Alembic configuration and
 migration files, but normal web startup never runs migrations.
 
-No pgvector extension, embedding model, dense-vector column or dense retrieval
-path was added. The Day 5 fallback remains bounded in-memory TF-IDF/cosine. See
-`docs/DEPLOYMENT.md` for the disposable local PostgreSQL verification pattern and
-the live steps that remain pending Qasim's coordinated review/deployment.
+Revision `20260911_0001` did not add pgvector. The later local V6 revision
+`20260915_0005` adds shared retrieval-unit vector persistence while preserving
+the Day 5 bounded in-memory TF-IDF/cosine path. Revision `20260915_0006` adds
+the frozen Course, Program, Major, Minor and Specialisation identity, metadata
+and lowercase canonical-URL contract while keeping the compatibility view
+Course+Program-only. No production embedding provider is silently selected.
+See `docs/V6_HYBRID_IMPLEMENTATION_HANDOFF.md` and
+`docs/DEPLOYMENT.md` for the current boundary and pending release gates.
 
 The RAG repository owns the shared migration, while Will's scraper owns record
 upsert, change detection and ingestion-run writes. `NEW` and `CHANGED` records
@@ -406,3 +410,24 @@ Expect HTTP 200 / `ok`, the exact stored prerequisite alternatives, the stored
 source title/URL and a `req_` identifier in the six-field envelope. A null artifact
 must instead return `insufficient_evidence` without calling Gemini. Check the
 artifact first; do not treat abstention as proof of a real provider call.
+
+## V6 shared hybrid retrieval (local review candidate)
+
+The V6 candidate adds one shared retrieval-unit, embedding, pgvector query and
+precedence-merge layer. Exact/structured facts remain authoritative; vector
+hits are candidate discovery and must rehydrate through current approved
+`source_records`. Courses TF-IDF remains enabled. Scholarships and Jobs apply
+open/current hard filters before dense ranking. Accommodation and Support use
+the approved scraper-registry sources with conservative vacancy, advertised
+rate, hours and high-stakes routing behavior.
+
+`EmbeddingProvider` is configurable and has a deterministic fake for tests.
+Because no production provider/model/dimension was frozen, normal app startup
+does not construct one. Indexing is an explicit service primitive and never
+embeds the full dataset in a request handler. Revisions `20260915_0005` and
+`20260915_0006` are local only until Qasim reviews PostgreSQL 18,
+source-contract synchronization, provider configuration and deployment order.
+The stored embedding version also includes the retrieval-unit/chunking policy;
+historical vector rows are retained but excluded unless current source hash,
+model, policy version and `INDEXED` state all match. Production vector wiring,
+credentials, worker invocation and thresholds remain approval-gated.

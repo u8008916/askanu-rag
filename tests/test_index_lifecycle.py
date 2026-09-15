@@ -208,6 +208,9 @@ def test_persistent_semantic_boundary_excludes_stale_records():
         content_hash="c" * 64,
         index_status="INDEXED",
         embedding_version="embed-v1",
+        canonical_url=(
+            "https://programsandcourses.anu.edu.au/2026/course/comp2200"
+        ),
     )
     values["metadata_json"] = {
         **values["metadata_json"],
