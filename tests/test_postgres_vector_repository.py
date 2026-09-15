@@ -126,3 +126,40 @@ def test_postgres_existing_unit_lookup_preserves_all_historical_hashes():
     ) == {
         "whole": frozenset({"a" * 64, "b" * 64})
     }
+
+
+def test_postgres_failure_preserves_valid_last_known_good_without_write():
+    record = load_course_program_records(FIXTURE)[0].model_copy(
+        update={
+            "status": "UNCHANGED",
+            "index_status": "INDEXED",
+            "embedding_version": "model-v1+policy-v1",
+        }
+    )
+    repository = PostgresVectorRepository(
+        lambda: (_ for _ in ()).throw(AssertionError("must not write LKG state"))
+    )
+
+    repository.persist_failure(record)
+
+
+def test_postgres_failure_uses_index_state_compare_and_set():
+    record = load_course_program_records(FIXTURE)[0].model_copy(
+        update={"status": "UNCHANGED", "index_status": "PENDING"}
+    )
+    cursor = FakeCursor([])
+    repository = PostgresVectorRepository(lambda: FakeConnection(cursor))
+
+    repository.persist_failure(record)
+
+    query, parameters = cursor.calls[0]
+    assert "SET index_status = 'FAILED'" in query
+    assert "content_hash = %s" in query
+    assert "index_status = %s" in query
+    assert "embedding_version IS NOT DISTINCT FROM %s" in query
+    assert parameters == (
+        record.record_id,
+        record.content_hash,
+        "PENDING",
+        None,
+    )

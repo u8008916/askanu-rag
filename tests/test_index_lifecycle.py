@@ -110,6 +110,23 @@ def test_matching_success_failure_and_explicit_recovery_are_distinct_transitions
     )
 
 
+def test_failed_version_rollout_preserves_current_last_known_good_index():
+    current = record(
+        status="UNCHANGED",
+        index_status="INDEXED",
+        embedding_version="embed-v1",
+    )
+    task = IndexTaskIdentity(current.record_id, current.content_hash, "embed-v2")
+
+    failure = resolve_index_result(current, task, succeeded=False)
+
+    assert (failure.action, failure.index_status, failure.embedding_version) == (
+        IndexAction.APPLY_FAILURE,
+        "INDEXED",
+        "embed-v1",
+    )
+
+
 def test_invalid_success_and_late_old_task_cannot_be_reported_as_indexed():
     current = record(status="CHANGED", content_hash="b" * 64)
     old_task = IndexTaskIdentity(current.record_id, "a" * 64, "embed-v1")

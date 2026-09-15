@@ -10,13 +10,20 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from askanu_rag.main import create_app
-from askanu_rag.models import CourseProgramRecord
+from askanu_rag.config import Settings
+from askanu_rag.main import create_app, create_configured_repository
+from askanu_rag.models import CourseProgramRecord, JobMetadata, JobRecord
 from askanu_rag.retrieval import (
     CourseProgramRepository,
+    DeterministicFakeEmbedder,
+    EmbeddingIndexService,
+    InMemoryVectorRepository,
+    load_common_record_file,
+    load_common_records_directory,
     load_course_program_record_file,
     load_course_program_records_directory,
 )
+from askanu_rag.retrieval.units import RetrievalUnitBuilder
 
 
 def synthetic_payload(code="COMP1110", year="2026", entity_type="course"):
@@ -66,6 +73,46 @@ def synthetic_payload(code="COMP1110", year="2026", entity_type="course"):
 def write_record(path: Path, payload: dict) -> Path:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def synthetic_job_record() -> JobRecord:
+    content = (
+        "Synthetic full-detail role\n"
+        "Summary: retrieval integration evidence.\n"
+        "Requirements: Python; evidence review."
+    )
+    return JobRecord(
+        record_id="jobs:job:123456",
+        source_id="jobs_anu_search",
+        entity_id="123456",
+        domain="jobs",
+        title="Synthetic Full-detail Role",
+        content=content,
+        canonical_url="https://jobs.anu.edu.au/jobs/synthetic-role-123456",
+        status="NEW",
+        effective_from=None,
+        effective_to=None,
+        collected_at="2026-09-15T09:00:00+10:00",
+        last_seen_at="2026-09-15T09:00:00+10:00",
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        embedding_version=None,
+        index_status="PENDING",
+        metadata_json=JobMetadata(
+            entity_type="job",
+            job_id="123456",
+            category="Information Technology",
+            employment_types=["Fixed Term"],
+            location="Canberra / ACT",
+            classification="ANU Officer 6/7",
+            salary="$95,000 - $105,000",
+            closing_text="Closes 30 September 2026",
+            closing_date="2026-09-30",
+            closing_at="2026-09-30T23:55:00+10:00",
+            status="current",
+            summary="Retrieval integration evidence.",
+            role_requirements=["Python", "Evidence review"],
+        ),
+    )
 
 
 @pytest.fixture
@@ -286,3 +333,63 @@ def test_api_from_individual_handoff_files(records_directory):
         "response_status": body["status"], "source_url": body["sources"][0]["url"],
         "prerequisites": stored.metadata_json.prerequisites,
     }))
+
+
+def test_mixed_richer_handoff_loads_retrieves_and_builds_shared_index(tmp_path):
+    course = synthetic_payload()
+    course["status"] = "NEW"
+    course["metadata_json"].update(
+        description="Source-present course description.",
+        learning_outcomes=["Apply source-present concepts"],
+        prerequisites="COMP1100",
+        corequisites="MATH1005",
+        offerings=[{"session": "First Semester", "mode": "In Person"}],
+    )
+    course["content"] = (
+        "Synthetic full-detail course\nDescription: Source-present course "
+        "description.\nPrerequisites: COMP1100\nCorequisites: MATH1005"
+    )
+    course["content_hash"] = hashlib.sha256(
+        course["content"].encode("utf-8")
+    ).hexdigest()
+    scholarship = json.loads(
+        (Path(__file__).parents[1] / "fixtures/day9_scholarship_records.json")
+        .read_text(encoding="utf-8")
+    )[0]
+    job = synthetic_job_record().model_dump(mode="json")
+    for filename, payload in (
+        ("courses__course__COMP1110_2026.json", course),
+        ("jobs__job__123456.json", job),
+        ("scholarships__scholarship__test.json", scholarship),
+    ):
+        write_record(tmp_path / filename, payload)
+
+    loaded = load_common_records_directory(tmp_path)
+    assert load_common_record_file(tmp_path / "jobs__job__123456.json") == loaded[1]
+    repository = CourseProgramRepository(loaded)
+    assert repository.find_course_by_code("COMP1110").metadata_json.corequisites == "MATH1005"
+    assert repository.all_scholarships()[0].metadata_json.selection_basis
+    assert repository.find_job_by_entity_id("123456").metadata_json.role_requirements == [
+        "Python",
+        "Evidence review",
+    ]
+    configured = create_configured_repository(
+        Settings(environment="local", course_records_path=tmp_path)
+    )
+    assert isinstance(configured, CourseProgramRepository)
+    assert configured.find_job_by_entity_id("123456") is not None
+
+    vector_repository = InMemoryVectorRepository(loaded)
+    provider = DeterministicFakeEmbedder(version="handoff-v1")
+    indexer = EmbeddingIndexService(vector_repository, provider)
+    assert sum(indexer.index_record(record, explicit_retry=True) for record in loaded) == 3
+    assert all(
+        vector_repository.records[record.record_id].index_status == "INDEXED"
+        for record in loaded
+    )
+    builder = RetrievalUnitBuilder()
+    assert {
+        unit.content
+        for record in loaded
+        for unit in builder.build(record)
+    } == {record.content for record in loaded}

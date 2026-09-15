@@ -141,7 +141,13 @@ reindexer or scheduler. It:
   in one repository transaction;
 - uses a source `record_id + content_hash` compare-and-set so an old task cannot
   mark changed content indexed;
-- marks a matching source row failed only when generation fails; and
+- marks a matching source row failed when generation fails without a usable
+  prior index;
+- preserves the prior `INDEXED` version when an unchanged-content target-version
+  rollout fails, so current LKG evidence remains usable only through its old
+  version;
+- compare-and-sets failure on source hash, starting index state and version so
+  a late failed worker cannot clobber a concurrent success; and
 - keeps prior vector rows as last-known-good evidence. Historical retention is
   intentional and V6 defines no garbage-collection policy.
 
@@ -149,6 +155,12 @@ Semantic queries require current source hash, requested model/version and
 `INDEXED`. `MISSING` source observations may continue to use the preserved
 last-known-good row/vector when all those facts still match. Unknown database
 commit outcomes are not followed by a blind duplicate write.
+
+The local handoff loader now validates the shared `CommonRecord` boundary for a
+single file or direct `records/` directory, allowing richer Courses-family,
+Scholarship and Jobs records to enter the same repository and retrieval-unit
+indexing path. The legacy Course-only loader remains available for narrow
+callers. No parser logic or new metadata/API field was introduced.
 
 ## 7. Vector query and hybrid merge
 
@@ -436,6 +448,28 @@ evidence only, not a PostgreSQL 18 or live Cloud SQL claim.
 The targeted Carmen-owned review findings requested for PR #25 are resolved in
 the local correction diff and verified by the results above. This statement
 does not clear the production/provider/PostgreSQL gates below.
+
+### Day 11 second-pass local delta
+
+The follow-up uncommitted review tree adds LKG-safe `persist_failure` behavior
+and shared richer-record handoff loading. Focused lifecycle/vector/handoff
+verification passed with `71 passed, 1 skipped`. The complete local suite then
+passed with `577 passed, 60 skipped` (`637 collected`); the skip split remains
+59 guarded PostgreSQL integration cases plus the existing Windows symlink case.
+
+Also passed after the delta:
+
+```text
+.venv\Scripts\python.exe -m pip check
+.venv\Scripts\python.exe -m compileall -q src tests migrations
+.venv\Scripts\python.exe -m alembic upgrade head --sql
+.venv\Scripts\python.exe -m alembic heads
+git diff --check
+```
+
+Offline Alembic generation used a non-secret placeholder URL, performed no
+connection, and reached the unchanged single head `20260915_0006`. No real
+embedding provider, database migration, deployment or production data was used.
 
 ## 12. Cross-repository dependencies and release gates
 

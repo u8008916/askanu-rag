@@ -101,14 +101,96 @@ def test_embedding_failure_preserves_last_known_good_rows_and_version():
             raise RuntimeError("provider unavailable")
 
     with pytest.raises(RuntimeError, match="provider unavailable"):
-        EmbeddingIndexService(
+        failed_service = EmbeddingIndexService(
             repository, FailingProvider(version="test-v2")
-        ).index_record(indexed, explicit_retry=True)
+        )
+        failed_service.index_record(indexed, explicit_retry=True)
 
     failed = repository.records[source.record_id]
-    assert failed.index_status == "FAILED"
+    assert failed.index_status == "INDEXED"
     assert failed.embedding_version == EmbeddingIndexService(repository, first).target_version
     assert set(repository.rows) == previous_keys
+    old_row = next(iter(repository.rows.values()))
+    assert repository.search(
+        old_row.embedding,
+        domain="courses",
+        embedding_model=old_row.embedding_model,
+        embedding_version=old_row.embedding_version,
+        top_k=1,
+        min_score=0.99,
+        max_units_per_record=1,
+    )[0].record.record_id == source.record_id
+    assert repository.search(
+        old_row.embedding,
+        domain="courses",
+        embedding_model=old_row.embedding_model,
+        embedding_version=failed_service.target_version,
+        top_k=1,
+        min_score=0.99,
+        max_units_per_record=1,
+    ) == ()
+
+
+def test_content_change_failure_keeps_rows_but_cannot_masquerade_as_current():
+    source = records()[0]
+    repository = InMemoryVectorRepository([source])
+    provider = DeterministicFakeEmbedder(version="test-v1")
+    service = EmbeddingIndexService(repository, provider)
+    service.index_record(source)
+    previous_rows = set(repository.rows)
+    changed_content = source.content + "\nNew source-backed detail."
+    changed = source.model_copy(
+        update={
+            "status": "CHANGED",
+            "content": changed_content,
+            "content_hash": hashlib.sha256(changed_content.encode()).hexdigest(),
+            "index_status": "PENDING",
+            "embedding_version": None,
+        }
+    )
+    repository.records[source.record_id] = changed
+
+    class FailingProvider(DeterministicFakeEmbedder):
+        def embed_documents(self, texts):
+            raise RuntimeError("provider unavailable")
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        EmbeddingIndexService(
+            repository, FailingProvider(version="test-v1")
+        ).index_record(changed)
+
+    failed = repository.records[source.record_id]
+    assert (failed.index_status, failed.embedding_version) == ("FAILED", None)
+    assert set(repository.rows) == previous_rows
+    old_row = next(iter(repository.rows.values()))
+    assert repository.search(
+        old_row.embedding,
+        domain="courses",
+        embedding_model=old_row.embedding_model,
+        embedding_version=old_row.embedding_version,
+        top_k=1,
+        min_score=0.99,
+        max_units_per_record=1,
+    ) == ()
+
+
+def test_late_failure_cannot_overwrite_concurrent_index_success():
+    source = records()[0]
+    repository = InMemoryVectorRepository([source])
+    pending = source.model_copy(
+        update={"status": "UNCHANGED", "index_status": "PENDING"}
+    )
+    repository.records[source.record_id] = pending.model_copy(
+        update={"index_status": "INDEXED", "embedding_version": "new-version"}
+    )
+
+    repository.persist_failure(pending)
+
+    current = repository.records[source.record_id]
+    assert (current.index_status, current.embedding_version) == (
+        "INDEXED",
+        "new-version",
+    )
 
 
 def test_persisted_semantic_search_dedupes_units_and_rejects_stale_or_weak_rows():

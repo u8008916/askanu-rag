@@ -52,8 +52,8 @@ from askanu_rag.retrieval import (
     ScholarshipReader,
     UnavailableCourseProgramRepository,
     create_default_course_program_repository,
-    load_course_program_record_file,
-    load_course_program_records_directory,
+    load_common_record_file,
+    load_common_records_directory,
 )
 from askanu_rag.scholarship_queries import (
     ScholarshipQueryService,
@@ -403,9 +403,9 @@ def create_configured_repository(settings: Settings) -> CourseProgramReader:
     if settings.course_records_path is not None:
         path = settings.course_records_path
         records = (
-            load_course_program_records_directory(path)
+            load_common_records_directory(path)
             if path.is_dir()
-            else (load_course_program_record_file(path),)
+            else (load_common_record_file(path),)
         )
         return CourseProgramRepository(records)
     return create_default_course_program_repository()

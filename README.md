@@ -180,25 +180,28 @@ record has null prerequisites, so the prerequisite question returns
 
 For scraper-generated data, supply an explicit path to a single schema-v1 JSON
 object file or to the scraper's `records/` directory. Each record file is read as
-UTF-8 and validated with the existing RAG `CourseProgramRecord` model. These
-loaders do not require the scraper package or a fixed sibling-repository path.
+UTF-8 and validated with the shared RAG `CommonRecord` model, so one directory
+may contain approved Courses-family, Scholarship and Jobs records. The legacy
+Course-only loaders remain available to callers that deliberately require that
+narrower boundary. These loaders do not require the scraper package or a fixed
+sibling-repository path.
 
 ```python
 from askanu_rag.main import create_app
 from askanu_rag.retrieval import (
     CourseProgramRepository,
-    load_course_program_record_file,
-    load_course_program_records_directory,
+    load_common_record_file,
+    load_common_records_directory,
 )
 
 
 def app_from_records_directory(records_directory):
-    records = load_course_program_records_directory(records_directory)
+    records = load_common_records_directory(records_directory)
     return create_app(repository=CourseProgramRepository(records))
 
 
 def app_from_record_file(record_file):
-    record = load_course_program_record_file(record_file)
+    record = load_common_record_file(record_file)
     return create_app(repository=CourseProgramRepository([record]))
 ```
 
@@ -246,8 +249,10 @@ MAX_OUTPUT_TOKENS=800
 REQUEST_TIMEOUT_SECONDS=30
 ```
 
-Set `COURSE_RECORDS_PATH` to an existing schema-v1 single-object JSON file or
-`records/` directory, not the storage base. No path to a sibling repo is hard-coded.
+Set the legacy-named `COURSE_RECORDS_PATH` to an existing shared schema-v1
+single-object JSON file or `records/` directory, not the storage base. The path
+may contain the approved mixed-domain handoff described above; the environment
+variable name is retained for configuration compatibility. No path to a sibling repo is hard-coded.
 Relative paths resolve from the working directory. Invalid handoff data fails at
 startup; no fallback silently replaces an explicitly selected bad artifact.
 Blank path retains the Day 2 fixture (including its historical null prerequisites).
@@ -431,3 +436,10 @@ The stored embedding version also includes the retrieval-unit/chunking policy;
 historical vector rows are retained but excluded unless current source hash,
 model, policy version and `INDEXED` state all match. Production vector wiring,
 credentials, worker invocation and thresholds remain approval-gated.
+
+A failed model/policy rollout over unchanged content preserves a valid prior
+`INDEXED` version as last-known-good evidence. A content-change failure has no
+such current LKG: it becomes `FAILED`, while retained historical rows remain
+ineligible because their source hash/status cannot match. Failure persistence
+also compares the starting content hash, index state and version, so a late
+failed worker cannot overwrite a concurrent successful index commit.

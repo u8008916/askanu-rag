@@ -127,6 +127,9 @@ class EmbeddingIndexService:
             if unit.retrieval_content_hash
             not in existing.get(unit.retrieval_unit_id, frozenset())
         )
+        task = IndexTaskIdentity(
+            record.record_id, record.content_hash, self.target_version
+        )
         try:
             vectors = (
                 self.provider.embed_documents([unit.content for unit in missing])
@@ -139,13 +142,13 @@ class EmbeddingIndexService:
                 self._row(unit, vector) for unit, vector in zip(missing, vectors)
             )
         except Exception:
-            self.repository.persist_failure(record)
+            failure = resolve_index_result(record, task, succeeded=False)
+            if failure.action is IndexAction.APPLY_FAILURE:
+                self.repository.persist_failure(record)
             raise
         result = resolve_index_result(
             record,
-            IndexTaskIdentity(
-                record.record_id, record.content_hash, self.target_version
-            ),
+            task,
             succeeded=True,
             produced_version=self.target_version,
         )
@@ -284,7 +287,16 @@ class InMemoryVectorRepository:
 
     def persist_failure(self, record: CommonRecord) -> None:
         current = self.records.get(record.record_id)
-        if current is not None and current.content_hash == record.content_hash:
+        if (
+            current is not None
+            and current.content_hash == record.content_hash
+            and current.index_status == record.index_status
+            and current.embedding_version == record.embedding_version
+            and not (
+                record.index_status == "INDEXED"
+                and record.embedding_version is not None
+            )
+        ):
             self.records[record.record_id] = current.model_copy(
                 update={"index_status": "FAILED"}
             )
@@ -442,6 +454,12 @@ class PostgresVectorRepository:
             raise RepositoryUnavailableError() from None
 
     def persist_failure(self, record: CommonRecord) -> None:
+        # A failed model/policy rollout must not disable a still-current LKG
+        # vector. PENDING/FAILED current content has no usable LKG and is marked
+        # failed with a compare-and-set so a late failure cannot clobber a
+        # concurrent successful index commit.
+        if record.index_status == "INDEXED" and record.embedding_version is not None:
+            return
         try:
             with self._connection_factory() as connection:
                 with connection.cursor() as cursor:
@@ -449,8 +467,15 @@ class PostgresVectorRepository:
                         """
                         UPDATE source_records SET index_status = 'FAILED'
                         WHERE record_id = %s AND content_hash = %s
+                          AND index_status = %s
+                          AND embedding_version IS NOT DISTINCT FROM %s
                         """,
-                        (record.record_id, record.content_hash),
+                        (
+                            record.record_id,
+                            record.content_hash,
+                            record.index_status,
+                            record.embedding_version,
+                        ),
                     )
         except Exception:
             raise RepositoryUnavailableError() from None

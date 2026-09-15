@@ -137,19 +137,46 @@ def _handoff_path_stat(path: Path) -> stat_result:
     return info
 
 
-def load_course_program_record_file(path: str | Path) -> CourseProgramRecord:
-    """Read one UTF-8 schema-v1 JSON object; identity comes only from its content."""
+def load_common_record_file(path: str | Path) -> CommonRecord:
+    """Read one UTF-8 shared record without narrowing its approved domain."""
 
     record_path = Path(path)
     if not stat.S_ISREG(_handoff_path_stat(record_path).st_mode):
         raise ValueError(f"Handoff record must be a regular file: {record_path}")
     try:
-        return CourseProgramRecord.model_validate_json(
+        return CommonRecord.model_validate_json(
             record_path.read_text(encoding="utf-8")
         )
     except ValidationError as exc:
         exc.add_note(f"Invalid handoff record file: {record_path}")
         raise
+
+
+def load_course_program_record_file(path: str | Path) -> CourseProgramRecord:
+    """Read one UTF-8 schema-v1 JSON object; identity comes only from its content."""
+
+    record_path = Path(path)
+    try:
+        return CourseProgramRecord.model_validate(
+            load_common_record_file(record_path).model_dump(mode="python")
+        )
+    except ValidationError as exc:
+        if not getattr(exc, "__notes__", None):
+            exc.add_note(f"Invalid handoff record file: {record_path}")
+        raise
+
+
+def load_common_records_directory(path: str | Path) -> tuple[CommonRecord, ...]:
+    """Load direct shared-record JSON entries without traversing subfolders."""
+
+    records_path = Path(path)
+    if not stat.S_ISDIR(_handoff_path_stat(records_path).st_mode):
+        raise NotADirectoryError(f"Not a handoff records directory: {records_path}")
+    return tuple(
+        load_common_record_file(entry)
+        for entry in sorted(records_path.iterdir(), key=lambda entry: entry.name)
+        if entry.suffix.lower() == ".json"
+    )
 
 
 def load_course_program_records_directory(
