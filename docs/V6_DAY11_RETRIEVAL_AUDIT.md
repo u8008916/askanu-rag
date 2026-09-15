@@ -29,6 +29,15 @@ ranking runs over the complete current hard-filtered pool before the final cap.
 Cheap domain plausibility guards also remove the eager cross-domain reads
 identified in this audit.
 
+The PR #25 targeted correction additionally separates generic current Jobs
+listing from semantic/topic discovery, routes general Jobs topic wording
+without requiring the literal phrase `current jobs`, and makes semantic
+unavailability/weakness fail closed. It applies explicit stored-value Jobs
+filters before semantic ranking and adds deterministic single-fact Scholarship
+projection with source-preserving null/missing abstention. These Carmen-owned
+review findings are resolved locally; production/provider and live PostgreSQL
+gates remain unchanged.
+
 Production pgvector execution remains un-wired pending Qasim approval of the
 provider/model/dimension, credentials, effective policy version, worker owner,
 thresholds and rollout. No PostgreSQL 18/live-vector claim is made. Events are
@@ -52,12 +61,12 @@ are:
 1. The original audit did not model Majors, Minors, Specialisations, Program
    rules or Course corequisites; the frozen `0006` addendum now models these.
    Broad source-backed data and degree-audit/honours engines remain out of scope.
-2. Scholarship metadata contains useful filters, but degree relevance,
-   application method and duration/tenure are absent, while some already-stored
-   facts are not queryable or rendered.
-3. Jobs stores the listing-summary contract only. It lacks source-backed role
-   requirements/selection criteria, and current RAG filtering is limited to
-   currentness and Fixed Term.
+2. Scholarship degree relevance, application method and duration/tenure remain
+   absent contract/source gaps. Already-frozen facts now have deterministic
+   direct-question projection and null/missing abstention.
+3. Jobs `role_requirements` and the requested source-backed structured filters
+   are implemented. Broad real-corpus coverage and Position Description source
+   policy remain separate data/approval gates.
 4. The original audit had only an ephemeral local TF-IDF baseline. Shared
    pgvector persistence/query, retrieval units and hybrid merge now exist;
    production provider/model/dimension and worker deployment remain unfrozen.
@@ -518,9 +527,8 @@ live provider or PostgreSQL execution.
 - A 99% claim is impossible without broad, source-backed entity and required
   field coverage measurements. Local synthetic fixtures are behavior evidence,
   not coverage evidence.
-- Scholarship routing currently performs an eager full-domain read even for
-  non-Scholarship questions. This must be corrected before a broad corpus is
-  treated as production-ready, without weakening current routing precedence.
+- The former eager cross-domain Scholarship read and the PR #25 Jobs routing/
+  fallback findings are resolved by cheap guards and fail-closed intent paths.
 - Broad source-backed Programs/Subplan fixtures and relationship data remain a
   Courses coverage blocker; their identity and metadata contract is now frozen.
 - Current normalized Jobs content discards useful detail-page body text.
@@ -551,6 +559,25 @@ Until those approvals land, Carmen can safely implement only RAG gaps over
 already approved fields: Course units/delivery/comparison, Scholarship
 opening/application-required/selection-basis projection and structured Jobs
 category/location/employment/classification/salary filters/comparison.
+
+The Scholarship projection and Jobs filtering portions named above are now
+implemented and covered by the current handoff. This paragraph is retained as
+the original audit boundary, not a remaining Carmen-owned blocker.
+
+## 13.1 PR #25 correction verification
+
+The correction changes exactly `job_queries.py`, `scholarship_queries.py`,
+`main.py`, their two focused test files, this audit, and the V6 implementation
+handoff. No migration/schema/public API/provider/Events/Position Description
+work was added.
+
+- Jobs focused: `57 passed`.
+- Scholarships focused: `90 passed`.
+- Full suite: `569 passed, 60 skipped, 3 warnings` (`629 collected`).
+- The 59 guarded PostgreSQL tests remain skipped without a disposable test
+  database; the other skip is the Windows symlink-privilege case.
+- Offline Alembic SQL compilation is not PostgreSQL 18 or live migration
+  execution evidence.
 
 ## 14. Files and verification
 

@@ -894,3 +894,89 @@ def test_hybrid_scholarships_apply_open_student_filters_before_semantic_rank(
     assert [source["record_id"] for source in body["sources"]] == [
         open_match.record_id
     ]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected", "entity_id"),
+    [
+        (
+            "When does Day 9 Test Undergraduate Computing Scholarship open?",
+            "Opening date: 2026-08-01.",
+            "day9-undergraduate-computing",
+        ),
+        (
+            "Does Day 9 Test Undergraduate Computing Scholarship require an application?",
+            "Application required: yes.",
+            "day9-undergraduate-computing",
+        ),
+        (
+            "What is the selection basis for Day 9 Test Undergraduate Computing Scholarship?",
+            "Selection basis: Academic merit in this synthetic fixture.",
+            "day9-undergraduate-computing",
+        ),
+        (
+            "Is Day 9 Test Undergraduate Computing Scholarship for Domestic students?",
+            "Student type: Domestic.",
+            "day9-undergraduate-computing",
+        ),
+        (
+            "What study stage is Day 9 Test Undergraduate Computing Scholarship intended for?",
+            "Study stage: Current students.",
+            "day9-undergraduate-computing",
+        ),
+        (
+            "Is Day 9 Test Undergraduate Computing Scholarship featured?",
+            "Featured: yes.",
+            "day9-undergraduate-computing",
+        ),
+        (
+            "Is Day 9 Test International Science Scholarship featured?",
+            "Featured: no.",
+            "day9-international-science",
+        ),
+        (
+            "Does Day 9 Test Closed Computing Scholarship require an application?",
+            "Application required: no.",
+            "day9-closed-computing",
+        ),
+    ],
+)
+def test_direct_scholarship_fact_projection_uses_exact_stored_evidence(
+    repo, question, expected, entity_id
+):
+    body = ask(repo, question)
+
+    assert body["status"] == "ok"
+    assert expected in body["answer"]
+    assert body["sources"][0]["record_id"] == f"scholarships:scholarship:{entity_id}"
+
+
+@pytest.mark.parametrize(
+    ("question", "missing_label"),
+    [
+        (
+            "When does Day 9 Test International Science Scholarship open?",
+            "opening date",
+        ),
+        (
+            "Does Day 9 Test International Science Scholarship require an application?",
+            "application required",
+        ),
+        (
+            "What is the selection basis for Day 9 Test International Science Scholarship?",
+            "selection basis",
+        ),
+    ],
+)
+def test_missing_requested_scholarship_fact_abstains_with_official_source(
+    repo, question, missing_label
+):
+    body = ask(repo, question)
+
+    assert body["status"] == "insufficient_evidence"
+    assert missing_label in body["answer"].casefold()
+    assert body["sources"][0]["record_id"] == (
+        "scholarships:scholarship:day9-international-science"
+    )
+    for unrelated in ("Official status:", "Study level:", "Area of study:", "Value:"):
+        assert unrelated not in body["answer"]

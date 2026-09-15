@@ -155,6 +155,7 @@ def create_app(
             jobs_today_provider,
             vector_retriever,
             max_candidates=max_merged_candidates,
+            min_score=semantic_min_score,
         )
         if isinstance(repository, JobReader)
         else None

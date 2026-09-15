@@ -11,11 +11,18 @@ Status: local implementation for review; no production migration/deployment
 ## 1. Repository state
 
 - Branch: `codex/v6-day11-retrieval-audit`
+<<<<<<< HEAD
 - Base and current HEAD before human review: `daa5a4afabfa40a42253fc29c9b98e2fa7001c3a`.
 - The implementation is an uncommitted working-tree diff so a human can review
   it before commit, as required by `docs/AI_SETUP.md`.
 - Final review scope: 47 changed paths (31 modified, 16 untracked), including
   the already completed V6 hybrid work and this Courses-family addendum.
+=======
+- PR #25 head before this correction: `a3a6a43baaffe72fc61efc175c2c1db36a030c3a`.
+- The approved V6 implementation is already present at that head. The targeted
+  Carmen-owned review correction remains an uncommitted seven-file working-tree
+  diff for human review, as required by `docs/AI_SETUP.md`.
+>>>>>>> ed0f1b7 (fix: harden Jobs and Scholarship retrieval)
 - The two pre-existing stashes were not changed.
 
 ## 2. Architecture implemented
@@ -218,13 +225,26 @@ do not leak into `course_program_records`.
 - Semantic topical intent such as `interested in` or `related to` ranks only
   within the hard-filtered pool.
 - A closed scholarship cannot return for an explicit open query.
+- Direct questions for `featured`, `application_required`, `study_stage`,
+  `student_type`, `study_level`, `area_of_study`, `value`, `selection_basis`,
+  `opening_date`, `closing_date`, and source status use a one-fact deterministic
+  projection. A missing/null requested fact returns `insufficient_evidence`
+  with the selected Scholarship's official stored source; unrelated facts are
+  not substituted.
 - Existing deterministic clarification/eligibility language is preserved.
 
 ### Jobs
 
 - Exact numeric ID/title, current/closed, Canberra closing date, ordering and
   structured facts remain deterministic.
-- Current/open filtering occurs before semantic role/topic ranking.
+- Generic current-list intent remains deterministic and does not require
+  vectors. Topic intent (`related to`, `about`, `focused on`, `involves`) enters
+  semantic Jobs discovery even without the literal phrase `current jobs`.
+- Semantic unavailability, errors, weak hits, or no hits fail closed with
+  `insufficient_evidence`; they never fall back to arbitrary current Jobs.
+- Current/open filtering and explicit employment type, location, category,
+  classification, exact salary wording, closing information, and direct
+  `role_requirements` constraints occur before semantic role/topic ranking.
 - Semantic ranking sees the complete hard-filtered current candidate pool; the
   public `/jobs/current` limit remains unchanged and the final chat candidate
   cap is applied only after ranking.
@@ -292,6 +312,21 @@ complete the requested distribution. PD contents remain untouched.
 
 ## 9.1 Files changed and purpose
 
+The targeted PR #25 correction changes exactly:
+
+- `src/askanu_rag/job_queries.py`: general topic routing, fail-closed semantic
+  behavior, relevance threshold use, and conservative stored-value filters.
+- `src/askanu_rag/scholarship_queries.py`: deterministic one-fact projection
+  and selected-record null/missing abstention.
+- `src/askanu_rag/main.py`: passes the existing configured semantic threshold
+  into the Jobs service; no public API field or status changes.
+- `tests/test_jobs.py` and `tests/test_scholarships.py`: targeted review-finding
+  regression cases.
+- `docs/V6_HYBRID_IMPLEMENTATION_HANDOFF.md` and
+  `docs/V6_DAY11_RETRIEVAL_AUDIT.md`: corrected review status and evidence.
+
+The already-committed PR implementation includes the broader files below:
+
 - `src/askanu_rag/models/records.py` and model exports: frozen Course, Program
   and Subplan metadata plus type-sensitive identity/canonical URL validation.
 - `src/askanu_rag/retrieval/{identifiers,catalog,repository,postgres}.py` and
@@ -337,6 +372,10 @@ Retrieval-level tests cover:
 - multiple unit hits deduped to one source record;
 - stable tie behavior and candidate/top-k bounds;
 - Jobs requirements positive/null behavior;
+- general Jobs topic routing and semantic fail-closed behavior;
+- Jobs location, employment type, category, classification, salary, closing,
+  and direct-requirements hard filters, including semantic combinations;
+- deterministic Scholarship fact projection and missing-fact abstention;
 - Accommodation vacancy/cost/facility/application behavior; and
 - Support fuzzy routing and missing-hours behavior.
 
@@ -369,7 +408,7 @@ Exact Scholarships/Jobs/conversation/resources regression command:
 .venv\Scripts\python.exe -m pytest tests/test_scholarships.py tests/test_jobs.py tests/test_conversation.py tests/test_resources.py tests/test_domain_routing.py -o addopts= --basetemp <workspace-temp>
 ```
 
-Result: `162 passed`.
+Result: `186 passed`.
 
 Full suite:
 
@@ -377,7 +416,7 @@ Full suite:
 .venv\Scripts\python.exe -m pytest --basetemp <workspace-temp>
 ```
 
-Result: `545 passed, 60 skipped` (`605 collected`). Fifty-nine skips are guarded PostgreSQL
+Result: `569 passed, 60 skipped` (`629 collected`). Fifty-nine skips are guarded PostgreSQL
 integration cases because no disposable local test URL is configured; the
 remaining skip is the existing Windows symlink-privilege case.
 The three warnings are existing dependency deprecations.
@@ -393,6 +432,10 @@ git diff --check
 
 Offline Alembic SQL reaches the single head `20260915_0006`. This is compilation
 evidence only, not a PostgreSQL 18 or live Cloud SQL claim.
+
+The targeted Carmen-owned review findings requested for PR #25 are resolved in
+the local correction diff and verified by the results above. This statement
+does not clear the production/provider/PostgreSQL gates below.
 
 ## 12. Cross-repository dependencies and release gates
 
