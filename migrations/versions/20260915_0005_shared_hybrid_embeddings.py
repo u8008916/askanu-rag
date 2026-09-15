@@ -91,8 +91,10 @@ def _job_type_check(keys: str) -> str:
     if "role_requirements" in keys:
         role_check = (
             "jsonb_typeof(metadata_json -> 'role_requirements') IN "
-            "('array', 'null') AND NOT jsonb_path_exists(metadata_json, "
-            "'$.role_requirements[*] ? (@.type() != \"string\")') AND "
+            "('array', 'null') AND "
+            "(jsonb_typeof(metadata_json -> 'role_requirements') = 'null' "
+            "OR NOT jsonb_path_exists(metadata_json, "
+            "'$.role_requirements[*] ? (@.type() != \"string\")')) AND "
         )
     return (
         "domain <> 'jobs' OR ("

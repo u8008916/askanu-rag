@@ -55,3 +55,13 @@ def test_v6_downgrade_preserves_extension_and_refuses_resource_data_loss():
     assert "DROP EXTENSION" not in text
     assert "Cannot downgrade while Accommodation/Support records exist" in text
     assert "metadata_json - 'role_requirements'" in text
+
+
+def test_v6_job_nullable_requirements_check_is_null_safe():
+    text = REVISION.read_text(encoding="utf-8")
+
+    assert (
+        "jsonb_typeof(metadata_json -> 'role_requirements') = 'null'"
+        in text
+    )
+    assert "OR NOT jsonb_path_exists" in text

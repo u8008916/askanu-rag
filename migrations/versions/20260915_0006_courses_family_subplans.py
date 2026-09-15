@@ -199,12 +199,14 @@ def upgrade() -> None:
         "jsonb_typeof(metadata_json -> 'subplan_type') IN ('string', 'null') AND "
         "jsonb_typeof(metadata_json -> 'overview') IN ('string', 'null') AND "
         "jsonb_typeof(metadata_json -> 'learning_outcomes') IN ('array', 'null') AND "
+        "(jsonb_typeof(metadata_json -> 'learning_outcomes') = 'null' OR "
         "NOT jsonb_path_exists(metadata_json, "
-        "'$.learning_outcomes[*] ? (@.type() != \"string\")') AND "
+        "'$.learning_outcomes[*] ? (@.type() != \"string\")')) AND "
         "jsonb_typeof(metadata_json -> 'requirements') IN ('string', 'null') AND "
         "jsonb_typeof(metadata_json -> 'relevant_degrees') IN ('array', 'null') AND "
+        "(jsonb_typeof(metadata_json -> 'relevant_degrees') = 'null' OR "
         "NOT jsonb_path_exists(metadata_json, "
-        "'$.relevant_degrees[*] ? (@.type() != \"string\")') AND "
+        "'$.relevant_degrees[*] ? (@.type() != \"string\")')) AND "
         "jsonb_typeof(metadata_json -> 'other_information') IN ('string', 'null'))",
     )
     op.create_check_constraint(
@@ -225,8 +227,10 @@ def upgrade() -> None:
         "'prerequisites') IN ('string', 'null')) AND "
         "(NOT metadata_json ? 'learning_outcomes' OR jsonb_typeof(metadata_json -> "
         "'learning_outcomes') IN ('array', 'null')) AND "
+        "(NOT metadata_json ? 'learning_outcomes' OR "
+        "jsonb_typeof(metadata_json -> 'learning_outcomes') = 'null' OR "
         "NOT jsonb_path_exists(metadata_json, "
-        "'$.learning_outcomes[*] ? (@.type() != \"string\")'))",
+        "'$.learning_outcomes[*] ? (@.type() != \"string\")')))",
     )
     op.execute(
         f"""

@@ -148,7 +148,7 @@ def test_real_local_migration_repository_and_api_path(caplog):
 
     with psycopg.connect(database_url) as connection:
         connection.execute(
-            "TRUNCATE TABLE source_records, ingestion_runs"
+            "TRUNCATE TABLE source_record_embeddings, source_records, ingestion_runs"
         )
         connection.execute(
             """
@@ -349,6 +349,25 @@ def test_subplans_persist_in_source_records_but_not_compatibility_view():
         connection.rollback()
 
 
+
+def test_nullable_subplan_arrays_match_validated_model_contract():
+    database_url = _local_test_url()
+    record = make_subplan(
+        "major",
+        "NULL-MAJ",
+        title="Nullable Arrays Major",
+    )
+    values = _record_values(record)
+    metadata = record.metadata_json.model_dump(mode="python")
+    metadata["learning_outcomes"] = None
+    metadata["relevant_degrees"] = None
+    values["metadata_json"] = Jsonb(metadata)
+
+    with psycopg.connect(database_url) as connection:
+        assert _insert_record_values(connection, values) == 1
+        connection.rollback()
+
+
 def test_view_migration_round_trip_preserves_schema_data_and_legacy_reads(monkeypatch):
     database_url = _local_test_url()
     monkeypatch.setenv("DATABASE_URL", database_url)
@@ -383,16 +402,26 @@ def test_real_downgrade_refuses_while_scholarship_rows_exist(monkeypatch):
     database_url = _local_test_url()
     monkeypatch.setenv("DATABASE_URL", database_url)
 
+    with psycopg.connect(database_url) as connection:
+        version_before = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0]
+        scholarship_count_before = connection.execute(
+            "SELECT count(*) FROM source_records WHERE domain = 'scholarships'"
+        ).fetchone()[0]
+
+    assert scholarship_count_before == 1
+
     with pytest.raises(DBAPIError, match="Cannot downgrade while non-course"):
         command.downgrade(Config(ROOT / "alembic.ini"), "20260911_0001")
 
     with psycopg.connect(database_url) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20260915_0005"
+        ).fetchone()[0] == version_before
         assert connection.execute(
             "SELECT count(*) FROM source_records WHERE domain = 'scholarships'"
-        ).fetchone()[0] == 1
+        ).fetchone()[0] == scholarship_count_before
 
 
 def test_real_jobs_repository_filter_order_limit_exact_lookup_and_endpoint():
@@ -526,13 +555,18 @@ def test_jobs_downgrade_refuses_without_deleting_rows(monkeypatch):
         with psycopg.connect(database_url) as connection:
             _insert_record(connection, job)
 
+        with psycopg.connect(database_url) as connection:
+            version_before = connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()[0]
+
         with pytest.raises(DBAPIError, match="Cannot downgrade while Jobs"):
             command.downgrade(Config(ROOT / "alembic.ini"), "20260914_0003")
 
         with psycopg.connect(database_url) as connection:
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone()[0] == "20260915_0005"
+            ).fetchone()[0] == version_before
             assert connection.execute(
                 "SELECT count(*) FROM source_records WHERE record_id = %s",
                 (job.record_id,),
