@@ -14,7 +14,7 @@ Status: local implementation for review; no production migration/deployment
 - Base and current HEAD before human review: `daa5a4afabfa40a42253fc29c9b98e2fa7001c3a`.
 - The implementation is an uncommitted working-tree diff so a human can review
   it before commit, as required by `docs/AI_SETUP.md`.
-- Final review scope: 46 changed paths (31 modified, 16 untracked), including
+- Final review scope: 47 changed paths (31 modified, 16 untracked), including
   the already completed V6 hybrid work and this Courses-family addendum.
 - The two pre-existing stashes were not changed.
 
