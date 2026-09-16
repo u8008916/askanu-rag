@@ -29,6 +29,10 @@ JOB_CLOSING_AT_PATTERN = re.compile(
     r"(?:Z|[+-]\d{2}:\d{2})$"
 )
 RESOURCE_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+ACCOMMODATION_URL_PREFIX = (
+    "https://study.anu.edu.au/accommodation/our-residences/"
+)
+SUPPORT_URL_PREFIX = "https://anusa.com.au/student-assistance/"
 COURSES_HOST = "programsandcourses.anu.edu.au"
 SUBPLAN_ENTITY_TYPES = ("major", "minor", "specialisation")
 COURSES_PATH_PATTERN = re.compile(
@@ -186,42 +190,162 @@ class SubplanMetadata(BaseModel):
         return value
 
 
-class AccommodationMetadata(BaseModel):
-    """Source-backed residence facts; live vacancy is deliberately absent."""
+class AccommodationRoom(BaseModel):
+    """One source-published residence room row with relationships intact."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    entity_type: Literal["accommodation"]
-    source_authority: Literal["official_anu"]
-    accommodation_type: str | None
+    name: str
+    rate: str | None
+    contract: str | None
+    inclusions: str | None
+    other_fees: str | None
+
+
+class AccommodationContact(BaseModel):
+    """Published residence contact fields; not the residence location."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    email: str | None
+    phone: str | None
     location: str | None
-    catering: str | None
-    audience: list[str]
-    room_types: list[str]
+    hours: str | None
+
+
+class AccommodationMetadata(BaseModel):
+    """Qasim-frozen Day 12 Accommodation metadata v1 boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    entity_type: Literal["residence"]
+    category: str | None
+    location: str | None
+    catering_options: list[str]
+    audiences: list[str]
     advertised_rate: str | None
-    rate_inclusions: list[str]
-    rate_exclusions: list[str]
-    facilities: list[str]
-    application_information: str | None
+    cost_period: str | None
+    rooms: list[AccommodationRoom]
+    features: list[str]
+    overview: str | None
+    accessibility: str | None
+    application_text: str | None
+    application_url: str | None
     eligibility: str | None
-    contract_term: str | None
-    contact: str | None
+    contact: AccommodationContact
+    vacancy_status: str | None
+
+    @field_validator("application_url")
+    @classmethod
+    def validate_application_url(cls, value: str | None) -> str | None:
+        """Accept only an explicitly stored HTTPS StarRez subdomain URL."""
+
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("application_url has an invalid port") from exc
+        host = (parsed.hostname or "").casefold()
+        if (
+            parsed.scheme != "https"
+            or not host.endswith(".starrezhousing.com")
+            or host == "starrezhousing.com"
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is not None
+        ):
+            raise ValueError(
+                "application_url must be an HTTPS StarRez subdomain destination"
+            )
+        return value
+
+
+class SupportContact(BaseModel):
+    """Contact details published for the parent ANUSA category only."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    email: str | None
+    phone: str | None
+    location: str | None
+
+
+class SupportTopic(BaseModel):
+    """A nested topic that remains inside Student Assistance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    title: str
+    description: str | None
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def validate_topic_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("topic URL has an invalid port") from exc
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"anusa.com.au", "www.anusa.com.au"}
+            or not parsed.path.startswith("/student-assistance/")
+            or parsed.path == "/student-assistance/"
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("topic URL must stay inside ANUSA Student Assistance")
+        return value
+
+
+class SupportReferral(BaseModel):
+    """Published external navigation evidence, never a service entity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    label: str
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def validate_referral_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("referral URL has an invalid port") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname is None
+            or parsed.hostname in {"anusa.com.au", "www.anusa.com.au"}
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError("referral URL must be an external HTTP(S) destination")
+        return value
 
 
 class SupportMetadata(BaseModel):
-    """Published ANUSA service routing facts with no inferred assurances."""
+    """Qasim-frozen Day 12 Support metadata v1 boundary."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     entity_type: Literal["support_service"]
-    source_authority: Literal["approved_anusa"]
-    categories: list[str]
-    contact: str | None
-    location: str | None
+    category: str | None
+    purpose: str | None
+    audiences: list[str]
+    contact: SupportContact
     hours: str | None
-    audience: list[str]
-    access_instructions: str | None
+    access: str | None
     cost: str | None
+    topics: list[SupportTopic]
+    referrals: list[SupportReferral]
 
 
 CourseProgramMetadata = Annotated[
@@ -338,34 +462,22 @@ class CommonRecord(BaseModel):
                 or canonical_url != f"https://jobs.anu.edu.au{parsed.path}"
             ):
                 raise ValueError("Job canonical_url must use the exact boundary")
-        elif entity_type == "accommodation":
-            parsed = urlsplit(canonical_url)
+        elif entity_type == "residence":
+            entity_id = values.get("entity_id")
             if (
-                parsed.scheme != "https"
-                or parsed.netloc != "study.anu.edu.au"
-                or not (
-                    parsed.path == "/accommodation"
-                    or parsed.path.startswith("/accommodation/")
-                )
-                or parsed.query
-                or parsed.fragment
+                not isinstance(entity_id, str)
+                or canonical_url != f"{ACCOMMODATION_URL_PREFIX}{entity_id}"
             ):
                 raise ValueError(
-                    "Accommodation canonical_url must use the approved boundary"
+                    "Accommodation canonical_url must exactly match entity_id"
                 )
         elif entity_type == "support_service":
-            parsed = urlsplit(canonical_url)
             if (
-                parsed.scheme != "https"
-                or parsed.netloc != "anusa.com.au"
-                or not (
-                    parsed.path == "/student-assistance"
-                    or parsed.path.startswith("/student-assistance/")
-                )
-                or parsed.query
-                or parsed.fragment
+                not isinstance(values.get("entity_id"), str)
+                or canonical_url
+                != f"{SUPPORT_URL_PREFIX}{values.get('entity_id')}/"
             ):
-                raise ValueError("Support canonical_url must use the approved boundary")
+                raise ValueError("Support canonical_url must exactly match entity_id")
         return values
 
     @field_validator(
@@ -419,7 +531,7 @@ class CommonRecord(BaseModel):
         elif isinstance(metadata, AccommodationMetadata):
             expected_source = "accommodation_anu_study"
             expected_domain = "accommodation"
-            entity_type = "accommodation"
+            entity_type = "residence"
             expected_entity_id = self.entity_id
             if RESOURCE_SLUG_PATTERN.fullmatch(self.entity_id) is None:
                 raise ValueError("Accommodation entity_id must be a stable slug")

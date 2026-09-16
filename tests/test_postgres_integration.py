@@ -27,6 +27,8 @@ from test_postgres_repository import (
 )
 from test_jobs import make_job
 from test_courses_family import make_subplan
+from test_day12_contracts import accommodation_payload, support_payload
+from askanu_rag.models import AccommodationRecord, SupportRecord
 
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
 ROOT = Path(__file__).parents[1]
@@ -689,6 +691,129 @@ def test_database_rejects_scholarship_slug_outside_frozen_grammar(invalid_slug):
         with pytest.raises(psycopg.errors.CheckViolation):
             _insert_record_values(connection, values)
         connection.rollback()
+
+
+def test_day12_previous_head_upgrades_to_new_head_without_resource_rows(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(ROOT / "alembic.ini")
+    with psycopg.connect(database_url) as connection:
+        connection.execute(
+            "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
+        )
+    command.downgrade(config, "20260915_0007")
+    command.upgrade(config, "head")
+
+    with psycopg.connect(database_url) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0] == "20260916_0008"
+
+
+def test_database_accepts_frozen_day12_records_and_rejects_obsolete_shape(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    command.upgrade(Config(ROOT / "alembic.ini"), "head")
+    accommodation = AccommodationRecord.model_validate(accommodation_payload())
+    support = SupportRecord.model_validate(support_payload())
+    try:
+        with psycopg.connect(database_url) as connection:
+            connection.execute(
+                "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
+            )
+            assert _insert_record(connection, accommodation) == 1
+            assert _insert_record(connection, support) == 1
+            connection.execute(
+                "DELETE FROM source_records WHERE domain = 'accommodation'"
+            )
+
+        obsolete = _record_values(accommodation)
+        obsolete["record_id"] = "accommodation:accommodation:yukeembruk"
+        obsolete_metadata = accommodation.metadata_json.model_dump(mode="python")
+        obsolete_metadata["entity_type"] = "accommodation"
+        obsolete["metadata_json"] = Jsonb(obsolete_metadata)
+        with psycopg.connect(database_url) as connection:
+            with pytest.raises(psycopg.errors.CheckViolation):
+                _insert_record_values(connection, obsolete)
+            connection.rollback()
+    finally:
+        with psycopg.connect(database_url) as connection:
+            connection.execute(
+                "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
+            )
+
+
+@pytest.mark.parametrize(
+    ("record_factory", "field", "value"),
+    [
+        (lambda: AccommodationRecord.model_validate(accommodation_payload()), "record_id", "accommodation:residence:bruce-hall"),
+        (lambda: AccommodationRecord.model_validate(accommodation_payload()), "canonical_url", "https://study.anu.edu.au/accommodation/our-residences/bruce-hall"),
+        (lambda: SupportRecord.model_validate(support_payload()), "record_id", "support:service:academic"),
+        (lambda: SupportRecord.model_validate(support_payload()), "canonical_url", "https://anusa.com.au/student-assistance/financial/"),
+    ],
+)
+def test_database_rejects_day12_identity_mismatches(record_factory, field, value):
+    database_url = _local_test_url()
+    values = _record_values(record_factory())
+    values[field] = value
+
+    with psycopg.connect(database_url) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_record_values(connection, values)
+        connection.rollback()
+
+
+def test_day12_guard_refuses_known_provisional_rows_without_rewrite(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(ROOT / "alembic.ini")
+    with psycopg.connect(database_url) as connection:
+        connection.execute(
+            "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
+        )
+    command.downgrade(config, "20260915_0007")
+    frozen = AccommodationRecord.model_validate(accommodation_payload())
+    values = _record_values(frozen)
+    values["record_id"] = "accommodation:accommodation:yukeembruk"
+    values["metadata_json"] = Jsonb(
+        {
+            "entity_type": "accommodation",
+            "source_authority": "official_anu",
+            "accommodation_type": "Residence hall",
+            "location": "Acton campus",
+            "catering": "Self-catered",
+            "audience": ["Students"],
+            "room_types": ["Single room"],
+            "advertised_rate": "$340 per week",
+            "rate_inclusions": ["Utilities"],
+            "rate_exclusions": ["Meals"],
+            "facilities": ["Study room"],
+            "application_information": "Apply online",
+            "eligibility": None,
+            "contract_term": "44 weeks",
+            "contact": "Accommodation Services",
+        }
+    )
+    try:
+        with psycopg.connect(database_url) as connection:
+            _insert_record_values(connection, values)
+
+        with pytest.raises(DBAPIError, match="Known provisional"):
+            command.upgrade(config, "head")
+
+        with psycopg.connect(database_url) as connection:
+            assert connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()[0] == "20260915_0007"
+            assert connection.execute(
+                "SELECT record_id FROM source_records WHERE entity_id = 'yukeembruk'"
+            ).fetchone()[0] == "accommodation:accommodation:yukeembruk"
+    finally:
+        with psycopg.connect(database_url) as connection:
+            connection.execute(
+                "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
+            )
+        command.upgrade(config, "head")
 
 
 @pytest.mark.parametrize("field", ["effective_from", "effective_to"])

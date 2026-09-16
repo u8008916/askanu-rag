@@ -51,7 +51,7 @@ def test_alembic_revision_is_single_versioned_head():
         capture_output=True,
         text=True,
     )
-    assert "20260915_0007 (head)" in result.stdout
+    assert "20260916_0008 (head)" in result.stdout
 
 
 def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
@@ -80,6 +80,10 @@ def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
     assert "CREATE TABLE source_record_embeddings" in sql
     assert "role_requirements" in sql
     assert "uq_source_records_courses_identity" in sql
+    assert "askanu_day12_accommodation_metadata_valid" in sql
+    assert "askanu_day12_support_metadata_valid" in sql
+    assert "accommodation:residence:" in sql
+    assert "support:support_service:" in sql
 
 
 def test_migration_creates_frozen_schema_and_identity_guards(monkeypatch):

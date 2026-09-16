@@ -91,7 +91,9 @@ The append-only graph remains linear:
 ```text
 20260914_0004
 -> 20260915_0005 shared hybrid embeddings/resources/Jobs v2
--> 20260915_0006 Courses-family/Subplan contract (head)
+-> 20260915_0006 Courses-family/Subplan contract
+-> 20260915_0007 nullable-array contract consistency
+-> 20260916_0008 frozen Day 12 Accommodation/Support contract (head)
 ```
 
 Revision `0005`:
@@ -124,6 +126,13 @@ restores the `0005` schema shape but deliberately leaves normalized lowercase
 URLs unchanged; that database shape and compatible RAG URL model accept them.
 Earlier revisions, including
 `0004` and `0005`, are unchanged.
+
+Revision `0007` makes nullable array checks consistent with the validated model
+contract. Revision `0008` leaves every earlier migration unchanged and replaces
+only the provisional Accommodation/Support checks. Its preflight is deliberately
+read-only: exact frozen rows proceed, while known provisional or unknown rows
+raise an operator-facing error before any constraint is dropped. No lossy JSON
+rewrite is attempted. Downgrade refuses while either resource domain has rows.
 
 No production database migration was run.
 
@@ -271,22 +280,27 @@ do not leak into `course_program_records`.
 
 - Shared exact-title, sparse and dense discovery routes are implemented over
   `accommodation_anu_study` records.
-- Source-backed type, location, catering, audience, rooms, advertised rate,
-  inclusions/exclusions, facilities, application, eligibility, term and contact
-  can be projected.
+- Source-backed category, location, catering options, audiences, advertised
+  rate/cost period, room-level rate/contract/inclusions/other fees, features,
+  overview, accessibility, application, eligibility and structured contact can
+  be projected without breaking their associations.
 - Answers label rates as advertised information, not a guarantee.
-- Live vacancy always remains unsupported and returns
-  `insufficient_evidence` with the stored official source.
+- A stored source-backed `vacancy_status` is reported exactly. Null vacancy
+  returns `insufficient_evidence`; the application link is navigation only and
+  is never treated as evidence of availability.
 
 ### Support
 
 - Shared exact-title, sparse and dense routing is implemented over the approved
   ANUSA Student Assistance source.
-- Published categories, audience, contact, location, hours, access and cost can
-  be projected.
+- Published category, purpose, audiences, structured contact, hours, access,
+  cost, nested topics and external referrals can be projected.
 - Missing hours/contact/location are not invented.
-- Responses state the routing boundary and make no clinical diagnosis or
-  professional-availability assurance.
+- Topic links remain inside the approved ANUSA Student Assistance boundary;
+  referrals are labelled as navigation to external services, not as separate
+  ANUSA services.
+- Responses make no clinical diagnosis, emergency-coverage claim,
+  response-time promise, 24/7 claim or professional-availability assurance.
 - Additional ANU Support pages are not silently approved; only the existing
   active source-registry boundary is accepted.
 
@@ -484,9 +498,9 @@ Will must:
 2. include that text in canonical content/hash where source-backed;
 3. leave PD-only and absent cases null;
 4. deliver frozen current-Jobs data for the exact distribution audit; and
-5. implement/synchronize Accommodation and Support normalized records against
-   the documented RAG metadata shapes. Both parser modules are currently
-   scaffolds returning no records; and
+5. keep Accommodation and Support normalized records synchronized with Qasim's
+   frozen Day 12 contract and provide the staged writer evidence required by the
+   release gate; and
 6. synchronize all five Courses-family entity outputs, exact uppercase metadata
    codes/lowercase URLs, new metadata fields and deterministic content sections,
    then supply independent 99% source-present field/entity coverage evidence.

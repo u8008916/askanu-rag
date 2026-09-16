@@ -119,7 +119,11 @@ Revision `20260911_0001` did not add pgvector. The later local V6 revision
 the Day 5 bounded in-memory TF-IDF/cosine path. Revision `20260915_0006` adds
 the frozen Course, Program, Major, Minor and Specialisation identity, metadata
 and lowercase canonical-URL contract while keeping the compatibility view
-Course+Program-only. No production embedding provider is silently selected.
+Course+Program-only. Revision `20260916_0008` replaces the provisional
+Accommodation/Support checks with Qasim's frozen Day 12 identity, canonical-URL
+and nested-metadata contract, guarded by a read-only preflight that refuses
+unknown or lossy existing rows. No production embedding provider is silently
+selected.
 See `docs/V6_HYBRID_IMPLEMENTATION_HANDOFF.md` and
 `docs/DEPLOYMENT.md` for the current boundary and pending release gates.
 
@@ -429,8 +433,8 @@ rate, hours and high-stakes routing behavior.
 `EmbeddingProvider` is configurable and has a deterministic fake for tests.
 Because no production provider/model/dimension was frozen, normal app startup
 does not construct one. Indexing is an explicit service primitive and never
-embeds the full dataset in a request handler. Revisions `20260915_0005` and
-`20260915_0006` are local only until Qasim reviews PostgreSQL 18,
+embeds the full dataset in a request handler. Revisions `20260915_0005` through
+`20260916_0008` are local only until Qasim reviews PostgreSQL 18,
 source-contract synchronization, provider configuration and deployment order.
 The stored embedding version also includes the retrieval-unit/chunking policy;
 historical vector rows are retained but excluded unless current source hash,

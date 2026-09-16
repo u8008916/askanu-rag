@@ -333,23 +333,25 @@ def create_app(
                 return _mark_response(request, scholarship_response)
 
         if accommodation_queries is not None and is_plausible_resource_question(
-            resolved_question, "accommodation", pending
+            resolved_question, "accommodation", pending, payload.history
         ):
             accommodation_response = await accommodation_queries.answer(
                 resolved_question,
                 request_id,
                 payload.conversation_state.pending_clarification,
+                payload.history,
             )
             if accommodation_response is not None:
                 return _mark_response(request, accommodation_response)
 
         if support_queries is not None and is_plausible_resource_question(
-            resolved_question, "support", pending
+            resolved_question, "support", pending, payload.history
         ):
             support_response = await support_queries.answer(
                 resolved_question,
                 request_id,
                 payload.conversation_state.pending_clarification,
+                payload.history,
             )
             if support_response is not None:
                 return _mark_response(request, support_response)

@@ -9,10 +9,15 @@ from fastapi.testclient import TestClient
 
 from askanu_rag.main import create_app
 from askanu_rag.models import (
+    AccommodationContact,
     AccommodationMetadata,
     AccommodationRecord,
+    AccommodationRoom,
+    SupportContact,
     SupportMetadata,
     SupportRecord,
+    SupportReferral,
+    SupportTopic,
 )
 from askanu_rag.retrieval import CourseProgramRepository
 from askanu_rag.retrieval.vector import VectorHit
@@ -30,7 +35,7 @@ def accommodation(
     )
     observed = datetime(2026, 9, 15, tzinfo=timezone.utc)
     return AccommodationRecord(
-        record_id=f"accommodation:accommodation:{entity_id}",
+        record_id=f"accommodation:residence:{entity_id}",
         source_id="accommodation_anu_study",
         entity_id=entity_id,
         domain="accommodation",
@@ -48,21 +53,35 @@ def accommodation(
         embedding_version=None,
         index_status="PENDING",
         metadata_json=AccommodationMetadata(
-            entity_type="accommodation",
-            source_authority="official_anu",
-            accommodation_type="Residence hall",
+            entity_type="residence",
+            category="Residence hall",
             location="Acton campus",
-            catering="Self-catered",
-            audience=["Undergraduate students"],
-            room_types=["Single room"],
+            catering_options=["Self-catered"],
+            audiences=["Undergraduate students"],
             advertised_rate=advertised_rate,
-            rate_inclusions=["Utilities"],
-            rate_exclusions=["Meals"],
-            facilities=facilities or ["Quiet study spaces", "Shared kitchen"],
-            application_information="Apply through the ANU accommodation portal.",
+            cost_period="per week for the 2026 term",
+            rooms=[
+                AccommodationRoom(
+                    name="Single room",
+                    rate=advertised_rate,
+                    contract="Academic year",
+                    inclusions="Utilities",
+                    other_fees="Meals excluded",
+                )
+            ],
+            features=facilities or ["Quiet study spaces", "Shared kitchen"],
+            overview="A self-catered residence near campus.",
+            accessibility="Published accessible-room information.",
+            application_text="Apply through the ANU accommodation portal.",
+            application_url="https://anu.starrezhousing.com/StarRezPortalX",
             eligibility=None,
-            contract_term="Academic year",
-            contact="Accommodation Services",
+            contact=AccommodationContact(
+                email="accommodation@anu.edu.au",
+                phone="02 6125 0000",
+                location="Accommodation Services reception",
+                hours="Monday to Friday, 9 am to 5 pm",
+            ),
+            vacancy_status=None,
         ),
     )
 
@@ -94,14 +113,30 @@ def support(
         index_status="PENDING",
         metadata_json=SupportMetadata(
             entity_type="support_service",
-            source_authority="approved_anusa",
-            categories=categories or ["Accommodation support", "Advocacy"],
-            contact="legal@anusa.com.au",
-            location="ANU campus",
+            category=(categories or ["Accommodation support", "Advocacy"])[0],
+            purpose=content,
+            audiences=["ANU students"],
+            contact=SupportContact(
+                email="legal@anusa.com.au",
+                phone="02 6125 2444",
+                location="ANU campus",
+            ),
             hours=hours,
-            audience=["ANU students"],
-            access_instructions="Use the official service enquiry form.",
+            access="Use the official service enquiry form.",
             cost="Free for ANU students",
+            topics=[
+                SupportTopic(
+                    title="Tenancy problems",
+                    description="Help with tenancy and landlord problems.",
+                    url=f"https://anusa.com.au/student-assistance/{entity_id}/tenancy/",
+                )
+            ],
+            referrals=[
+                SupportReferral(
+                    label="Published ANU guidance",
+                    url="https://www.anu.edu.au/students",
+                )
+            ],
         ),
     )
 
@@ -126,7 +161,7 @@ def test_specific_residence_cost_uses_advertised_wording_and_source():
 
     assert body["status"] == "ok"
     assert "advertised rate wording" in body["answer"]
-    assert "not live vacancy or a guaranteed price" in body["answer"]
+    assert "not a guaranteed final price" in body["answer"]
     assert body["sources"][0]["record_id"] == record.record_id
 
 
@@ -135,7 +170,7 @@ def test_live_vacancy_remains_unknown_even_with_application_information():
     body = ask(CourseProgramRepository([record]), "Is Fenner Hall available now?")
 
     assert body["status"] == "insufficient_evidence"
-    assert "do not establish live vacancy" in body["answer"]
+    assert "current live vacancy is not present" in body["answer"]
     assert body["sources"][0]["url"] == str(record.canonical_url)
 
 

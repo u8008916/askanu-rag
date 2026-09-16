@@ -107,7 +107,7 @@ def test_explicit_course_switch_beats_stale_resource_clarification():
         "id": "clar-accommodation-selection",
         "type": "accommodation_selection",
         "options": [
-            {"id": "accommodation:accommodation:fenner-hall", "label": "Fenner Hall"}
+            {"id": "accommodation:residence:fenner-hall", "label": "Fenner Hall"}
         ],
         "allow_multiple": False,
     }
