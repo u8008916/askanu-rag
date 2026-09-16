@@ -1105,6 +1105,16 @@ The Day 8 lifecycle applies to every `source_records` row:
 - `INDEXED`: usable only when the successful version represents current content
   and the requested target version.
 
+An explicit model/retrieval-policy version rollout over unchanged content is a
+separate case from failed indexing of new content. If that rollout fails while
+the prior `INDEXED` row/version still represents the same current
+`content_hash`, preserve that prior state as last-known-good. Queries for the
+new target version cannot use it because version matching remains mandatory.
+Failure persistence must compare the task's starting content hash, index state
+and version so a late failure cannot overwrite a concurrent success. For
+`NEW`/`CHANGED` or any row without a usable prior index, failure remains
+`FAILED` and historical vectors are ineligible.
+
 Revision `20260915_0005` adds the explicit RAG-side indexing primitive and the
 shared `source_record_embeddings` table described below. It does not add a
 `STALE` column/enum or change scraper ownership. Will continues to own scraper

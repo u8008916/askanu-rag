@@ -147,9 +147,16 @@ def resolve_index_result(
             produced_version,
             "Matching task completed successfully.",
         )
+    if current.index_status == "INDEXED" and current.embedding_version:
+        return IndexDecision(
+            IndexAction.APPLY_FAILURE,
+            "INDEXED",
+            current.embedding_version,
+            "Target-version rollout failed; preserve the valid prior index.",
+        )
     return IndexDecision(
         IndexAction.APPLY_FAILURE,
         "FAILED",
         current.embedding_version,
-        "Matching task failed; never report current content as indexed.",
+        "Matching task failed without a usable prior index.",
     )
