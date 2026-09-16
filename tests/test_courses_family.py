@@ -380,3 +380,75 @@ def test_subplan_content_and_hash_are_preserved_as_source_evidence():
     assert "Requirements:" in record.content
     assert "Relevant Degrees:" in record.content
     assert hashlib.sha256(record.content.encode("utf-8")).hexdigest() == record.content_hash
+def test_day11_comp1110_learning_outcomes_use_stored_evidence_and_missing_abstains():
+    outcome = "Build structured programs from source-backed requirements."
+
+    values = make_subplan().model_dump(mode="json")
+    values.update(
+        record_id="courses:course:COMP1110_2026",
+        entity_id="COMP1110_2026",
+        title="Structured Programming",
+        canonical_url="https://programsandcourses.anu.edu.au/2026/course/comp1110",
+    )
+
+    content = f"Learning Outcomes:\n- {outcome}"
+    values["content"] = content
+    values["content_hash"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    values["metadata_json"] = CourseMetadata(
+        entity_type="course",
+        course_code="COMP1110",
+        academic_year="2026",
+        learning_outcomes=[outcome],
+    ).model_dump(mode="json")
+
+    with_outcomes = CourseProgramRecord.model_validate(values)
+
+    response = asyncio.run(
+        HybridQueryService(
+            CourseProgramRepository((with_outcomes,))
+        ).answer(
+            "What are the learning outcomes for COMP1110 in 2026?",
+            "req-day11-learning-outcomes",
+        )
+    )
+
+    assert response.status == "ok"
+    assert outcome in response.answer
+    assert [source.record_id for source in response.sources] == [
+        with_outcomes.record_id
+    ]
+
+    missing_values = with_outcomes.model_dump(mode="json")
+
+    missing_content = (
+        "Synthetic record with no source-backed structured learning outcomes."
+    )
+    missing_values["content"] = missing_content
+    missing_values["content_hash"] = hashlib.sha256(
+        missing_content.encode("utf-8")
+    ).hexdigest()
+
+    missing_values["metadata_json"] = CourseMetadata(
+        entity_type="course",
+        course_code="COMP1110",
+        academic_year="2026",
+        learning_outcomes=None,
+    ).model_dump(mode="json")
+
+    without_outcomes = CourseProgramRecord.model_validate(missing_values)
+
+    missing_response = asyncio.run(
+        HybridQueryService(
+            CourseProgramRepository((without_outcomes,))
+        ).answer(
+            "What are the learning outcomes for COMP1110 in 2026?",
+            "req-day11-learning-outcomes-missing",
+        )
+    )
+
+    assert missing_response.status == "insufficient_evidence"
+    assert [source.record_id for source in missing_response.sources] == [
+        without_outcomes.record_id
+    ]
+    assert outcome not in missing_response.answer

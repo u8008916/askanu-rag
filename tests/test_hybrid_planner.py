@@ -321,3 +321,15 @@ def test_multiple_explicit_identities_are_list_shaped_without_keyword(repo):
 def test_plural_discovery_and_explicit_list_are_list_shaped(repo):
     assert plan_query("Which courses involve programming?", repo).list_shaped
     assert plan_query("List majors", repo).list_shaped
+def test_day11_comp1100_ambiguity_preserves_ordered_clarification_options(repo):
+    body = post(repo, "Tell me about COMP1100").json()
+
+    assert body["status"] == "needs_clarification"
+    assert [
+        option["id"]
+        for option in body["clarification"]["options"]
+    ] == [
+        "courses:course:COMP1100_2026",
+        "courses:course:COMP1100_2027",
+    ]
+    assert body["sources"] == []

@@ -980,3 +980,42 @@ def test_missing_requested_scholarship_fact_abstains_with_official_source(
     )
     for unrelated in ("Official status:", "Study level:", "Area of study:", "Value:"):
         assert unrelated not in body["answer"]
+def test_day11_closing_date_projection_and_null_abstention(repo):
+    present = ask(
+        repo,
+        "When does Day 9 Test Undergraduate Computing Scholarship close?",
+    )
+
+    assert present["status"] == "ok"
+    assert present["answer"] == (
+        "Day 9 Test Undergraduate Computing Scholarship. "
+        "Closing date: 2026-10-31."
+    )
+    assert [
+        source["record_id"]
+        for source in present["sources"]
+    ] == [
+        "scholarships:scholarship:day9-undergraduate-computing"
+    ]
+
+    missing = ask(
+        repo,
+        "When does Day 9 Test International Science Scholarship close?",
+    )
+
+    assert missing["status"] == "insufficient_evidence"
+    assert "closing date" in missing["answer"].casefold()
+    assert [
+        source["record_id"]
+        for source in missing["sources"]
+    ] == [
+        "scholarships:scholarship:day9-international-science"
+    ]
+
+    for unrelated in (
+        "Official status:",
+        "Study level:",
+        "Area of study:",
+        "Value:",
+    ):
+        assert unrelated not in missing["answer"]
