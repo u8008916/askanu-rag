@@ -237,7 +237,7 @@ BEGIN
         END IF;
         nested_url := item ->> 'url';
         IF nested_url !~
-           '^https://(www[.])?anusa[.]com[.]au/student-assistance/[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*/?$'
+           '^https://([wW][wW][wW][.])?[aA][nN][uU][sS][aA][.][cC][oO][mM][.][aA][uU]/student-assistance/[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*/?$'
         THEN
             RETURN FALSE;
         END IF;
@@ -257,7 +257,7 @@ BEGIN
         nested_url := item ->> 'url';
         IF nested_url !~
            '^https?://[^/@:[:space:]]+(:[0-9]+)?([/?#][^[:space:]]*)?$'
-           OR nested_url ~ '^https?://(www[.])?anusa[.]com[.]au([/:]|$)'
+           OR nested_url ~* '^https?://(www[.])?anusa[.]com[.]au([/:]|$)'
         THEN
             RETURN FALSE;
         END IF;

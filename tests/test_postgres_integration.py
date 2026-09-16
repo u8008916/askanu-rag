@@ -140,6 +140,17 @@ def _provisional_support_values(
     return values
 
 
+def _support_values_with_nested_url(
+    collection: str, url: str
+) -> dict[str, object]:
+    record = SupportRecord.model_validate(support_payload())
+    values = _record_values(record)
+    metadata = record.metadata_json.model_dump(mode="python")
+    metadata[collection][0]["url"] = url
+    values["metadata_json"] = Jsonb(metadata)
+    return values
+
+
 def _insert_is_accepted(database_url: str, values: dict[str, object]) -> bool:
     with psycopg.connect(database_url) as connection:
         try:
@@ -916,6 +927,59 @@ def test_database_accepts_frozen_day12_records_and_rejects_obsolete_shape(monkey
             connection.execute(
                 "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
             )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://anusa.com.au/student-assistance/academic/",
+        "https://ANUSA.com.au/student-assistance/academic/",
+        "https://AnUsA.com.au/student-assistance/academic/",
+        "https://WWW.ANUSA.COM.AU/student-assistance/academic/",
+        "https://WwW.AnUsA.CoM.aU/student-assistance/academic/",
+    ],
+    ids=[
+        "lowercase",
+        "uppercase",
+        "mixed-case",
+        "www-uppercase",
+        "www-mixed-case",
+    ],
+)
+def test_database_rejects_internal_anusa_support_referral_for_any_hostname_case(
+    url,
+):
+    database_url = _local_test_url()
+    values = _support_values_with_nested_url("referrals", url)
+
+    assert not _insert_is_accepted(database_url, values)
+
+
+def test_database_accepts_valid_external_support_referral():
+    database_url = _local_test_url()
+    values = _support_values_with_nested_url(
+        "referrals", "https://www.legalaidact.org.au/get-legal-help"
+    )
+
+    assert _insert_is_accepted(database_url, values)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://AnUsA.com.au/student-assistance/academic/appeals/",
+        "https://WWW.ANUSA.COM.AU/student-assistance/academic/appeals/",
+    ],
+    ids=["mixed-case", "www-uppercase"],
+)
+def test_database_accepts_mixed_case_support_topic_like_python_validator(url):
+    database_url = _local_test_url()
+    payload = support_payload()
+    payload["metadata_json"]["topics"][0]["url"] = url
+    record = SupportRecord.model_validate(payload)
+
+    assert record.metadata_json.topics[0].url == url
+    assert _insert_is_accepted(database_url, _record_values(record))
 
 
 @pytest.mark.parametrize(

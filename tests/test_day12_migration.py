@@ -162,6 +162,21 @@ def test_frozen_metadata_validators_have_exact_nested_contracts() -> None:
     assert "external" not in support.casefold()  # behavior is encoded, not inferred text
 
 
+def test_support_url_hostname_case_matches_python_without_broadening_topic_path() -> None:
+    support = load_revision().SUPPORT_VALIDATOR_SQL
+
+    assert (
+        "OR nested_url ~* '^https?://(www[.])?anusa[.]com[.]au([/:]|$)'"
+        in support
+    )
+    assert (
+        "^https://([wW][wW][wW][.])?[aA][nN][uU][sS][aA][.][cC][oO][mM][.][aA][uU]/student-assistance/"
+        in support
+    )
+    assert "/student-assistance/[a-z0-9]+(-[a-z0-9]+)*/" in support
+    assert "nested_url !~*" not in support
+
+
 def test_upgrade_never_rewrites_or_deletes_resource_rows() -> None:
     _revision, recorder = run("upgrade")
     sql = "\n".join(event[1] for event in recorder.events if event[0] == "execute")
