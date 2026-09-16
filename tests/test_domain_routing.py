@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from askanu_rag.database import RepositoryUnavailableError
@@ -107,7 +108,7 @@ def test_explicit_course_switch_beats_stale_resource_clarification():
         "id": "clar-accommodation-selection",
         "type": "accommodation_selection",
         "options": [
-            {"id": "accommodation:accommodation:fenner-hall", "label": "Fenner Hall"}
+            {"id": "accommodation:residence:fenner-hall", "label": "Fenner Hall"}
         ],
         "allow_multiple": False,
     }
@@ -121,4 +122,34 @@ def test_explicit_course_switch_beats_stale_resource_clarification():
     assert response.status_code == 200
     assert repository.reads["courses"] > 0
     assert repository.reads["accommodation"] == 0
+    assert repository.reads["support"] == 0
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_domain"),
+    [
+        ("Can you help me with the prerequisites for COMP1110?", "courses"),
+        ("Can you help me find cybersecurity jobs?", "jobs"),
+        ("Can you help me with scholarship closing dates?", "scholarships"),
+        ("Can you help me compare Bruce Hall and Ursula Hall?", "accommodation"),
+        ("Can you help me find support for tenancy issues?", "support"),
+    ],
+)
+def test_generic_help_never_overrides_an_explicit_domain(question, expected_domain):
+    repository = ReadSpyRepository()
+
+    response = post(repository, question)
+
+    assert response.status_code == 200
+    assert repository.reads[expected_domain] > 0
+    assert repository.reads["support"] == (1 if expected_domain == "support" else 0)
+
+
+def test_vague_help_does_not_claim_a_support_service():
+    repository = ReadSpyRepository()
+
+    body = post(repository, "Can you help me?").json()
+
+    assert body["status"] == "off_topic"
+    assert body["sources"] == []
     assert repository.reads["support"] == 0

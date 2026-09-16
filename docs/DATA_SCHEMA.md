@@ -1203,30 +1203,55 @@ Description collection remains outside the approved source boundary.
 
 Identity uses the active scraper-registry source `accommodation_anu_study`,
 `domain = accommodation`, slug `entity_id`, and
-`record_id = accommodation:accommodation:<entity_id>`. Canonical URLs remain
-under `https://study.anu.edu.au/accommodation`.
+`record_id = accommodation:residence:<entity_id>`. The canonical URL is exactly
+`https://study.anu.edu.au/accommodation/our-residences/<entity_id>` and its slug
+must equal `entity_id`.
 
-Metadata contains exactly: `entity_type = accommodation`,
-`source_authority = official_anu`, nullable `accommodation_type`, `location`,
-`catering`, `advertised_rate`, `application_information`, `eligibility`,
-`contract_term` and `contact`, plus source-string arrays `audience`,
-`room_types`, `rate_inclusions`, `rate_exclusions` and `facilities`.
+Metadata contains exactly:
 
-Advertised rates are source wording, not guaranteed prices. No live-vacancy
-field exists and neither RAG nor vector similarity may infer availability.
+- `entity_type = residence`;
+- nullable strings `category`, `location`, `advertised_rate`, `cost_period`,
+  `overview`, `accessibility`, `application_text`, `application_url`,
+  `eligibility` and `vacancy_status`;
+- string arrays `catering_options`, `audiences` and `features`;
+- `rooms`, an array of exact objects containing `name`, nullable `rate`,
+  `contract`, `inclusions` and `other_fees`; and
+- exact `contact` object containing nullable `email`, `phone`, `location` and
+  `hours`.
+
+`source_authority` is not metadata. Authority comes from the approved
+`source_id`, domain and exact canonical boundary. Residence `location` and
+contact `location` are independent source facts. `application_url`, when
+present, is an explicitly published HTTPS `*.starrezhousing.com` navigation
+destination; RAG never fetches or authenticates to it.
+
+Advertised rates are source wording, not guaranteed prices. `vacancy_status`
+is strictly source-backed. Null means no approved evidence about current
+vacancy, not available or unavailable, and RAG never derives it from an
+application link, room/rate table, dates or any other proxy.
 
 # V6 Support metadata v1
 
 Identity uses the active scraper-registry source
 `support_anusa_student_assistance`, `domain = support`, slug `entity_id`, and
 `record_id = support:support_service:<entity_id>`. Canonical URLs remain under
-`https://anusa.com.au/student-assistance`.
+the exact boundary
+`https://anusa.com.au/student-assistance/<entity_id>/`, with literal slug
+equality.
 
-Metadata contains exactly: `entity_type = support_service`,
-`source_authority = approved_anusa`, arrays `categories` and `audience`, and
-nullable source strings `contact`, `location`, `hours`, `access_instructions`
-and `cost`. Null hours/contact/location stay unknown; RAG does not infer them or
-make clinical/emergency/professional-availability assurances.
+Metadata contains exactly `entity_type = support_service`; nullable strings
+`category`, `purpose`, `hours`, `access` and `cost`; string array `audiences`;
+exact `contact` object containing nullable `email`, `phone` and `location`;
+`topics` containing exact `title`, nullable `description`, and an internal
+ANUSA Student Assistance `url`; and `referrals` containing exact `label` and an
+explicit external HTTP(S) `url`.
+
+`source_authority` is not metadata. Topics remain nested under their parent
+service. Referrals are navigation evidence only: they are not Topics, are not
+promoted into source-record entities and are not fetched by this path. Null
+hours/access stay unknown; referred-service facts are never inherited. RAG does
+not diagnose, invent medical/legal advice, or guarantee service availability,
+emergency coverage, response time or hours.
 
 # V6 shared retrieval-unit embeddings
 

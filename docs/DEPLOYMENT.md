@@ -537,3 +537,33 @@ The live URL migration also requires a read-only preflight before `0006`:
    database shape and the compatible RAG URL model.
 
 No production migration, deployment, push or external data write was performed.
+
+## V6 revision 20260916_0008 — Day 12 Accommodation/Support local candidate
+
+`20260916_0008` is append-only after `20260915_0007` and replaces only the six
+Accommodation/Support constraints introduced by the provisional `0005`
+contract. It freezes `accommodation:residence:<slug>` and
+`support:support_service:<slug>`, exact canonical URLs, and the approved nested
+metadata shapes. Accommodation `application_url` is limited to approved HTTPS
+StarRez hosts; Support topic URLs remain inside the ANUSA Student Assistance
+boundary and referral URLs must be external HTTP(S) destinations.
+
+The upgrade runs its read-only preflight before dropping any constraint. Exact
+frozen rows may proceed. Recognized provisional rows stop with a manual
+re-ingestion message because the old shape cannot be converted without losing
+meaning. Unknown rows stop for manual contract review. The migration performs no
+row `UPDATE`, `DELETE`, or automatic JSON rewrite. Downgrade refuses while any
+Accommodation or Support row exists.
+
+Before any production migration, Qasim must verify on disposable PostgreSQL 18:
+
+1. upgrade `0007 -> 0008`, one-head graph, and preservation of unrelated rows;
+2. frozen Accommodation/Support acceptance plus invalid nested URL/type rejection;
+3. exact identity/canonical-URL equality for both domains;
+4. known-provisional and unknown-row fail-closed preflight behavior;
+5. safe downgrade refusal with resource rows; and
+6. compatible scraper image, runtime grants, database configuration, and staged
+   writer/reader evidence.
+
+No production migration, Cloud SQL mutation, deploy, scraper change, or live
+StarRez fetch was performed by the Day 12 RAG task.
