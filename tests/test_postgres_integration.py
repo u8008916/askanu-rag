@@ -1,5 +1,6 @@
 """Opt-in disposable local PostgreSQL smoke; never accepts a cloud database."""
 
+import copy
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -88,6 +89,68 @@ def _insert_record(connection, record, *, ignore_conflict: bool = False) -> int:
         _record_values(record),
         ignore_conflict=ignore_conflict,
     )
+
+
+def _provisional_accommodation_values(
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    values = _record_values(AccommodationRecord.model_validate(accommodation_payload()))
+    values["record_id"] = "accommodation:accommodation:yukeembruk"
+    values["metadata_json"] = Jsonb(
+        metadata
+        or {
+            "entity_type": "accommodation",
+            "source_authority": "official_anu",
+            "accommodation_type": "Residence hall",
+            "location": "Acton campus",
+            "catering": "Self-catered",
+            "audience": ["Students"],
+            "room_types": ["Single room"],
+            "advertised_rate": "$340 per week",
+            "rate_inclusions": ["Utilities"],
+            "rate_exclusions": ["Meals"],
+            "facilities": ["Study room"],
+            "application_information": "Apply online",
+            "eligibility": None,
+            "contract_term": "44 weeks",
+            "contact": "Accommodation Services",
+        }
+    )
+    return values
+
+
+def _provisional_support_values(
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    values = _record_values(SupportRecord.model_validate(support_payload()))
+    values["metadata_json"] = Jsonb(
+        metadata
+        or {
+            "entity_type": "support_service",
+            "source_authority": "approved_anusa",
+            "categories": ["Academic"],
+            "contact": "Student Assistance",
+            "location": "Kambri",
+            "hours": "Monday to Friday",
+            "audience": ["Students"],
+            "access_instructions": "Book an appointment",
+            "cost": "Free",
+        }
+    )
+    return values
+
+
+def _insert_is_accepted(database_url: str, values: dict[str, object]) -> bool:
+    with psycopg.connect(database_url) as connection:
+        try:
+            _insert_record_values(connection, values)
+        except psycopg.errors.CheckViolation:
+            connection.rollback()
+            return False
+        connection.execute(
+            "DELETE FROM source_records WHERE record_id = %s", (values["record_id"],)
+        )
+        return True
 
 
 def _compatibility_snapshot(connection) -> tuple[object, ...]:
@@ -708,6 +771,118 @@ def test_day12_previous_head_upgrades_to_new_head_without_resource_rows(monkeypa
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()[0] == "20260916_0008"
+
+
+def test_day12_round_trip_restores_exact_0007_resource_behavior(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(ROOT / "alembic.ini")
+
+    accommodation_base = _provisional_accommodation_values()["metadata_json"].obj
+    support_base = _provisional_support_values()["metadata_json"].obj
+
+    def changed(base, key, value):
+        metadata = copy.deepcopy(base)
+        if key == "extra":
+            metadata["unexpected"] = value
+        else:
+            metadata[key] = value
+        return metadata
+
+    cases = (
+        ("accommodation valid", _provisional_accommodation_values(), True),
+        (
+            "accommodation invalid scalar type",
+            _provisional_accommodation_values(
+                changed(accommodation_base, "accommodation_type", [])
+            ),
+            False,
+        ),
+        (
+            "accommodation invalid array type",
+            _provisional_accommodation_values(
+                changed(accommodation_base, "audience", "Students")
+            ),
+            False,
+        ),
+        (
+            "accommodation invalid array nullability",
+            _provisional_accommodation_values(
+                changed(accommodation_base, "room_types", None)
+            ),
+            False,
+        ),
+        (
+            "accommodation extra key",
+            _provisional_accommodation_values(
+                changed(accommodation_base, "extra", True)
+            ),
+            False,
+        ),
+        (
+            "accommodation source authority",
+            _provisional_accommodation_values(
+                changed(accommodation_base, "source_authority", "approved_anusa")
+            ),
+            False,
+        ),
+        ("support valid", _provisional_support_values(), True),
+        (
+            "support invalid scalar type",
+            _provisional_support_values(changed(support_base, "contact", [])),
+            False,
+        ),
+        (
+            "support invalid array member",
+            _provisional_support_values(changed(support_base, "categories", [1])),
+            False,
+        ),
+        (
+            "support invalid array nullability",
+            _provisional_support_values(changed(support_base, "audience", None)),
+            False,
+        ),
+        (
+            "support extra key",
+            _provisional_support_values(changed(support_base, "extra", True)),
+            False,
+        ),
+        (
+            "support source authority",
+            _provisional_support_values(
+                changed(support_base, "source_authority", "official_anu")
+            ),
+            False,
+        ),
+    )
+    expected = {name: accepted for name, _values, accepted in cases}
+
+    def observed_behavior() -> dict[str, bool]:
+        return {
+            name: _insert_is_accepted(database_url, values)
+            for name, values, _accepted in cases
+        }
+
+    try:
+        command.upgrade(config, "head")
+        with psycopg.connect(database_url) as connection:
+            connection.execute(
+                "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
+            )
+        command.downgrade(config, "20260915_0007")
+        before = observed_behavior()
+        assert before == expected
+
+        command.upgrade(config, "20260916_0008")
+        command.downgrade(config, "20260915_0007")
+        after = observed_behavior()
+        assert after == before
+    finally:
+        with psycopg.connect(database_url) as connection:
+            connection.execute(
+                "DELETE FROM source_records WHERE domain IN ('accommodation', 'support')"
+            )
+        command.upgrade(config, "head")
 
 
 def test_database_accepts_frozen_day12_records_and_rejects_obsolete_shape(monkeypatch):

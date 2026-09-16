@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -14,6 +15,17 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+
+def _require_non_blank(value: str) -> str:
+    """Match the frozen scraper contract: stored strings may not be blank."""
+
+    if not value.strip():
+        raise ValueError("value must contain at least one non-whitespace character")
+    return value
+
+
+NonBlankString = Annotated[str, AfterValidator(_require_non_blank)]
 
 RecordStatus = Literal["NEW", "CHANGED", "UNCHANGED", "MISSING"]
 IndexStatus = Literal["PENDING", "INDEXED", "FAILED"]
@@ -33,6 +45,10 @@ ACCOMMODATION_URL_PREFIX = (
     "https://study.anu.edu.au/accommodation/our-residences/"
 )
 SUPPORT_URL_PREFIX = "https://anusa.com.au/student-assistance/"
+SUPPORT_TOPIC_PATH_PATTERN = re.compile(
+    r"^/student-assistance/[a-z0-9]+(?:-[a-z0-9]+)*/"
+    r"[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*/?$"
+)
 COURSES_HOST = "programsandcourses.anu.edu.au"
 SUBPLAN_ENTITY_TYPES = ("major", "minor", "specialisation")
 COURSES_PATH_PATTERN = re.compile(
@@ -195,11 +211,11 @@ class AccommodationRoom(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    name: str
-    rate: str | None
-    contract: str | None
-    inclusions: str | None
-    other_fees: str | None
+    name: NonBlankString
+    rate: NonBlankString | None
+    contract: NonBlankString | None
+    inclusions: NonBlankString | None
+    other_fees: NonBlankString | None
 
 
 class AccommodationContact(BaseModel):
@@ -207,10 +223,10 @@ class AccommodationContact(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    email: str | None
-    phone: str | None
-    location: str | None
-    hours: str | None
+    email: NonBlankString | None
+    phone: NonBlankString | None
+    location: NonBlankString | None
+    hours: NonBlankString | None
 
 
 class AccommodationMetadata(BaseModel):
@@ -219,21 +235,21 @@ class AccommodationMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     entity_type: Literal["residence"]
-    category: str | None
-    location: str | None
-    catering_options: list[str]
-    audiences: list[str]
-    advertised_rate: str | None
-    cost_period: str | None
+    category: NonBlankString | None
+    location: NonBlankString | None
+    catering_options: list[NonBlankString]
+    audiences: list[NonBlankString]
+    advertised_rate: NonBlankString | None
+    cost_period: NonBlankString | None
     rooms: list[AccommodationRoom]
-    features: list[str]
-    overview: str | None
-    accessibility: str | None
-    application_text: str | None
-    application_url: str | None
-    eligibility: str | None
+    features: list[NonBlankString]
+    overview: NonBlankString | None
+    accessibility: NonBlankString | None
+    application_text: NonBlankString | None
+    application_url: NonBlankString | None
+    eligibility: NonBlankString | None
     contact: AccommodationContact
-    vacancy_status: str | None
+    vacancy_status: NonBlankString | None
 
     @field_validator("application_url")
     @classmethod
@@ -267,9 +283,9 @@ class SupportContact(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    email: str | None
-    phone: str | None
-    location: str | None
+    email: NonBlankString | None
+    phone: NonBlankString | None
+    location: NonBlankString | None
 
 
 class SupportTopic(BaseModel):
@@ -277,9 +293,9 @@ class SupportTopic(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    title: str
-    description: str | None
-    url: str
+    title: NonBlankString
+    description: NonBlankString | None
+    url: NonBlankString
 
     @field_validator("url")
     @classmethod
@@ -292,8 +308,7 @@ class SupportTopic(BaseModel):
         if (
             parsed.scheme != "https"
             or parsed.hostname not in {"anusa.com.au", "www.anusa.com.au"}
-            or not parsed.path.startswith("/student-assistance/")
-            or parsed.path == "/student-assistance/"
+            or SUPPORT_TOPIC_PATH_PATTERN.fullmatch(parsed.path) is None
             or parsed.username is not None
             or parsed.password is not None
             or port is not None
@@ -309,8 +324,8 @@ class SupportReferral(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    label: str
-    url: str
+    label: NonBlankString
+    url: NonBlankString
 
     @field_validator("url")
     @classmethod
@@ -337,13 +352,13 @@ class SupportMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     entity_type: Literal["support_service"]
-    category: str | None
-    purpose: str | None
-    audiences: list[str]
+    category: NonBlankString | None
+    purpose: NonBlankString | None
+    audiences: list[NonBlankString]
     contact: SupportContact
-    hours: str | None
-    access: str | None
-    cost: str | None
+    hours: NonBlankString | None
+    access: NonBlankString | None
+    cost: NonBlankString | None
     topics: list[SupportTopic]
     referrals: list[SupportReferral]
 

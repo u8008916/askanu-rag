@@ -37,6 +37,7 @@ AS $$
 DECLARE
     item JSONB;
     application_destination TEXT;
+    field_name TEXT;
 BEGIN
     IF jsonb_typeof(metadata_value) <> 'object'
        OR NOT metadata_value ?& ARRAY[
@@ -75,15 +76,27 @@ BEGIN
         RETURN FALSE;
     END IF;
 
+    FOREACH field_name IN ARRAY ARRAY[
+        'category', 'location', 'advertised_rate', 'cost_period', 'overview',
+        'accessibility', 'application_text', 'eligibility', 'vacancy_status'
+    ]
+    LOOP
+        IF jsonb_typeof(metadata_value -> field_name) = 'string'
+           AND btrim(metadata_value ->> field_name) = ''
+        THEN
+            RETURN FALSE;
+        END IF;
+    END LOOP;
+
     IF EXISTS (
         SELECT 1 FROM jsonb_array_elements(metadata_value -> 'catering_options') value
-        WHERE jsonb_typeof(value) <> 'string'
+        WHERE jsonb_typeof(value) <> 'string' OR btrim(value #>> '{}') = ''
     ) OR EXISTS (
         SELECT 1 FROM jsonb_array_elements(metadata_value -> 'audiences') value
-        WHERE jsonb_typeof(value) <> 'string'
+        WHERE jsonb_typeof(value) <> 'string' OR btrim(value #>> '{}') = ''
     ) OR EXISTS (
         SELECT 1 FROM jsonb_array_elements(metadata_value -> 'features') value
-        WHERE jsonb_typeof(value) <> 'string'
+        WHERE jsonb_typeof(value) <> 'string' OR btrim(value #>> '{}') = ''
     ) THEN
         RETURN FALSE;
     END IF;
@@ -95,10 +108,15 @@ BEGIN
            OR item - ARRAY['name', 'rate', 'contract', 'inclusions', 'other_fees']
                <> '{}'::jsonb
            OR jsonb_typeof(item -> 'name') <> 'string'
+           OR btrim(item ->> 'name') = ''
            OR jsonb_typeof(item -> 'rate') NOT IN ('string', 'null')
            OR jsonb_typeof(item -> 'contract') NOT IN ('string', 'null')
            OR jsonb_typeof(item -> 'inclusions') NOT IN ('string', 'null')
            OR jsonb_typeof(item -> 'other_fees') NOT IN ('string', 'null')
+           OR (jsonb_typeof(item -> 'rate') = 'string' AND btrim(item ->> 'rate') = '')
+           OR (jsonb_typeof(item -> 'contract') = 'string' AND btrim(item ->> 'contract') = '')
+           OR (jsonb_typeof(item -> 'inclusions') = 'string' AND btrim(item ->> 'inclusions') = '')
+           OR (jsonb_typeof(item -> 'other_fees') = 'string' AND btrim(item ->> 'other_fees') = '')
         THEN
             RETURN FALSE;
         END IF;
@@ -111,14 +129,18 @@ BEGIN
        OR jsonb_typeof(item -> 'phone') NOT IN ('string', 'null')
        OR jsonb_typeof(item -> 'location') NOT IN ('string', 'null')
        OR jsonb_typeof(item -> 'hours') NOT IN ('string', 'null')
+       OR (jsonb_typeof(item -> 'email') = 'string' AND btrim(item ->> 'email') = '')
+       OR (jsonb_typeof(item -> 'phone') = 'string' AND btrim(item ->> 'phone') = '')
+       OR (jsonb_typeof(item -> 'location') = 'string' AND btrim(item ->> 'location') = '')
+       OR (jsonb_typeof(item -> 'hours') = 'string' AND btrim(item ->> 'hours') = '')
     THEN
         RETURN FALSE;
     END IF;
 
     application_destination := metadata_value ->> 'application_url';
     IF application_destination IS NOT NULL
-       AND application_destination !~
-           '^https://([A-Za-z0-9-]+[.])+starrezhousing[.]com/[^[:space:]]*$'
+       AND application_destination !~*
+           '^https://([A-Za-z0-9-]+[.])+starrezhousing[.]com([/?#][^[:space:]]*)?$'
     THEN
         RETURN FALSE;
     END IF;
@@ -141,6 +163,7 @@ AS $$
 DECLARE
     item JSONB;
     nested_url TEXT;
+    field_name TEXT;
 BEGIN
     IF jsonb_typeof(metadata_value) <> 'object'
        OR NOT metadata_value ?& ARRAY[
@@ -169,9 +192,18 @@ BEGIN
         RETURN FALSE;
     END IF;
 
+    FOREACH field_name IN ARRAY ARRAY['category', 'purpose', 'hours', 'access', 'cost']
+    LOOP
+        IF jsonb_typeof(metadata_value -> field_name) = 'string'
+           AND btrim(metadata_value ->> field_name) = ''
+        THEN
+            RETURN FALSE;
+        END IF;
+    END LOOP;
+
     IF EXISTS (
         SELECT 1 FROM jsonb_array_elements(metadata_value -> 'audiences') value
-        WHERE jsonb_typeof(value) <> 'string'
+        WHERE jsonb_typeof(value) <> 'string' OR btrim(value #>> '{}') = ''
     ) THEN
         RETURN FALSE;
     END IF;
@@ -182,6 +214,9 @@ BEGIN
        OR jsonb_typeof(item -> 'email') NOT IN ('string', 'null')
        OR jsonb_typeof(item -> 'phone') NOT IN ('string', 'null')
        OR jsonb_typeof(item -> 'location') NOT IN ('string', 'null')
+       OR (jsonb_typeof(item -> 'email') = 'string' AND btrim(item ->> 'email') = '')
+       OR (jsonb_typeof(item -> 'phone') = 'string' AND btrim(item ->> 'phone') = '')
+       OR (jsonb_typeof(item -> 'location') = 'string' AND btrim(item ->> 'location') = '')
     THEN
         RETURN FALSE;
     END IF;
@@ -192,14 +227,17 @@ BEGIN
            OR NOT item ?& ARRAY['title', 'description', 'url']
            OR item - ARRAY['title', 'description', 'url'] <> '{}'::jsonb
            OR jsonb_typeof(item -> 'title') <> 'string'
+           OR btrim(item ->> 'title') = ''
            OR jsonb_typeof(item -> 'description') NOT IN ('string', 'null')
+           OR (jsonb_typeof(item -> 'description') = 'string'
+               AND btrim(item ->> 'description') = '')
            OR jsonb_typeof(item -> 'url') <> 'string'
         THEN
             RETURN FALSE;
         END IF;
         nested_url := item ->> 'url';
         IF nested_url !~
-           '^https://(www[.])?anusa[.]com[.]au/student-assistance/[^?#[:space:]]+/?$'
+           '^https://(www[.])?anusa[.]com[.]au/student-assistance/[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*)*/?$'
         THEN
             RETURN FALSE;
         END IF;
@@ -211,12 +249,14 @@ BEGIN
            OR NOT item ?& ARRAY['label', 'url']
            OR item - ARRAY['label', 'url'] <> '{}'::jsonb
            OR jsonb_typeof(item -> 'label') <> 'string'
+           OR btrim(item ->> 'label') = ''
            OR jsonb_typeof(item -> 'url') <> 'string'
         THEN
             RETURN FALSE;
         END IF;
         nested_url := item ->> 'url';
-        IF nested_url !~ '^https?://[^[:space:]]+$'
+        IF nested_url !~
+           '^https?://[^/@:[:space:]]+(:[0-9]+)?([/?#][^[:space:]]*)?$'
            OR nested_url ~ '^https?://(www[.])?anusa[.]com[.]au([/:]|$)'
         THEN
             RETURN FALSE;
@@ -363,6 +403,8 @@ def _create_frozen_resource_checks() -> None:
 
 
 def _create_provisional_resource_checks() -> None:
+    """Restore the exact Accommodation/Support checks effective at 0007."""
+
     op.create_check_constraint(
         "ck_source_records_accommodation_identity",
         "source_records",
@@ -376,7 +418,31 @@ def _create_provisional_resource_checks() -> None:
         f"domain <> 'accommodation' OR (metadata_json ?& "
         f"{PROVISIONAL_ACCOMMODATION_KEYS} AND metadata_json - "
         f"{PROVISIONAL_ACCOMMODATION_KEYS} = '{{}}'::jsonb AND "
-        "metadata_json ->> 'source_authority' = 'official_anu')",
+        "metadata_json ->> 'source_authority' = 'official_anu' "
+        "AND jsonb_typeof(metadata_json -> 'accommodation_type') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'location') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'catering') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'audience') = 'array' "
+        "AND NOT jsonb_path_exists(metadata_json, "
+        "'$.audience[*] ? (@.type() != \"string\")') "
+        "AND jsonb_typeof(metadata_json -> 'room_types') = 'array' "
+        "AND NOT jsonb_path_exists(metadata_json, "
+        "'$.room_types[*] ? (@.type() != \"string\")') "
+        "AND jsonb_typeof(metadata_json -> 'advertised_rate') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'rate_inclusions') = 'array' "
+        "AND NOT jsonb_path_exists(metadata_json, "
+        "'$.rate_inclusions[*] ? (@.type() != \"string\")') "
+        "AND jsonb_typeof(metadata_json -> 'rate_exclusions') = 'array' "
+        "AND NOT jsonb_path_exists(metadata_json, "
+        "'$.rate_exclusions[*] ? (@.type() != \"string\")') "
+        "AND jsonb_typeof(metadata_json -> 'facilities') = 'array' "
+        "AND NOT jsonb_path_exists(metadata_json, "
+        "'$.facilities[*] ? (@.type() != \"string\")') "
+        "AND jsonb_typeof(metadata_json -> 'application_information') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'eligibility') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'contract_term') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'contact') IN "
+        "('string', 'null'))",
     )
     op.create_check_constraint(
         "ck_source_records_support_identity",
@@ -390,7 +456,19 @@ def _create_provisional_resource_checks() -> None:
         "source_records",
         f"domain <> 'support' OR (metadata_json ?& {PROVISIONAL_SUPPORT_KEYS} "
         f"AND metadata_json - {PROVISIONAL_SUPPORT_KEYS} = '{{}}'::jsonb "
-        "AND metadata_json ->> 'source_authority' = 'approved_anusa')",
+        "AND metadata_json ->> 'source_authority' = 'approved_anusa' "
+        "AND jsonb_typeof(metadata_json -> 'categories') = 'array' "
+        "AND NOT jsonb_path_exists(metadata_json, "
+        "'$.categories[*] ? (@.type() != \"string\")') "
+        "AND jsonb_typeof(metadata_json -> 'audience') = 'array' "
+        "AND NOT jsonb_path_exists(metadata_json, "
+        "'$.audience[*] ? (@.type() != \"string\")') "
+        "AND jsonb_typeof(metadata_json -> 'contact') IN ('string', 'null') "
+        "AND jsonb_typeof(metadata_json -> 'location') IN ('string', 'null') "
+        "AND jsonb_typeof(metadata_json -> 'hours') IN ('string', 'null') "
+        "AND jsonb_typeof(metadata_json -> 'access_instructions') IN "
+        "('string', 'null') AND jsonb_typeof(metadata_json -> 'cost') IN "
+        "('string', 'null'))",
     )
 
 

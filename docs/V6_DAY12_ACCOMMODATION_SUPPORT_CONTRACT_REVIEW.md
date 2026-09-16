@@ -2,17 +2,19 @@
 
 **Status:** CONTRACT FROZEN BY QASIM — IMPLEMENTATION APPROVED.
 
-Reviewed on 2026-09-16 against:
+Reviewed again on 2026-09-17 against:
 
 - scraper PR #26 local remote ref
-  `refs/remotes/origin/will/v6-day12-accommodation-support` at `fb91311`;
-- RAG `main` at `fba4fe6`; and
+  `refs/remotes/origin/will/v6-day12-accommodation-support` at `9db3f1a`;
+- RAG PR #29 head `ff338ec` over `origin/main` at `c7a457a`; and
 - Will's `docs/DAY_12_V6_ACCOMMODATION_SUPPORT_HANDOFF.md` and
   `day12-coverage-evidence.json` from that exact scraper ref.
 
 The scraper checkout itself was not changed. Its local checked-out branch named
-`origin/will/v6-day12-accommodation-support` points at `bf29b2f`, so this review
-read the unambiguous remote ref above rather than the working-tree files.
+`origin/will/v6-day12-accommodation-support` still points at `bf29b2f`, so this
+review read the current unambiguous remote ref above rather than stale
+working-tree files. The remote branch was force-updated from the previously
+reviewed `fb91311` to `9db3f1a`.
 
 ## Review result and final decision
 
@@ -112,6 +114,54 @@ Final decisions:
    fails closed before replacement if existing rows cannot be safely accepted.
    Known provisional rows require manual review/reingestion; no lossy rewrite is
    performed.
+
+## Current cross-repository validator audit (`9db3f1a`)
+
+Accommodation validator result: **matches exactly for the frozen normalized
+contract**. The current scraper validator, RAG Pydantic and SQL `0008` enforce
+the same exact keys, types, nullability, arrays, non-blank strings, nested
+room/contact objects, identity, canonical URL and StarRez host restrictions.
+The SQL URL check accepts the same emitted lowercase StarRez subdomain forms,
+including a host-only destination or a published path/query/fragment.
+
+Support validator result: **not fully exact**. It now aligns for exact keys,
+types, nullability, non-blank audiences,
+contact strings, scalar strings, nested Topic/Referral labels, identity and
+canonical URL. Topic title/description and the internal Student Assistance
+topic-path grammar are enforced consistently by scraper, RAG and SQL.
+
+One cross-repository mismatch remains and is not widened in RAG: the current
+scraper `CommonRecord` validator accepts any absolute HTTP(S) Referral URL with
+a netloc, including an internal ANUSA URL and credential-bearing authorities.
+The frozen shared contract says Referrals are external navigation destinations.
+RAG Pydantic and SQL therefore continue to reject ANUSA Referral hosts and URL
+credentials. The current scraper parser normally emits external links, but its
+validator boundary is still weaker and should be tightened in the scraper
+repository by Will/Qasim. No RAG validator superset remains for the reviewed
+non-empty string fields.
+
+## PostgreSQL 18 verification
+
+The previously environment-skipped PostgreSQL coverage has now been executed
+against a disposable local PostgreSQL 18 + pgvector container. This was not a
+Cloud SQL run and did not use production credentials, mutate a shared database,
+or perform a deployment.
+
+Exact results:
+
+- `python -m alembic current`: `20260916_0008 (head)`;
+- `python -m pytest tests/test_postgres_integration.py -v`: 68 passed, 3
+  warnings; and
+- `python -m pytest tests/test_day12_migration.py -v`: 9 passed.
+
+This closes the local PostgreSQL execution gate, including the real
+`0007 -> 0008 -> 0007` migration round trip. The only remaining cross-repository
+contract issue is the scraper-owned Support Referral validator mismatch
+described above.
+
+Final result: Accommodation validator alignment is complete. Support field and
+Topic strictness alignment is complete, with the exact Referral-boundary gap
+above remaining cross-repository and scraper-owned.
 
 ## Implementation boundary
 

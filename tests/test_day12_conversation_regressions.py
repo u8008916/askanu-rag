@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from test_day12_capabilities import ACADEMIC, URSULA, YUK, _ask
+import pytest
+
+from test_day12_capabilities import ACADEMIC, FINANCIAL_MISSING, URSULA, YUK, _ask
 
 
 def _turn(turn_id: str, role: str, content: str) -> dict[str, str]:
@@ -41,6 +43,76 @@ def test_resource_clarification_options_remain_domain_scoped() -> None:
     )
     assert selected["status"] == "ok"
     assert all(source["domain"] == "accommodation" for source in selected["sources"])
+    assert "Published overview" in selected["answer"]
+
+
+@pytest.mark.parametrize(
+    ("records", "question", "status", "expected"),
+    [
+        (
+            (YUK, URSULA),
+            "What accommodation accessibility information is published?",
+            "ok",
+            "Published accessibility",
+        ),
+        (
+            (YUK, URSULA),
+            "What accommodation vacancy status is published?",
+            "insufficient_evidence",
+            "null vacancy status means unknown",
+        ),
+        (
+            (YUK, URSULA),
+            "What accommodation application information is published?",
+            "ok",
+            "Published application information",
+        ),
+        (
+            (ACADEMIC, FINANCIAL_MISSING),
+            "What support hours are published?",
+            "ok",
+            "Published hours",
+        ),
+        (
+            (ACADEMIC, FINANCIAL_MISSING),
+            "What support access information is published?",
+            "ok",
+            "Published access information",
+        ),
+        (
+            (ACADEMIC, FINANCIAL_MISSING),
+            "What support referrals are published?",
+            "ok",
+            "Published referral navigation",
+        ),
+        (
+            (ACADEMIC, FINANCIAL_MISSING),
+            "What support contact information is published?",
+            "ok",
+            "Published contact",
+        ),
+    ],
+)
+def test_resource_selection_preserves_original_requested_fact(
+    records, question, status, expected
+) -> None:
+    broad = _ask(records, question)
+    assert broad["status"] == "needs_clarification"
+    selected_id = broad["clarification"]["options"][0]["id"]
+
+    selected = _ask(
+        records,
+        "first",
+        pending=broad["clarification"],
+        history=(
+            _turn("t1", "user", question),
+            _turn("t2", "assistant", broad["answer"]),
+        ),
+    )
+
+    assert selected["status"] == status
+    assert selected["sources"][0]["record_id"] == selected_id
+    assert expected.casefold() in selected["answer"].casefold()
 
 
 def test_explicit_accommodation_to_support_topic_switch_wins() -> None:

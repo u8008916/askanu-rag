@@ -62,15 +62,23 @@ live StarRez fetching are outside this branch.
 | Support capability matrix | 26/26 |
 | Accommodation P0 safety/provenance | 7/7 |
 | Support P0 safety/provenance | 7/7 |
-| Conversation regressions | 10/10 |
-| Focused Day 12 contract/migration/repository/capability/safety/conversation tests | 134 passed |
-| Complete repository suite | 722 passed, 68 skipped |
+| Conversation regressions | 17/17 |
+| Day 12 migration suite | 9 passed |
+| PostgreSQL integration suite | 68 passed, 3 warnings |
+| Complete repository suite | 776 passed, 69 skipped, 3 warnings |
 
-The 68 full-suite skips are environment-gated tests, including seven new Day 12
-PostgreSQL integration cases. No disposable local PostgreSQL URL was configured,
-so those seven integration cases were collected and skipped rather than claimed
-as executed. Their coverage includes `0007 -> 0008`, frozen-record acceptance,
-obsolete-shape rejection, identity rejection and provisional-row guard behavior.
+The previously skipped PostgreSQL coverage was run separately against a
+disposable local PostgreSQL 18 + pgvector container. It completed with the
+database at `20260916_0008 (head)` and all 68 PostgreSQL integration tests
+passing, including the real `0007 -> 0008 -> 0007` round trip. This was not a
+Cloud SQL run and did not use production credentials, mutate a shared database,
+or deploy anything.
+
+The final complete-suite run did not retain the disposable database URL, so its
+69 skips remain 68 environment-gated PostgreSQL cases plus the existing Windows
+symlink-permission case. Those 68 PostgreSQL cases are discharged by the
+successful explicit container run above; they are not an outstanding test
+blocker.
 
 Additional successful checks:
 
@@ -85,8 +93,12 @@ Starlette/httpx, AnyIO and google-genai.
 
 ## Remaining release gates
 
-Qasim/Carmen still need a disposable PostgreSQL 18 execution of the new
-integration cases and review of the uncommitted diff. Any Cloud SQL action also
-depends on the compatible scraper image, runtime grants, database configuration,
-staged reader/writer proof and the agreed deployment order. These gates were not
-performed or relaxed here.
+The local PostgreSQL 18 execution gate is closed. The only remaining
+cross-repository contract issue is scraper-side: its Support Referral validator
+still accepts internal ANUSA and credential-bearing absolute HTTP(S) URLs, while
+the frozen shared contract and RAG validators require external, credential-free
+Referral destinations. RAG has not widened its contract around this mismatch.
+
+Carmen's review of the uncommitted diff remains the normal PR handoff step.
+Cloud SQL mutation, shared-environment migration, deployment and IAM/runtime
+changes remain deliberately out of scope and were not performed.

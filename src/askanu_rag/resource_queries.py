@@ -39,7 +39,7 @@ NAMED_RESIDENCE_PATTERN = re.compile(
     r"(?:Hall|Lodge|College|House|Residence))\b"
 )
 SUPPORT_PATTERN = re.compile(
-    r"\b(?:support|assistance|help|advocacy|advocate|landlord|rent(?:al)?|"
+    r"\b(?:support|assistance|advocacy|advocate|landlord|rent(?:al)?|"
     r"disciplinary|legal service|ANUSA|mental health|wellbeing|sexual assault|harassment|financial "
     r"difficulty|academic difficulty|enrolment|administrative help)\b",
     re.I,
@@ -114,6 +114,19 @@ def is_plausible_resource_question(
     """Cheap routing guard that performs no repository reads."""
 
     pattern = ACCOMMODATION_PATTERN if domain == "accommodation" else SUPPORT_PATTERN
+    if domain == "support" and (
+        COURSE_CODE_CANDIDATE_PATTERN.search(question)
+        or OTHER_RESOURCE_DOMAIN_PATTERN.search(question)
+        or ACCOMMODATION_PATTERN.search(question)
+        or NAMED_RESIDENCE_PATTERN.search(question)
+    ):
+        # Generic support/assistance wording must never pre-empt an explicit
+        # Course, Job, Scholarship or Accommodation signal.
+        return False
+    if domain == "support" and TOPIC_PATTERN.search(question):
+        # A published Support topic supplies the domain evidence that bare
+        # "help" intentionally no longer provides.
+        return True
     if pattern.search(question):
         return True
     if (
@@ -219,6 +232,29 @@ def _pending_resource_selection(
     return (selected,) if selected is not None else ()
 
 
+def _pending_resource_intent(
+    history, domain: Literal["accommodation", "support"]
+) -> str | None:
+    """Recover only the current session's question that created a selection."""
+
+    for turn in reversed(tuple(history)):
+        if getattr(turn, "role", None) != "user":
+            continue
+        content = getattr(turn, "content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if domain == "accommodation":
+            return content if (
+                ACCOMMODATION_PATTERN.search(content)
+                or ACCOMMODATION_INTENT_PATTERN.search(content)
+                or NAMED_RESIDENCE_PATTERN.search(content)
+            ) else None
+        return content if (
+            SUPPORT_PATTERN.search(content) or TOPIC_PATTERN.search(content)
+        ) else None
+    return None
+
+
 class DomainResourceQueryService:
     """One domain-parameterized route over the shared resource repository."""
 
@@ -249,6 +285,10 @@ class DomainResourceQueryService:
         history=(),
     ) -> AskResponse | None:
         pattern = ACCOMMODATION_PATTERN if self.domain == "accommodation" else SUPPORT_PATTERN
+        has_domain_signal = bool(
+            pattern.search(question)
+            or (self.domain == "support" and TOPIC_PATTERN.search(question))
+        )
         records = self.repository.all_domain_records(self.domain)
         pending_matches = _pending_resource_selection(
             question, pending, records, self.domain
@@ -291,9 +331,9 @@ class DomainResourceQueryService:
         pending_active = (
             pending is not None and pending.type == f"{self.domain}_selection"
         )
-        if pending_active and not pending_matches and not exact and not pattern.search(question):
+        if pending_active and not pending_matches and not exact and not has_domain_signal:
             return _resource_clarification(records, request_id, self.domain)
-        if not pattern.search(question) and not exact and not pending_matches:
+        if not has_domain_signal and not exact and not pending_matches:
             return None
         if len(exact) > 1 and not COMPARE_PATTERN.search(question):
             return _resource_clarification(exact, request_id, self.domain)
@@ -354,12 +394,18 @@ class DomainResourceQueryService:
             )
 
         if pending_matches:
-            noun = "accommodation" if self.domain == "accommodation" else "support"
-            question = (
-                "Tell me about "
-                + " and ".join(record.title for record in pending_matches)
-                + f" {noun}"
-            )
+            original_intent = _pending_resource_intent(history, self.domain)
+            if original_intent is not None:
+                question = original_intent
+            else:
+                noun = (
+                    "accommodation" if self.domain == "accommodation" else "support"
+                )
+                question = (
+                    "Tell me about "
+                    + " and ".join(record.title for record in pending_matches)
+                    + f" {noun}"
+                )
         if self.domain == "accommodation":
             return self._accommodation_answer(question, selected, request_id)
         return self._support_answer(question, selected, request_id)

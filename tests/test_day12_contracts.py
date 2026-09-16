@@ -273,6 +273,14 @@ def test_https_starrez_subdomain_is_accepted() -> None:
     )
 
 
+def test_https_starrez_host_only_destination_is_accepted() -> None:
+    payload = accommodation_payload()
+    payload["metadata_json"]["application_url"] = "https://anu.starrezhousing.com"
+
+    record = AccommodationRecord.model_validate(payload)
+    assert record.metadata_json.application_url == "https://anu.starrezhousing.com"
+
+
 def test_http_starrez_is_rejected() -> None:
     payload = accommodation_payload()
     payload["metadata_json"]["application_url"] = (
@@ -284,6 +292,49 @@ def test_http_starrez_is_rejected() -> None:
 def test_unknown_nested_accommodation_field_is_rejected() -> None:
     payload = accommodation_payload()
     payload["metadata_json"]["rooms"][0]["available"] = True
+    _invalid(AccommodationRecord, payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "category",
+        "location",
+        "advertised_rate",
+        "cost_period",
+        "overview",
+        "accessibility",
+        "application_text",
+        "eligibility",
+        "vacancy_status",
+    ],
+)
+def test_accommodation_nullable_strings_reject_whitespace(field: str) -> None:
+    payload = accommodation_payload()
+    payload["metadata_json"][field] = "   "
+    _invalid(AccommodationRecord, payload)
+
+
+@pytest.mark.parametrize("field", ["catering_options", "audiences", "features"])
+def test_accommodation_arrays_reject_blank_items(field: str) -> None:
+    payload = accommodation_payload()
+    payload["metadata_json"][field] = ["   "]
+    _invalid(AccommodationRecord, payload)
+
+
+@pytest.mark.parametrize(
+    "field", ["name", "rate", "contract", "inclusions", "other_fees"]
+)
+def test_accommodation_room_strings_reject_whitespace(field: str) -> None:
+    payload = accommodation_payload()
+    payload["metadata_json"]["rooms"][0][field] = "   "
+    _invalid(AccommodationRecord, payload)
+
+
+@pytest.mark.parametrize("field", ["email", "phone", "location", "hours"])
+def test_accommodation_contact_strings_reject_whitespace(field: str) -> None:
+    payload = accommodation_payload()
+    payload["metadata_json"]["contact"][field] = "   "
     _invalid(AccommodationRecord, payload)
 
 
@@ -353,6 +404,14 @@ def test_external_topic_url_is_rejected() -> None:
     _invalid(SupportRecord, payload)
 
 
+def test_topic_url_requires_a_nested_student_assistance_topic_path() -> None:
+    payload = support_payload()
+    payload["metadata_json"]["topics"][0]["url"] = (
+        "https://anusa.com.au/student-assistance/academic/"
+    )
+    _invalid(SupportRecord, payload)
+
+
 def test_external_referral_http_url_is_accepted() -> None:
     payload = support_payload()
     payload["metadata_json"]["referrals"][0]["url"] = (
@@ -361,6 +420,19 @@ def test_external_referral_http_url_is_accepted() -> None:
 
     referral = SupportRecord.model_validate(payload).metadata_json.referrals[0]
     assert isinstance(referral, SupportReferral)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://anusa.com.au/student-assistance/academic/other/",
+        "https://user:secret@example.com/referral",
+    ],
+)
+def test_referral_must_be_external_and_credential_free(url: str) -> None:
+    payload = support_payload()
+    payload["metadata_json"]["referrals"][0]["url"] = url
+    _invalid(SupportRecord, payload)
 
 
 def test_referral_is_not_promoted_to_topic() -> None:
@@ -392,4 +464,37 @@ def test_referral_is_not_promoted_to_support_entity() -> None:
 def test_malformed_support_nested_structures_are_rejected(field, value) -> None:
     payload = copy.deepcopy(support_payload())
     payload["metadata_json"][field] = value
+    _invalid(SupportRecord, payload)
+
+
+@pytest.mark.parametrize("field", ["category", "purpose", "hours", "access", "cost"])
+def test_support_nullable_strings_reject_whitespace(field: str) -> None:
+    payload = support_payload()
+    payload["metadata_json"][field] = "   "
+    _invalid(SupportRecord, payload)
+
+
+def test_support_audiences_reject_blank_items() -> None:
+    payload = support_payload()
+    payload["metadata_json"]["audiences"] = ["   "]
+    _invalid(SupportRecord, payload)
+
+
+@pytest.mark.parametrize("field", ["email", "phone", "location"])
+def test_support_contact_strings_reject_whitespace(field: str) -> None:
+    payload = support_payload()
+    payload["metadata_json"]["contact"][field] = "   "
+    _invalid(SupportRecord, payload)
+
+
+@pytest.mark.parametrize("field", ["title", "description"])
+def test_support_topic_strings_reject_whitespace(field: str) -> None:
+    payload = support_payload()
+    payload["metadata_json"]["topics"][0][field] = "   "
+    _invalid(SupportRecord, payload)
+
+
+def test_support_referral_label_rejects_whitespace() -> None:
+    payload = support_payload()
+    payload["metadata_json"]["referrals"][0]["label"] = "   "
     _invalid(SupportRecord, payload)

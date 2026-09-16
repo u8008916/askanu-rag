@@ -144,6 +144,8 @@ def test_frozen_metadata_validators_have_exact_nested_contracts() -> None:
         assert field in accommodation
     assert "source_authority" not in accommodation
     assert "starrezhousing[.]com" in accommodation
+    assert "btrim(value #>> '{}') = ''" in accommodation
+    assert "btrim(item ->> 'name') = ''" in accommodation
     for field in (
         "purpose",
         "audiences",
@@ -155,6 +157,8 @@ def test_frozen_metadata_validators_have_exact_nested_contracts() -> None:
         assert field in support
     assert "source_authority" not in support
     assert "student-assistance" in support
+    assert "btrim(item ->> 'title') = ''" in support
+    assert "btrim(item ->> 'label') = ''" in support
     assert "external" not in support.casefold()  # behavior is encoded, not inferred text
 
 
@@ -180,3 +184,34 @@ def test_downgrade_refuses_data_and_restores_provisional_checks_only_when_empty(
     assert "accommodation:accommodation:" in checks["ck_source_records_record_id"]
     assert "DROP FUNCTION askanu_day12_support_metadata_valid" in sql
     assert "DROP FUNCTION askanu_day12_accommodation_metadata_valid" in sql
+
+
+def test_downgrade_recreates_exact_effective_0007_resource_type_checks() -> None:
+    _revision, recorder = run("downgrade")
+    checks = {
+        event[1]: event[3]
+        for event in recorder.events
+        if event[0] == "create"
+    }
+    accommodation = checks["ck_source_records_accommodation_metadata"]
+    support = checks["ck_source_records_support_metadata"]
+
+    for fragment in (
+        "jsonb_typeof(metadata_json -> 'accommodation_type') IN ('string', 'null')",
+        "jsonb_typeof(metadata_json -> 'audience') = 'array'",
+        "$.audience[*] ? (@.type() != \"string\")",
+        "jsonb_typeof(metadata_json -> 'room_types') = 'array'",
+        "jsonb_typeof(metadata_json -> 'rate_inclusions') = 'array'",
+        "jsonb_typeof(metadata_json -> 'rate_exclusions') = 'array'",
+        "jsonb_typeof(metadata_json -> 'facilities') = 'array'",
+        "jsonb_typeof(metadata_json -> 'contact') IN ('string', 'null')",
+    ):
+        assert fragment in accommodation
+    for fragment in (
+        "jsonb_typeof(metadata_json -> 'categories') = 'array'",
+        "$.categories[*] ? (@.type() != \"string\")",
+        "jsonb_typeof(metadata_json -> 'audience') = 'array'",
+        "jsonb_typeof(metadata_json -> 'contact') IN ('string', 'null')",
+        "jsonb_typeof(metadata_json -> 'access_instructions') IN ('string', 'null')",
+    ):
+        assert fragment in support
