@@ -10,7 +10,7 @@ Scope: RAG release gate only; no production action is authorized by this documen
 
 The merged RAG main line is a viable **conditional release candidate**. The exact source passed the clean-main suite, the real disposable PostgreSQL 18 + pgvector gate, the migration tests, image build, startup, and deterministic API smoke. Application startup did not migrate or mutate the database.
 
-This is not approval to deploy. Before a Day 14 release candidate can be used safely, the production read-only preflight below must be clean, the 0004 -> 0008 migration and deployment must be explicitly approved, the production Gemini/DB configuration must be verified, and the scraper-side Support Referral validator mismatch must be resolved before Accommodation/Support production ingestion.
+This is not approval to deploy. Before a Day 14 release candidate can be used safely, the production read-only preflight below must be clean, the 0004 -> 0008 migration and deployment must be explicitly approved, and the production Gemini/DB configuration must be verified.
 
 The local production-style container was intentionally started without a real Gemini credential. Its Courses requests therefore failed closed with the controlled `502` envelope after retrieval reached synthesis. Deterministic domains and all pytest Courses coverage passed. An authorized environment must verify the real synthesis credential; no external model call was made in this release-readiness exercise.
 
@@ -74,7 +74,7 @@ Production is understood, but not verified today, to be at `20260914_0004`. The 
 | `20260915_0005` shared hybrid embeddings | `20260914_0004` | Creates `source_record_embeddings` with FK `source_record_id -> source_records(record_id) ON DELETE CASCADE`, composite primary key, hash/text/vector checks, and timestamps. Does not alter existing columns. | Replaces Jobs exact-key/type checks with the 13-key v2 shape. Extends global source/domain/entity/record-ID checks to provisional Accommodation/Support. Adds provisional identity/metadata checks and unique partial `(source_id, entity_id)` indexes for both domains. Adds `ix_source_record_embeddings_current_lookup`. | `CREATE EXTENSION IF NOT EXISTS vector`. Updates only Jobs rows missing `role_requirements`, adding JSON null; no requirement text is inferred. | Existing Jobs must already satisfy 0004 v1. Existing provisional resources must satisfy exact 0005 checks. DB must support/permit pgvector creation. Downgrade refuses while any Accommodation/Support row exists, drops the embeddings table but intentionally retains the `vector` extension, removes resource checks/indexes, deletes `role_requirements` from Jobs, and restores v1 Jobs checks. |
 | `20260915_0006` Courses family/subplans | `20260915_0005` | Drops/recreates the `course_program_records` compatibility view; it remains limited to course/program and uses `OFFSET 0`, so it is read-only. No column/table creation. | Replaces course/program identity constraints with Course-family checks supporting `major`, `minor`, and `specialisation`; adds exact lowercase canonical URL, subplan metadata, optional Courses metadata checks, and `uq_source_records_courses_identity`; removes the old course/program unique index. | Read-only guard first rejects unexpected existing Course canonical URLs. Then normalizes only exact legacy uppercase-code course/program URLs to lowercase. No extension/function changes. | Existing course/program URLs must be either the exact lowercase canonical form or the exact legacy uppercase-code form. Downgrade refuses while subplan rows exist, restores course/program checks/index/view, and does not reverse safe lowercase URL normalization. |
 | `20260915_0007` null-safe arrays | `20260915_0006` | No table/view/column changes. | Replaces only `ck_source_records_job_metadata_types`, `ck_source_records_subplan_metadata`, and `ck_source_records_courses_optional_metadata_types` so nullable arrays are genuinely null-safe. | No function, extension, index, or data mutation. | Aligns SQL with Python for null `role_requirements`, `learning_outcomes`, and `relevant_degrees`. Downgrade is deliberately a no-op; reinstating the known-invalid predicates would reject valid data. Later downgrade through 0006/0005 still replaces those named checks. |
-| `20260916_0008` frozen Day 12 resources | `20260915_0007` | No tables/views/columns or row data are mutated. | Replaces global entity/record-ID and provisional Accommodation/Support identity/metadata checks with the frozen contracts. Accommodation becomes `residence` with `accommodation:residence:<slug>` and an exact ANU residence URL. Support keeps `support_service` with an exact ANUSA service URL. Existing unique partial indexes remain. | Creates immutable strict functions `askanu_day12_accommodation_metadata_valid(JSONB)` and `askanu_day12_support_metadata_valid(JSONB)`. The Support validator enforces approved Student Assistance topic paths and external, credential-free Referral URLs, including case-insensitive ANUSA hostname rejection. | A read-only guard runs before constraints are dropped. Unknown resource rows fail manual review; known provisional rows fail manual reingestion. Already-frozen rows are permitted. Downgrade refuses while either resource domain contains rows, then restores exact 0007 provisional checks and drops the two validator functions. |
+| `20260916_0008` frozen Day 12 resources | `20260915_0007` | No tables/views/columns or row data are mutated. | Replaces global entity/record-ID and provisional Accommodation/Support identity/metadata checks with the frozen contracts. Accommodation becomes `residence` with `accommodation:residence:<slug>` and an exact ANU residence URL. Support keeps `support_service` with an exact ANUSA service URL. Existing unique partial indexes remain. | Creates immutable strict functions `askanu_day12_accommodation_metadata_valid(JSONB)` and `askanu_day12_support_metadata_valid(JSONB)`. Support Topic URLs use the approved internal Student Assistance boundary. Support Referral destinations must be external HTTP(S), credential-free, and not use an ANUSA hostname under case-insensitive matching. | A read-only guard runs before constraints are dropped. Unknown resource rows fail manual review; known provisional rows fail manual reingestion. Already-frozen rows are permitted. Downgrade refuses while either resource domain contains rows, then restores exact 0007 provisional checks and drops the two validator functions. |
 
 ### Existing Jobs row handling
 
@@ -102,7 +102,7 @@ Revision 0005 adds only `"role_requirements": null` when the key is missing, the
 | Existing Course-family rows violate new identity, URL, subplan, or optional metadata checks | 0006/0007 | Constraint installation rejects the transaction | Fix source data against the frozen Course-family contract. |
 | Any subplan row exists during 0006 downgrade | 0006 downgrade | `Cannot downgrade while Courses subplan records exist` | Export/remove or otherwise explicitly handle subplans before an authorized downgrade. |
 | Any resource row is outside either the exact provisional or exact frozen classifications | 0008 upgrade | `Unexpected Accommodation/Support rows require manual contract review` | Stop and review the exact row; no automatic coercion. |
-| A known provisional Accommodation row (`entity_type=accommodation`) or Support row retaining `source_authority` exists | 0008 upgrade | `Known provisional Accommodation/Support rows require manual reingestion; no lossy auto-conversion is permitted` | Reingest into the frozen scraper/RAG contract after cross-repo approval; do not transform nested facts in SQL. |
+| A known provisional Accommodation row (`entity_type=accommodation`) or Support row retaining `source_authority` exists | 0008 upgrade | `Known provisional Accommodation/Support rows require manual reingestion; no lossy auto-conversion is permitted` | Reingest through the approved frozen-contract workflow; do not transform nested facts in SQL. |
 | A row that looked frozen fails the new strict nested metadata/URL rules | 0008 constraint installation | Frozen check constraint rejects the transaction | Correct/reingest from approved source evidence; do not weaken validator functions. |
 | Any Accommodation/Support row exists during 0008 downgrade | 0008 downgrade | `Cannot downgrade frozen Day 12 contracts while Accommodation/Support records exist` | Plan explicit data removal/export before an authorized downgrade. |
 | Any Accommodation/Support row exists during 0005 downgrade | 0005 downgrade | `Cannot downgrade while Accommodation/Support records exist` | Handle resource data explicitly before downgrading through 0005. |
@@ -515,7 +515,7 @@ Run immediately after a future authorized migration, population, and deployment.
 | Support | `What are [SERVICE] hours?` when null | `insufficient_evidence` | Missing hours remain unknown | Guessed business hours or emergency coverage |
 | Support | `How can I access [SERVICE]?` when null | `insufficient_evidence` | Missing access remains unknown | Invented booking/drop-in process |
 | Support | `What topics does [SERVICE] cover?` | `ok` | Only stored topics and approved Student Assistance paths | Off-boundary/internal URL accepted or topic fabricated |
-| Support | `What referrals does [SERVICE] provide?` | `ok` | Only stored external credential-free referrals; labelled navigation | Internal ANUSA Referral, credential URL, or service claim |
+| Support | `What referrals does [SERVICE] provide?` | `ok` | Only stored external HTTP(S), credential-free referrals; ANUSA hosts are rejected case-insensitively; results are labelled navigation | Internal ANUSA Referral, credential-bearing URL, or service claim |
 | Cross-cutting | Known identifier with absent fact | `insufficient_evidence` | No unrelated field substitution | `ok` with unsupported content |
 | Cross-cutting | Clearly unrelated question | `off_topic` | No ANU factual claim/source | Hallucinated answer or internal error |
 | Cross-cutting | Ambiguous entity/year | `needs_clarification` | Fresh deterministic options | Arbitrary selection; unstable order |
@@ -546,7 +546,7 @@ Every item below must be true before deployment approval:
 - [ ] Qasim/team explicitly approve the 0004 -> 0008 migration and its rollback limitations.
 - [ ] The DB is migrated transactionally to the single head `20260916_0008` before the new service relies on it.
 - [ ] Source ingestion/population is aligned to each frozen contract; no direct ad-hoc production rows are used.
-- [ ] The scraper-side Support Referral validator mismatch is resolved before relevant production ingestion.
+- [x] Support Referral validation is aligned across merged scraper main and RAG: external HTTP(S), credential-free, with case-insensitive ANUSA host rejection.
 - [ ] Embedding model/version/dimension, retrieval policy, indexing authority, and backfill/refresh procedure are approved; migration alone does not index.
 - [ ] Production DB credentials, service account/runtime grants, Gemini secret, model endpoint, request limits, and network path are correct.
 - [ ] The deployed image is built from the approved exact candidate SHA and digest; no mutable tag substitution.
@@ -557,13 +557,15 @@ Every item below must be true before deployment approval:
 
 ## Cross-repo contract status
 
-The only confirmed remaining cross-repo contract issue is the scraper-side Support Referral validator mismatch. A read-only inspection of the exact PR #26 remote ref `refs/remotes/origin/will/v6-day12-accommodation-support` at `9db3f1a` found:
+Will PR #26 is merged into scraper main at `93def34b0e53a6d8951987ba52281457fd9d28cc`. The previously documented Support Referral difference is resolved, and the merged scraper/RAG contracts are aligned.
 
-- scraper `CommonRecord` validates a Referral only as HTTP(S) with a non-empty netloc; it does not enforce the RAG contract's external-only, credential-free, no-port, no-query, and no-fragment boundary;
-- the scraper parser excludes lowercase `anusa.com.au` / `www.anusa.com.au` Referral hosts but compares them case-sensitively and does not implement the complete validator boundary;
-- RAG Python and 0008 SQL reject internal ANUSA Referral hosts case-insensitively and enforce the credential/port/query/fragment boundary.
+The frozen Support Referral boundary is:
 
-This mismatch does not require a RAG schema widening. The scraper must align before Support production ingestion. No scraper file or ref was changed during this work.
+- the destination must be external HTTP(S);
+- the URL must be credential-free;
+- ANUSA hostnames are rejected case-insensitively.
+
+Support Topic URLs have a separate, stricter approved internal Student Assistance boundary. The Topic rules restrict ports, query strings, and fragments; those restrictions must not be attributed to Support Referral URLs.
 
 ## Events status
 
@@ -591,9 +593,8 @@ Pending Events integration is **not a Day 14 RC blocker** unless Qasim's approve
 1. Qasim/team must approve the release SHA, run/review the production read-only preflight, and authorize the 0004 -> 0008 migration and deployment sequence.
 2. The future production environment must confirm Cloud SQL PostgreSQL/pgvector compatibility, migration-role privileges, and actual starting revision. Cloud SQL was not accessed today.
 3. The existing production Jobs row must pass the exact preflight; its compatibility is proven by migration semantics, not by a production observation today.
-4. The scraper-side Support Referral validator mismatch described above must be fixed before Support production ingestion. This is the only confirmed cross-repo contract mismatch.
-5. The deployed runtime must have the authorized Gemini secret/model/network configuration. Without it, Course synthesis correctly fails closed with HTTP 502, as the local production-style smoke showed.
-6. Approved source population and any embedding/index policy/backfill must be ready and separately authorized. Schema migration alone neither populates the corpus nor enables indexing.
+4. The deployed runtime must have the authorized Gemini secret/model/network configuration. Without it, Course synthesis correctly fails closed with HTTP 502, as the local production-style smoke showed.
+5. Approved source population and any embedding/index policy/backfill must be ready and separately authorized. Schema migration alone neither populates the corpus nor enables indexing.
 
 ### Informational risks that are not blockers
 
