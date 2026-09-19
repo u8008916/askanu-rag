@@ -125,3 +125,24 @@ class CurrentJobsResponse(ContractModel):
     status: Literal["ok"] = "ok"
     items: list[CurrentJobItem]
     request_id: str
+
+
+class UpcomingEventItem(ContractModel):
+    """Source-grounded DTO for the official Upcoming Events surface."""
+
+    record_id: str
+    source_id: Literal["events_anu_official"]
+    title: str
+    start_at: str
+    end_at: str | None
+    venue: str | None
+    organiser: str | None
+    status: str | None
+    url: HttpUrl
+    domain: Literal["events"]
+
+
+class UpcomingEventsResponse(ContractModel):
+    status: Literal["ok"] = "ok"
+    items: list[UpcomingEventItem]
+    request_id: str

@@ -3,7 +3,7 @@
 import json
 import stat
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime
 from os import stat_result
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
@@ -16,6 +16,8 @@ from askanu_rag.models import (
     CommonRecord,
     CourseMetadata,
     CourseProgramRecord,
+    EventMetadata,
+    EventRecord,
     JobMetadata,
     JobRecord,
     ProgramMetadata,
@@ -30,6 +32,7 @@ from askanu_rag.retrieval.identifiers import (
     normalize_program_code,
     normalize_subplan_code,
 )
+from askanu_rag.event_time import upcoming_events
 
 LookupResult: TypeAlias = (
     CourseProgramRecord | tuple[CourseProgramRecord, ...] | None
@@ -98,6 +101,17 @@ class ResourceReader(Protocol):
     def find_domain_by_title(
         self, domain: Literal["accommodation", "support"], title: str
     ) -> tuple[ResourceRecord, ...]: ...
+
+
+@runtime_checkable
+class EventReader(Protocol):
+    """Read boundary for persisted official and Rubric Event records."""
+
+    def all_events(self) -> tuple[EventRecord, ...]: ...
+
+    def upcoming_official_events(
+        self, limit: int, now: datetime
+    ) -> tuple[EventRecord, ...]: ...
 
 
 def normalize_job_title(value: str) -> str:
@@ -211,9 +225,16 @@ class CourseProgramRepository:
         self._resources_by_title: dict[
             tuple[str, str], list[ResourceRecord]
         ] = {}
+        self._events: dict[str, EventRecord] = {}
 
         for record in records:
             metadata = record.metadata_json
+            if isinstance(metadata, EventMetadata):
+                event = EventRecord.model_validate(record.model_dump(mode="python"))
+                if event.record_id in self._events:
+                    raise ValueError(f"Duplicate record_id: {event.record_id}")
+                self._events[event.record_id] = event
+                continue
             if isinstance(metadata, (AccommodationMetadata, SupportMetadata)):
                 model = (
                     AccommodationRecord
@@ -441,6 +462,29 @@ class CourseProgramRepository:
                 ),
                 key=lambda record: record.record_id,
             )
+        )
+
+    def all_events(self) -> tuple[EventRecord, ...]:
+        return tuple(
+            sorted(self._events.values(), key=lambda record: record.record_id)
+        )
+
+    def upcoming_official_events(
+        self, limit: int, now: datetime
+    ) -> tuple[EventRecord, ...]:
+        official = (
+            record
+            for record in self._events.values()
+            if record.source_id == "events_anu_official"
+        )
+        return upcoming_events(
+            official,
+            now=now,
+            start_at=lambda record: datetime.fromisoformat(
+                record.metadata_json.start_at.replace("Z", "+00:00")
+            ),
+            stable_key=lambda record: record.record_id,
+            limit=limit,
         )
 
 

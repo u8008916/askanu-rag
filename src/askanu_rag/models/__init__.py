@@ -17,6 +17,8 @@ from askanu_rag.models.contracts import (
     OkResponse,
     PartialResponse,
     Source,
+    UpcomingEventItem,
+    UpcomingEventsResponse,
 )
 from askanu_rag.models.records import (
     AccommodationContact,
@@ -28,6 +30,8 @@ from askanu_rag.models.records import (
     CourseMetadata,
     CourseProgramMetadata,
     CourseProgramRecord,
+    EventMetadata,
+    EventRecord,
     IndexStatus,
     JobMetadata,
     JobRecord,
@@ -60,6 +64,8 @@ __all__ = [
     "CourseMetadata",
     "CourseProgramMetadata",
     "CourseProgramRecord",
+    "EventMetadata",
+    "EventRecord",
     "ErrorResponse",
     "HealthResponse",
     "HistoryTurn",
@@ -82,4 +88,6 @@ __all__ = [
     "SupportRecord",
     "SupportReferral",
     "SupportTopic",
+    "UpcomingEventItem",
+    "UpcomingEventsResponse",
 ]
