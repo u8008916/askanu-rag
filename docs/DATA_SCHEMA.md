@@ -102,9 +102,45 @@ support
 events
 ```
 
-`events` is reserved/planned contract vocabulary. It is not accepted by the
-current `CommonRecord` runtime union and no Events ingestion/retrieval behavior
-is implemented by the V6 work.
+`events` uses the same shared `source_records` envelope. Revision
+`20260919_0009` admits the two frozen source IDs `events_anu_official` and
+`rubric_unified_search`; both use `metadata_json.entity_type = "event"`.
+
+Event identity follows the existing shared convention:
+
+```text
+record_id = "events:event:" + entity_id
+```
+
+`entity_id` is the stable, sufficiently source-namespaced identity supplied by
+the producer. It is never derived from mutable title/date text.
+
+The frozen Event `metadata_json` keys are:
+
+```text
+entity_type             required literal "event"
+source_event_id         required non-blank string
+start_at                required timezone-aware ISO-8601 string
+end_at                  optional timezone-aware ISO-8601 string or null
+timezone                optional IANA timezone string or null
+organiser_name          optional string or null
+venue_name              optional string or null
+address                 optional string or null
+latitude                optional number or null
+longitude               optional number or null
+category                 optional string or null
+tags                     optional list[string] or null
+registration_url         optional string or null
+source_status            optional source-backed string or null
+cancellation_status      optional source-backed string or null
+audience                 optional string, list[string], or null
+```
+
+No permanent `upcoming` flag or duplicate `is_official` flag is stored.
+Temporal currentness is derived in `Australia/Canberra`. Official Events use
+the published ANU detail URL; Rubric records expose a public event page and
+never the internal detail API. Title, content/description and canonical URL
+remain top-level shared fields.
 
 ANU Courses and ANU Programs both use:
 
@@ -837,8 +873,10 @@ Rules:
 
 - only approved/active production sources may be collected,
 - pending-approval sources remain inactive,
-- Rubric remains `PENDING_APPROVAL` / non-production until explicitly approved,
-- do not use undocumented/internal Rubric APIs.
+- Rubric Events are approved only for bounded producer-side ingestion under the
+  frozen Events contract; RAG never calls Rubric live.
+- preserve `rubric_unified_search` provenance and never expose the internal
+  Rubric detail API as a student source URL.
 
 ---
 

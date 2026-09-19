@@ -1,7 +1,7 @@
 """AskANU HTTP service with exact-first, grounded Day 4 synthesis."""
 
 from collections.abc import Callable, Sequence
-from datetime import date
+from datetime import date, datetime
 import logging
 import re
 from time import perf_counter
@@ -18,6 +18,12 @@ from askanu_rag.config import Settings
 from askanu_rag.conversation import resolve_current_session
 from askanu_rag.database import DatabaseConfigurationError, RepositoryUnavailableError
 from askanu_rag.gemini import GeminiSynthesisClient
+from askanu_rag.event_queries import (
+    EventQueryService,
+    canberra_now,
+    is_plausible_event_question,
+    upcoming_event_item,
+)
 from askanu_rag.hybrid_queries import HybridQueryService
 from askanu_rag.job_queries import (
     JobQueryService,
@@ -42,10 +48,12 @@ from askanu_rag.models import (
     InsufficientEvidenceResponse,
     NeedsClarificationResponse,
     OffTopicResponse,
+    UpcomingEventsResponse,
 )
 from askanu_rag.retrieval import (
     CourseProgramReader,
     CourseProgramRepository,
+    EventReader,
     JobReader,
     PostgresCourseProgramRepository,
     ResourceReader,
@@ -127,6 +135,7 @@ def create_app(
     semantic_top_k: int = 3,
     semantic_min_score: float = 0.2,
     jobs_today_provider: Callable[[], date] | None = None,
+    events_now_provider: Callable[[], datetime] | None = None,
     max_merged_candidates: int = 10,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
@@ -149,6 +158,7 @@ def create_app(
         else None
     )
     jobs_today_provider = jobs_today_provider or canberra_today
+    events_now_provider = events_now_provider or canberra_now
     job_queries = (
         JobQueryService(
             repository,
@@ -178,6 +188,11 @@ def create_app(
             max_candidates=max_merged_candidates,
         )
         if isinstance(repository, ResourceReader)
+        else None
+    )
+    event_queries = (
+        EventQueryService(repository, events_now_provider)
+        if isinstance(repository, EventReader)
         else None
     )
 
@@ -261,6 +276,21 @@ def create_app(
         records = repository.current_jobs(limit, jobs_today_provider())
         response = CurrentJobsResponse(
             items=[current_job_item(record) for record in records],
+            request_id=_request_id(request),
+        )
+        request.state.response_status = response.status
+        return response
+
+    @app.get("/api/v1/events/upcoming", response_model=UpcomingEventsResponse)
+    async def upcoming_event_list(
+        request: Request,
+        limit: int = Query(default=5, ge=1, le=20),
+    ) -> UpcomingEventsResponse:
+        if event_queries is None:
+            raise RepositoryUnavailableError()
+        records = repository.upcoming_official_events(limit, events_now_provider())
+        response = UpcomingEventsResponse(
+            items=[upcoming_event_item(record) for record in records],
             request_id=_request_id(request),
         )
         request.state.response_status = response.status
@@ -355,6 +385,14 @@ def create_app(
             )
             if support_response is not None:
                 return _mark_response(request, support_response)
+
+        if event_queries is not None and is_plausible_event_question(
+            resolved_question
+        ):
+            return _mark_response(
+                request,
+                await event_queries.answer(resolved_question, request_id),
+            )
 
         course_response = await course_queries.answer(resolved_question, request_id)
         if course_response is not None:
