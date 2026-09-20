@@ -1,7 +1,7 @@
 """PostgreSQL adapter for the existing deterministic course/program boundary."""
 
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal, TypeVar
 
 from askanu_rag.config import Settings
@@ -14,6 +14,7 @@ from askanu_rag.models import (
     AccommodationRecord,
     CommonRecord,
     CourseProgramRecord,
+    EventRecord,
     JobRecord,
     ScholarshipRecord,
     SupportRecord,
@@ -324,6 +325,41 @@ class PostgresCourseProgramRepository:
             model=model,
         )
 
+    def all_events(self) -> tuple[EventRecord, ...]:
+        return self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE domain = 'events'
+              AND source_id IN ('events_anu_official', 'rubric_unified_search')
+              AND metadata_json ->> 'entity_type' = 'event'
+            ORDER BY (metadata_json ->> 'start_at')::timestamptz, record_id
+            """,
+            model=EventRecord,
+        )
+
+    def upcoming_official_events(
+        self, limit: int, now: datetime
+    ) -> tuple[EventRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+        return self._fetch_records(
+            f"""
+            SELECT {SELECT_COLUMNS}
+            FROM source_records
+            WHERE domain = 'events'
+              AND source_id = 'events_anu_official'
+              AND metadata_json ->> 'entity_type' = 'event'
+              AND (metadata_json ->> 'start_at')::timestamptz >= %s
+            ORDER BY (metadata_json ->> 'start_at')::timestamptz, record_id
+            LIMIT %s
+            """,
+            (now, limit),
+            model=EventRecord,
+        )
+
 
 class UnavailableCourseProgramRepository:
     """Fail closed when production expects Cloud SQL but config is incomplete."""
@@ -401,4 +437,12 @@ class UnavailableCourseProgramRepository:
         _domain: Literal["accommodation", "support"],
         _title: str,
     ) -> tuple[ResourceRecord, ...]:
+        self._raise()
+
+    def all_events(self) -> tuple[EventRecord, ...]:
+        self._raise()
+
+    def upcoming_official_events(
+        self, _limit: int, _now: datetime
+    ) -> tuple[EventRecord, ...]:
         self._raise()

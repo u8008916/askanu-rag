@@ -10,6 +10,7 @@ import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
@@ -19,7 +20,7 @@ from sqlalchemy.exc import DBAPIError
 from askanu_rag.config import Settings
 from askanu_rag.database import DatabaseConnectionConfig
 from askanu_rag.main import create_app
-from askanu_rag.retrieval import PostgresCourseProgramRepository
+from askanu_rag.retrieval import PostgresCourseProgramRepository, load_common_records
 from test_postgres_repository import (
     CapturingSynthesisClient,
     ask_payload,
@@ -29,10 +30,11 @@ from test_postgres_repository import (
 from test_jobs import make_job
 from test_courses_family import make_subplan
 from test_day12_contracts import accommodation_payload, support_payload
-from askanu_rag.models import AccommodationRecord, SupportRecord
+from askanu_rag.models import AccommodationRecord, EventRecord, SupportRecord
 
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
 ROOT = Path(__file__).parents[1]
+EVENT_FIXTURE = ROOT / "fixtures" / "day15_event_records.json"
 SCHOLARSHIP_URL_PREFIX = (
     "https://study.anu.edu.au/scholarships/find-scholarship/"
 )
@@ -781,7 +783,7 @@ def test_day12_previous_head_upgrades_to_new_head_without_resource_rows(monkeypa
     with psycopg.connect(database_url) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == "20260916_0008"
+        ).fetchone()[0] == ScriptDirectory.from_config(config).get_current_head()
 
 
 def test_day12_round_trip_restores_exact_0007_resource_behavior(monkeypatch):
@@ -1065,3 +1067,75 @@ def test_database_rejects_non_null_scholarship_effective_dates(field):
         with pytest.raises(psycopg.errors.CheckViolation):
             _insert_record_values(connection, values)
         connection.rollback()
+
+
+def test_database_accepts_frozen_official_and_rubric_event_records():
+    database_url = _local_test_url()
+    events = load_common_records(EVENT_FIXTURE)[:2]
+    for event in events:
+        assert isinstance(
+            EventRecord.model_validate(event.model_dump(mode="python")),
+            EventRecord,
+        )
+        assert _insert_is_accepted(database_url, _record_values(event))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("record_id", "event:anu-official-1001"),
+        ("source_id", "rubric_unified_search"),
+        (
+            "canonical_url",
+            "https://appserver.getqpay.com:9090/AppServerSwapnil/event/details",
+        ),
+    ],
+)
+def test_database_rejects_event_identity_source_and_url_mismatches(field, value):
+    database_url = _local_test_url()
+    values = _record_values(load_common_records(EVENT_FIXTURE)[0])
+    values[field] = value
+    assert not _insert_is_accepted(database_url, values)
+
+
+def test_database_rejects_naive_event_start_and_unknown_metadata():
+    database_url = _local_test_url()
+    base = _record_values(load_common_records(EVENT_FIXTURE)[0])
+    metadata = dict(base["metadata_json"].obj)
+    metadata["start_at"] = "2026-09-20T10:00:00"
+    base["metadata_json"] = Jsonb(metadata)
+    assert not _insert_is_accepted(database_url, base)
+
+    metadata["start_at"] = "2026-09-20T10:00:00+10:00"
+    metadata["is_official"] = True
+    base["metadata_json"] = Jsonb(metadata)
+    assert not _insert_is_accepted(database_url, base)
+
+
+def test_postgres_upcoming_events_path_is_official_only():
+    database_url = _local_test_url()
+    config = DatabaseConnectionConfig.from_settings(
+        Settings(database_url=SecretStr(database_url))
+    )
+    events = load_common_records(EVENT_FIXTURE)
+    with psycopg.connect(database_url) as connection:
+        connection.execute("DELETE FROM source_records WHERE domain = 'events'")
+        for event in events:
+            _insert_record(connection, event)
+    try:
+        repository = PostgresCourseProgramRepository(config.connect)
+        selected = repository.upcoming_official_events(
+            5, datetime(2026, 9, 19, 9, tzinfo=timezone(timedelta(hours=10)))
+        )
+        assert [record.entity_id for record in selected] == [
+            "anu-official-1001",
+            "anu-official-1002",
+        ]
+        assert all(record.source_id == "events_anu_official" for record in selected)
+        assert {record.source_id for record in repository.all_events()} == {
+            "events_anu_official",
+            "rubric_unified_search",
+        }
+    finally:
+        with psycopg.connect(database_url) as connection:
+            connection.execute("DELETE FROM source_records WHERE domain = 'events'")

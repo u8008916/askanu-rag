@@ -3,7 +3,8 @@
 import re
 from datetime import date, datetime
 from typing import Annotated, Literal
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     AfterValidator,
@@ -37,6 +38,10 @@ SCHOLARSHIP_PATH_PREFIX = "/scholarships/find-scholarship/"
 SCHOLARSHIP_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 JOB_PATH_PATTERN = re.compile(r"^/jobs/[^/\s?#]+$")
 JOB_CLOSING_AT_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:[.]\d+)?)?"
+    r"(?:Z|[+-]\d{2}:\d{2})$"
+)
+EVENT_INSTANT_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:[.]\d+)?)?"
     r"(?:Z|[+-]\d{2}:\d{2})$"
 )
@@ -180,6 +185,51 @@ class JobMetadata(BaseModel):
             raise ValueError("role_requirements cannot contain blank items")
         return value
 
+
+class EventMetadata(BaseModel):
+    """Qasim-frozen V6 Event metadata boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    entity_type: Literal["event"]
+    source_event_id: NonBlankString
+    start_at: str
+    end_at: str | None = None
+    timezone: NonBlankString | None = None
+    organiser_name: NonBlankString | None = None
+    venue_name: NonBlankString | None = None
+    address: NonBlankString | None = None
+    latitude: float | int | None = None
+    longitude: float | int | None = None
+    category: NonBlankString | None = None
+    tags: list[NonBlankString] | None = None
+    registration_url: NonBlankString | None = None
+    source_status: NonBlankString | None = None
+    cancellation_status: NonBlankString | None = None
+    audience: NonBlankString | list[NonBlankString] | None = None
+
+    @field_validator("start_at", "end_at")
+    @classmethod
+    def validate_event_instant(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if EVENT_INSTANT_PATTERN.fullmatch(value) is None:
+            raise ValueError("event timestamp must be an ISO-8601 offset datetime")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("event timestamp must include a timezone offset")
+        return value
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_iana_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a recognized IANA timezone") from exc
+        return value
 
 class SubplanMetadata(BaseModel):
     """Frozen V6 Major/Minor/Specialisation metadata boundary."""
@@ -374,7 +424,8 @@ CommonMetadata = Annotated[
     | ScholarshipMetadata
     | JobMetadata
     | AccommodationMetadata
-    | SupportMetadata,
+    | SupportMetadata
+    | EventMetadata,
     Field(discriminator="entity_type"),
 ]
 
@@ -391,10 +442,12 @@ class CommonRecord(BaseModel):
         "jobs_anu_search",
         "accommodation_anu_study",
         "support_anusa_student_assistance",
+        "events_anu_official",
+        "rubric_unified_search",
     ]
     entity_id: str
     domain: Literal[
-        "courses", "scholarships", "jobs", "accommodation", "support"
+        "courses", "scholarships", "jobs", "accommodation", "support", "events"
     ]
     title: str
     content: str = Field(min_length=1)
@@ -493,6 +546,39 @@ class CommonRecord(BaseModel):
                 != f"{SUPPORT_URL_PREFIX}{values.get('entity_id')}/"
             ):
                 raise ValueError("Support canonical_url must exactly match entity_id")
+        elif entity_type == "event":
+            parsed = urlsplit(canonical_url)
+            try:
+                parsed.port
+            except ValueError as exc:
+                raise ValueError("Event canonical_url has an invalid port") from exc
+            source_id = values.get("source_id")
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname is None
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError("Event canonical_url must be credential-free HTTPS")
+            if source_id == "events_anu_official" and (
+                parsed.hostname.casefold() != "www.anu.edu.au"
+                or not parsed.path.startswith("/events/")
+            ):
+                raise ValueError(
+                    "Official Event canonical_url must be an ANU event-detail page"
+                )
+            if source_id == "rubric_unified_search":
+                event_ids = parse_qs(parsed.query).get("eid", [])
+                if (
+                    parsed.hostname.casefold() != "campus.hellorubric.com"
+                    or parsed.path not in {"", "/"}
+                    or len(event_ids) != 1
+                    or not event_ids[0].strip()
+                ):
+                    raise ValueError(
+                        "Rubric canonical_url must be its public event page, "
+                        "not the internal detail API"
+                    )
         return values
 
     @field_validator(
@@ -550,13 +636,23 @@ class CommonRecord(BaseModel):
             expected_entity_id = self.entity_id
             if RESOURCE_SLUG_PATTERN.fullmatch(self.entity_id) is None:
                 raise ValueError("Accommodation entity_id must be a stable slug")
-        else:
+        elif isinstance(metadata, SupportMetadata):
             expected_source = "support_anusa_student_assistance"
             expected_domain = "support"
             entity_type = "support_service"
             expected_entity_id = self.entity_id
             if RESOURCE_SLUG_PATTERN.fullmatch(self.entity_id) is None:
                 raise ValueError("Support entity_id must be a stable slug")
+        else:
+            expected_source = self.source_id
+            expected_domain = "events"
+            entity_type = "event"
+            expected_entity_id = self.entity_id
+            if expected_source not in {
+                "events_anu_official",
+                "rubric_unified_search",
+            }:
+                raise ValueError("Event source_id is not approved")
 
         if self.source_id != expected_source or self.domain != expected_domain:
             raise ValueError("source_id/domain do not match metadata entity_type")
@@ -623,3 +719,11 @@ class SupportRecord(CommonRecord):
     source_id: Literal["support_anusa_student_assistance"]
     domain: Literal["support"]
     metadata_json: SupportMetadata
+
+
+class EventRecord(CommonRecord):
+    """Frozen V6 Event view of the shared source_records envelope."""
+
+    source_id: Literal["events_anu_official", "rubric_unified_search"]
+    domain: Literal["events"]
+    metadata_json: EventMetadata
