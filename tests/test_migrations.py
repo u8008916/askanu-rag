@@ -51,7 +51,7 @@ def test_alembic_revision_is_single_versioned_head():
         capture_output=True,
         text=True,
     )
-    assert "20260919_0009 (head)" in result.stdout
+    assert "20260921_0010 (head)" in result.stdout
 
 
 def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
@@ -84,6 +84,7 @@ def test_offline_upgrade_compiles_postgresql_sql_without_connecting():
     assert "askanu_day12_support_metadata_valid" in sql
     assert "accommodation:residence:" in sql
     assert "support:support_service:" in sql
+    assert "ck_source_records_event_source_identity" in sql
 
 
 def test_migration_creates_frozen_schema_and_identity_guards(monkeypatch):

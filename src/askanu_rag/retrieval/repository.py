@@ -483,6 +483,13 @@ class CourseProgramRepository:
             start_at=lambda record: datetime.fromisoformat(
                 record.metadata_json.start_at.replace("Z", "+00:00")
             ),
+            end_at=lambda record: (
+                None
+                if record.metadata_json.end_at is None
+                else datetime.fromisoformat(
+                    record.metadata_json.end_at.replace("Z", "+00:00")
+                )
+            ),
             stable_key=lambda record: record.record_id,
             limit=limit,
         )

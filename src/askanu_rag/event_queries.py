@@ -41,6 +41,11 @@ def event_start(record: EventRecord) -> datetime:
     return datetime.fromisoformat(record.metadata_json.start_at.replace("Z", "+00:00"))
 
 
+def event_end(record: EventRecord) -> datetime | None:
+    value = record.metadata_json.end_at
+    return None if value is None else datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def upcoming_event_item(record: EventRecord) -> UpcomingEventItem:
     if record.source_id != "events_anu_official":
         raise ValueError("Upcoming Events accepts official ANU records only")
@@ -101,6 +106,7 @@ class EventQueryService:
                 records,
                 now=now,
                 start_at=event_start,
+                end_at=event_end,
                 stable_key=lambda record: record.record_id,
                 limit=self._limit,
             )

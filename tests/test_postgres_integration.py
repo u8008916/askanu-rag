@@ -35,6 +35,9 @@ from askanu_rag.models import AccommodationRecord, EventRecord, SupportRecord
 TEST_DATABASE_URL = os.environ.get("ASKANU_TEST_DATABASE_URL")
 ROOT = Path(__file__).parents[1]
 EVENT_FIXTURE = ROOT / "fixtures" / "day15_event_records.json"
+FINAL_PRODUCER_EVENT_FIXTURE = (
+    ROOT / "fixtures" / "day16_scraper_event_records.json"
+)
 SCHOLARSHIP_URL_PREFIX = (
     "https://study.anu.edu.au/scholarships/find-scholarship/"
 )
@@ -1071,7 +1074,7 @@ def test_database_rejects_non_null_scholarship_effective_dates(field):
 
 def test_database_accepts_frozen_official_and_rubric_event_records():
     database_url = _local_test_url()
-    events = load_common_records(EVENT_FIXTURE)[:2]
+    events = load_common_records(FINAL_PRODUCER_EVENT_FIXTURE)
     for event in events:
         assert isinstance(
             EventRecord.model_validate(event.model_dump(mode="python")),
@@ -1112,6 +1115,25 @@ def test_database_rejects_naive_event_start_and_unknown_metadata():
     assert not _insert_is_accepted(database_url, base)
 
 
+@pytest.mark.parametrize("index", [0, 1])
+def test_database_rejects_event_source_identity_disagreement(index):
+    database_url = _local_test_url()
+    event = load_common_records(FINAL_PRODUCER_EVENT_FIXTURE)[index]
+    values = _record_values(event)
+    metadata = dict(values["metadata_json"].obj)
+    metadata["source_event_id"] = "99999"
+    values["metadata_json"] = Jsonb(metadata)
+    assert not _insert_is_accepted(database_url, values)
+
+
+def test_database_rejects_rubric_public_url_with_the_wrong_eid():
+    database_url = _local_test_url()
+    rubric = load_common_records(FINAL_PRODUCER_EVENT_FIXTURE)[1]
+    values = _record_values(rubric)
+    values["canonical_url"] = "https://campus.hellorubric.com/?eid=99999"
+    assert not _insert_is_accepted(database_url, values)
+
+
 def test_postgres_upcoming_events_path_is_official_only():
     database_url = _local_test_url()
     config = DatabaseConnectionConfig.from_settings(
@@ -1128,8 +1150,8 @@ def test_postgres_upcoming_events_path_is_official_only():
             5, datetime(2026, 9, 19, 9, tzinfo=timezone(timedelta(hours=10)))
         )
         assert [record.entity_id for record in selected] == [
-            "anu-official-1001",
-            "anu-official-1002",
+            "1001",
+            "1002",
         ]
         assert all(record.source_id == "events_anu_official" for record in selected)
         assert {record.source_id for record in repository.all_events()} == {
@@ -1139,3 +1161,143 @@ def test_postgres_upcoming_events_path_is_official_only():
     finally:
         with psycopg.connect(database_url) as connection:
             connection.execute("DELETE FROM source_records WHERE domain = 'events'")
+
+
+def test_0008_to_current_head_preserves_representative_five_domain_rows(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(ROOT / "alembic.ini")
+    records = (
+        make_record(code="TEST1000"),
+        make_scholarship(),
+        make_job("919191"),
+        AccommodationRecord.model_validate(accommodation_payload()),
+        SupportRecord.model_validate(support_payload()),
+    )
+    record_ids = tuple(record.record_id for record in records)
+    with psycopg.connect(database_url) as connection:
+        connection.execute("DELETE FROM source_records WHERE domain = 'events'")
+        existing = {
+            row[0]
+            for row in connection.execute(
+                "SELECT record_id FROM source_records WHERE record_id = ANY(%s)",
+                (list(record_ids),),
+            ).fetchall()
+        }
+        for record in records:
+            _insert_record(connection, record, ignore_conflict=True)
+        before = tuple(
+            connection.execute(
+                """
+                SELECT record_id, source_id, entity_id, domain, content_hash,
+                       metadata_json
+                FROM source_records
+                WHERE record_id = ANY(%s)
+                ORDER BY record_id
+                """,
+                (list(record_ids),),
+            ).fetchall()
+        )
+    assert {row[3] for row in before} == {
+        "courses", "scholarships", "jobs", "accommodation", "support"
+    }
+
+    try:
+        command.downgrade(config, "20260916_0008")
+        command.upgrade(config, "head")
+        with psycopg.connect(database_url) as connection:
+            after = tuple(
+                connection.execute(
+                    """
+                    SELECT record_id, source_id, entity_id, domain, content_hash,
+                           metadata_json
+                    FROM source_records
+                    WHERE record_id = ANY(%s)
+                    ORDER BY record_id
+                    """,
+                    (list(record_ids),),
+                ).fetchall()
+            )
+            assert after == before
+            assert connection.execute(
+                "SELECT to_regclass('uq_source_records_event_source_identity')"
+            ).fetchone()[0] == "uq_source_records_event_source_identity"
+    finally:
+        command.upgrade(config, "head")
+        created = [record_id for record_id in record_ids if record_id not in existing]
+        if created:
+            with psycopg.connect(database_url) as connection:
+                connection.execute(
+                    "DELETE FROM source_records WHERE record_id = ANY(%s)",
+                    (created,),
+                )
+
+
+def test_current_head_downgrade_refuses_to_destroy_event_rows(monkeypatch):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(ROOT / "alembic.ini")
+    event = load_common_records(FINAL_PRODUCER_EVENT_FIXTURE)[0]
+    with psycopg.connect(database_url) as connection:
+        connection.execute("DELETE FROM source_records WHERE domain = 'events'")
+        _insert_record(connection, event)
+    try:
+        with pytest.raises(DBAPIError, match="Cannot downgrade the Events contract"):
+            command.downgrade(config, "20260916_0008")
+        with psycopg.connect(database_url) as connection:
+            assert connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()[0] == ScriptDirectory.from_config(config).get_current_head()
+            assert connection.execute(
+                "SELECT count(*) FROM source_records WHERE record_id = %s",
+                (event.record_id,),
+            ).fetchone()[0] == 1
+    finally:
+        command.upgrade(config, "head")
+        with psycopg.connect(database_url) as connection:
+            connection.execute("DELETE FROM source_records WHERE domain = 'events'")
+
+
+def test_0010_round_trip_changes_only_the_event_source_identity_constraint(
+    monkeypatch,
+):
+    database_url = _local_test_url()
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(ROOT / "alembic.ini")
+
+    def constraints():
+        with psycopg.connect(database_url) as connection:
+            return {
+                row[0]
+                for row in connection.execute(
+                    """
+                    SELECT conname
+                    FROM pg_constraint
+                    WHERE conrelid = 'public.source_records'::regclass
+                    """
+                ).fetchall()
+            }
+
+    with psycopg.connect(database_url) as connection:
+        connection.execute("DELETE FROM source_records WHERE domain = 'events'")
+    expected_0009_constraints = {
+        "ck_source_records_event_metadata",
+        "ck_source_records_event_canonical_url",
+    }
+    try:
+        command.downgrade(config, "20260919_0009")
+        at_0009 = constraints()
+        assert "ck_source_records_event_source_identity" not in at_0009
+        assert expected_0009_constraints <= at_0009
+        with psycopg.connect(database_url) as connection:
+            assert connection.execute(
+                "SELECT to_regclass('uq_source_records_event_source_identity')"
+            ).fetchone()[0] == "uq_source_records_event_source_identity"
+
+        command.upgrade(config, "head")
+        at_head = constraints()
+        assert at_head - at_0009 == {
+            "ck_source_records_event_source_identity"
+        }
+    finally:
+        command.upgrade(config, "head")

@@ -352,7 +352,10 @@ class PostgresCourseProgramRepository:
             WHERE domain = 'events'
               AND source_id = 'events_anu_official'
               AND metadata_json ->> 'entity_type' = 'event'
-              AND (metadata_json ->> 'start_at')::timestamptz >= %s
+              AND COALESCE(
+                    metadata_json ->> 'end_at',
+                    metadata_json ->> 'start_at'
+                  )::timestamptz >= %s
             ORDER BY (metadata_json ->> 'start_at')::timestamptz, record_id
             LIMIT %s
             """,

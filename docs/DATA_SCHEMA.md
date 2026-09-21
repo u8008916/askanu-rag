@@ -115,6 +115,19 @@ record_id = "events:event:" + entity_id
 `entity_id` is the stable, sufficiently source-namespaced identity supplied by
 the producer. It is never derived from mutable title/date text.
 
+For `events_anu_official`, the merged producer supplies the numeric Drupal node
+ID unchanged as both `entity_id` and `metadata_json.source_event_id`. For
+`rubric_unified_search`, source event `78459` is represented as
+`source_event_id = "78459"`, `entity_id = "rubric-78459"`, and
+`record_id = "events:event:rubric-78459"`; the public canonical URL carries the
+same `eid`. The consumer rejects disagreement between these identity fields.
+
+Revision `20260919_0009` remains the unchanged historical Events contract
+migration. Revision `20260921_0010` adds no fields, metadata keys, or identity
+semantics; it adds only a database check enforcing the already-frozen
+relationship among `source_id`, `entity_id`, `metadata_json.source_event_id`
+and, for Rubric, the public canonical URL `eid`.
+
 The frozen Event `metadata_json` keys are:
 
 ```text
