@@ -75,6 +75,23 @@ def test_upcoming_excludes_past_includes_now_and_sorts_ties_by_stable_key():
     assert upcoming([second, past, first], now) == (first, second)
 
 
+def test_upcoming_uses_known_end_to_keep_an_ongoing_event_current():
+    now = local(2026, 9, 16, 9)
+    ongoing = SuppliedEvent("ongoing", now - timedelta(hours=1))
+    ended = SuppliedEvent("ended", now - timedelta(hours=2))
+    ends = {
+        "ongoing": now + timedelta(hours=1),
+        "ended": now - timedelta(hours=1),
+    }
+    assert upcoming_events(
+        [ended, ongoing],
+        now=now,
+        start_at=lambda event: event.starts,
+        end_at=lambda event: ends[event.key],
+        stable_key=lambda event: event.key,
+    ) == (ongoing,)
+
+
 def test_limit_is_applied_after_filtering_and_ordering():
     now = local(2026, 9, 16, 9)
     events = [

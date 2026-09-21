@@ -153,7 +153,7 @@ Minimal successful response (HTTP 200):
 }
 ```
 
-`items` is an ordered array of event objects containing the fields shown above, with at most the requested limit. `record_id` identifies the evidence record and `source_id` identifies its source registry entry. This dedicated endpoint reads `events_anu_official` only. Include upcoming events only; exclude past events and order by ascending `start_at`, then stable `record_id`, in `Australia/Canberra`. Missing optional values remain JSON `null`. No qualifying records returns `status: "ok"` with `items: []`. Events conversation retrieval may use both `events_anu_official` and `rubric_unified_search` while preserving each source record's provenance.
+`items` is an ordered array of event objects containing the fields shown above, with at most the requested limit. `record_id` identifies the evidence record and `source_id` identifies its source registry entry. This dedicated endpoint reads `events_anu_official` only. Include upcoming events only: when a source-backed `end_at` is known, the Event remains current until that instant; otherwise currentness uses `start_at`. Exclude past Events and order by ascending `start_at`, then stable `record_id`, in `Australia/Canberra`. Missing optional values remain JSON `null`. No qualifying records returns `status: "ok"` with `items: []`. Events conversation retrieval may use both `events_anu_official` and `rubric_unified_search` while preserving each source record's provenance.
 
 ## GET /api/v1/jobs/current?limit=5
 Deterministic; current only; nearest known closing date first; undated current

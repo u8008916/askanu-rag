@@ -553,6 +553,11 @@ class CommonRecord(BaseModel):
             except ValueError as exc:
                 raise ValueError("Event canonical_url has an invalid port") from exc
             source_id = values.get("source_id")
+            source_event_id = (
+                metadata.get("source_event_id")
+                if isinstance(metadata, dict)
+                else getattr(metadata, "source_event_id", None)
+            )
             if (
                 parsed.scheme != "https"
                 or parsed.hostname is None
@@ -574,6 +579,7 @@ class CommonRecord(BaseModel):
                     or parsed.path not in {"", "/"}
                     or len(event_ids) != 1
                     or not event_ids[0].strip()
+                    or event_ids[0] != source_event_id
                 ):
                     raise ValueError(
                         "Rubric canonical_url must be its public event page, "
@@ -647,12 +653,16 @@ class CommonRecord(BaseModel):
             expected_source = self.source_id
             expected_domain = "events"
             entity_type = "event"
-            expected_entity_id = self.entity_id
             if expected_source not in {
                 "events_anu_official",
                 "rubric_unified_search",
             }:
                 raise ValueError("Event source_id is not approved")
+            expected_entity_id = (
+                metadata.source_event_id
+                if expected_source == "events_anu_official"
+                else f"rubric-{metadata.source_event_id}"
+            )
 
         if self.source_id != expected_source or self.domain != expected_domain:
             raise ValueError("source_id/domain do not match metadata entity_type")

@@ -1,8 +1,8 @@
 [
   {
-    "record_id": "events:event:anu-official-1001",
+    "record_id": "events:event:1001",
     "source_id": "events_anu_official",
-    "entity_id": "anu-official-1001",
+    "entity_id": "1001",
     "domain": "events",
     "title": "ANU Open Day",
     "content": "ANU Open Day includes published campus information sessions.",
@@ -70,9 +70,9 @@
     }
   },
   {
-    "record_id": "events:event:anu-official-1002",
+    "record_id": "events:event:1002",
     "source_id": "events_anu_official",
-    "entity_id": "anu-official-1002",
+    "entity_id": "1002",
     "domain": "events",
     "title": "ANU Research Lecture",
     "content": "A published research lecture.",
@@ -92,9 +92,9 @@
     }
   },
   {
-    "record_id": "events:event:anu-official-0999",
+    "record_id": "events:event:0999",
     "source_id": "events_anu_official",
-    "entity_id": "anu-official-0999",
+    "entity_id": "0999",
     "domain": "events",
     "title": "Past ANU Seminar",
     "content": "A seminar that has already started.",

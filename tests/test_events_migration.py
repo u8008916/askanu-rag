@@ -1,14 +1,19 @@
-"""Static contract tests for append-only Events revision 0009."""
+"""Static contract tests for the append-only Events migration chain."""
 
 import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-REVISION = ROOT / "migrations" / "versions" / "20260919_0009_events_contract.py"
+REVISION_0009 = (
+    ROOT / "migrations" / "versions" / "20260919_0009_events_contract.py"
+)
+REVISION_0010 = (
+    ROOT / "migrations" / "versions" / "20260921_0010_event_source_identity.py"
+)
 
 
-def load_revision():
-    spec = importlib.util.spec_from_file_location("events_revision", REVISION)
+def load_revision(path=REVISION_0009):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -29,8 +34,8 @@ class Recorder:
         self.events.append(("drop", name, table, type_))
 
 
-def run(direction):
-    revision = load_revision()
+def run(direction, path=REVISION_0009):
+    revision = load_revision(path)
     recorder = Recorder()
     original = revision.op
     revision.op = recorder
@@ -45,8 +50,10 @@ def test_0009_is_linear_and_uses_shared_source_records():
     revision = load_revision()
     assert revision.revision == "20260919_0009"
     assert revision.down_revision == "20260916_0008"
-    assert "source_records" in REVISION.read_text(encoding="utf-8")
-    assert "CREATE TABLE" not in REVISION.read_text(encoding="utf-8")
+    text = REVISION_0009.read_text(encoding="utf-8")
+    assert "source_records" in text
+    assert "CREATE TABLE" not in text
+    assert "ck_source_records_event_source_identity" not in text
 
 
 def test_upgrade_adds_both_sources_event_identity_and_common_record_id():
@@ -103,3 +110,34 @@ def test_downgrade_refuses_event_data_and_restores_previous_checks():
     assert "events_anu_official" not in checks["ck_source_records_source_domain"]
     assert "events:event:" not in checks["ck_source_records_record_id"]
     assert "DROP FUNCTION askanu_v6_event_metadata_valid" in sql
+
+
+def test_0010_is_additive_and_enforces_frozen_event_source_identity():
+    revision, recorder = run("upgrade", REVISION_0010)
+    assert revision.revision == "20260921_0010"
+    assert revision.down_revision == "20260919_0009"
+    assert recorder.events == [
+        (
+            "create",
+            "ck_source_records_event_source_identity",
+            "source_records",
+            revision.CONSTRAINT_SQL,
+        )
+    ]
+    constraint = revision.CONSTRAINT_SQL
+    assert "entity_id = metadata_json ->> 'source_event_id'" in constraint
+    assert "entity_id = 'rubric-' ||" in constraint
+    assert "substring(canonical_url" in constraint
+    assert "eid=" in constraint
+
+
+def test_0010_downgrade_removes_only_its_constraint():
+    _revision, recorder = run("downgrade", REVISION_0010)
+    assert recorder.events == [
+        (
+            "drop",
+            "ck_source_records_event_source_identity",
+            "source_records",
+            "check",
+        )
+    ]

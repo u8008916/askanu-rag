@@ -77,19 +77,31 @@ def upcoming_events(
     *,
     now: datetime,
     start_at: Callable[[T], datetime],
+    end_at: Callable[[T], datetime | None] | None = None,
     stable_key: Callable[[T], str],
     limit: int = 5,
 ) -> tuple[T, ...]:
-    """Exclude past starts, sort by start/key, then apply a positive limit."""
+    """Exclude ended events, sort by start/key, then apply a positive limit."""
 
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("limit must be a positive integer")
     local_now = as_canberra(now, name="now")
+    current = []
+    for event in events:
+        start = as_canberra(start_at(event), name="event start")
+        known_end = end_at(event) if end_at is not None else None
+        current_until = (
+            as_canberra(known_end, name="event end")
+            if known_end is not None
+            else start
+        )
+        if current_until >= local_now:
+            current.append(event)
     return _sorted_events(
-        events,
+        current,
         start_at=start_at,
         stable_key=stable_key,
-        include=lambda start: start >= local_now,
+        include=lambda _start: True,
     )[:limit]
 
 
