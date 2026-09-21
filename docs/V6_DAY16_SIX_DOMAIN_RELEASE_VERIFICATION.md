@@ -9,14 +9,19 @@ release-owner actions and were not performed.
 
 ## Git and scope
 
+- PR: [#33 — Day 16: verify six-domain RAG release readiness](https://github.com/u8008916/askanu-rag/pull/33)
 - Branch: `carmen/day16-six-domain-release-verification`
-- Base and current HEAD: merged `main` at
+- Verification base/main SHA:
   `34f67acfcfb2085b347a38d7565b2aa1c1ec85b4`
-- Day 16 changes: intentionally uncommitted for Carmen review
+- PR head before this documentation-only reconciliation:
+  `87715fcf3edbc4a044b99342e33afcdfba593128`
+- Day 16 implementation and verification changes: committed and pushed to PR
+  #33
 - Scraper evidence: merged scraper `main` at `c23d4f1`
   (`Day 15: complete Events ingestion safeguards (#32)`)
 - Alembic head: exactly `20260921_0010`
-- PR: not created; nothing was committed or pushed
+- This handoff correction changes documentation only; the resulting current PR
+  head is the latest commit shown on PR #33
 - V7 work: none
 
 ## Producer-to-consumer Event gate
@@ -228,8 +233,8 @@ not Day 16 failures.
 - Deployment or production indexing: **NO**
 - Live Rubric call: **NO**
 - Scraper checkout/source modification: **NO**
-- Commit: **NO**
-- Push: **NO**
+- Day 16 implementation committed and pushed to PR #33: **YES**
+- This documentation correction committed and pushed to PR #33: **YES**
 
 ## Day 16 decision and blockers
 
@@ -241,9 +246,7 @@ Carmen-owned blockers: **none identified**.
 
 External production dependencies, not RAG RC blockers:
 
-1. Carmen review of the uncommitted Day 16 diff, followed by the normal
-   commit/push/PR workflow.
-2. Qasim/release-owner confirmation of the deployed revision, immutable image
+1. Qasim/release-owner confirmation of the deployed revision, immutable image
    digest and production migration revision before authorizing migration and
    deployment.
 
