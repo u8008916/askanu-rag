@@ -14,8 +14,10 @@ History is used to resolve meaning; every factual answer retrieves fresh approve
 
 ## V5 backend resolution order
 
-The existing request envelope is sufficient; no `session_id`, profile, intent or
-other public field is added. For each request the RAG backend applies:
+The V5 behaviour below remains the compatibility baseline. V7 adds only the
+optional, versioned `conversation_state` described in `API_CONTRACT.md`; it does
+not add a `session_id`, server-side session, profile, or public free-form intent
+field. For each request the RAG backend applies:
 
 1. validate `question`, bounded `history`, and `pending_clarification`;
 2. prefer an explicit entity/year/correction or clear topic switch in the current
@@ -47,14 +49,20 @@ follow-up uses a new repository read.
 ## Clear Chat
 Clears:
 - visible chat
-- current-session context
+- bounded natural-language history
+- typed entity state and selected entity/result
+- typed ResultSets
+- scoped constraints
+- student-stated session facts
 - pending clarification
 - restores `Try asking`
 
 The App performs those UI/request-state actions. It sends the next request with
-empty `history` and `pending_clarification: null`. The RAG service is stateless:
-it has no reset endpoint, session dictionary or persistent chat table, so that
-request cannot see the previous conversation.
+empty `history` and either omits `conversation_state` or sends the empty
+schema-version-1 state. The RAG service is stateless between requests: it has no
+reset endpoint, session dictionary, persistent chat table, account memory or
+sticky-session requirement, so that request cannot see the previous
+conversation.
 
 Does not:
 - delete source data

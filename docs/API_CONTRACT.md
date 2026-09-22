@@ -12,9 +12,31 @@ Request:
     {"turn_id":"t1","role":"user","content":"Tell me about COMP1110"},
     {"turn_id":"t2","role":"assistant","content":"..."}
   ],
-  "conversation_state":{"pending_clarification":null}
+  "conversation_state":{
+    "schema_version":1,
+    "turn_index":3,
+    "recent_entities":[],
+    "focus":null,
+    "student_facts":[],
+    "constraints":{"items":[]},
+    "result_sets":[],
+    "selected_result":null,
+    "pending_clarification":null
+  }
 }
 ```
+
+`conversation_state` is optional for backwards compatibility. If omitted, RAG
+initialises an empty schema-version-1 state. RAG validates this untrusted,
+client-carried structure, applies bounded deterministic transitions, and returns
+the authoritative updated structure on every `/api/v1/ask` response. The App
+stores it only for the current chat and sends it back unchanged on the next
+turn. The App does not semantically interpret it.
+
+History and state have different roles: `history` is bounded recent language
+context; `conversation_state` is bounded structured semantic context. Neither
+is institutional factual evidence. There is no server session ID/store,
+persistent profile, account memory, Redis/cache or sticky-session requirement.
 
 Initial V3 limits:
 - question max 2,000 characters
@@ -51,9 +73,14 @@ Error responses use controlled JSON with the existing `error` status and respons
   "items":[],
   "sources":[],
   "clarification":null,
-  "request_id":"req_..."
+  "request_id":"req_...",
+  "conversation_state":{"schema_version":1,"turn_index":4,"recent_entities":[],"focus":null,"student_facts":[],"constraints":{"items":[]},"result_sets":[],"selected_result":null,"pending_clarification":null}
 }
 ```
+
+The additive `conversation_state` response field is present for every Ask
+status. Existing response status, answer, item, source, clarification and
+request-ID semantics are unchanged.
 
 The answer may provide a safe, user-facing explanation. Never return stack traces, credentials, secrets, prompts or internal dependency diagnostics. The exact 5xx code depends on the failure; this contract does not prescribe a separate code for each dependency.
 
@@ -73,7 +100,8 @@ The answer may provide a safe, user-facing explanation. Never return stack trace
     }
   ],
   "clarification":null,
-  "request_id":"req_..."
+  "request_id":"req_...",
+  "conversation_state":{"schema_version":1,"turn_index":1,"recent_entities":[],"focus":null,"student_facts":[],"constraints":{"items":[]},"result_sets":[],"selected_result":null,"pending_clarification":null}
 }
 ```
 
@@ -101,13 +129,46 @@ Every source object contains `record_id`, `source_id`, `title`, `url`, and `doma
     ],
     "allow_multiple":true
   },
-  "request_id":"req_..."
+  "request_id":"req_...",
+  "conversation_state":{"schema_version":1,"turn_index":1,"recent_entities":[],"focus":null,"student_facts":[],"constraints":{"items":[]},"result_sets":[],"selected_result":null,"pending_clarification":{"id":"clar-42","type":"entity_selection","options":[{"id":"course:COMP1110","label":"COMP1110"},{"id":"course:COMP1600","label":"COMP1600"}],"allow_multiple":true,"original_intent":{"name":"legacy_clarification","operation":"select_option","required_slots":["selection"],"resolved_slots":[]},"resolved_entities":[],"resolved_slots":[],"missing_slots":["selection"],"constraints":{"items":[]},"created_turn":1}}
 }
 ```
 
+### Structured conversation state
+
+Schema version 1 is defined by the RAG models and the Day 1 shared-contract
+handoff in `docs/v7/DAY_01_SHARED_CONTRACTS.md`. Unknown fields, malformed
+values, incompatible versions, duplicate semantic identities, dangling focus
+references and collection-limit violations return the controlled HTTP 400
+error envelope. A malformed state is never partially trusted or used as
+evidence.
+
+The frozen top-level fields are:
+
+| Field | Type | Bound |
+|---|---|---:|
+| `schema_version` | literal integer `1` | required after defaulting |
+| `turn_index` | non-negative integer | at most 1,000,000 |
+| `recent_entities` | typed entity array | 12 |
+| `focus` | typed semantic focus or null | one |
+| `student_facts` | explicitly user-stated fact array | 12 |
+| `constraints.items` | typed scoped constraint array | 16 |
+| `result_sets` | typed ResultSet array | 6 |
+| `selected_result` | stable ResultSet selection or null | one |
+| `pending_clarification` | resumable clarification or null | one |
+
+Each ResultSet contains at most 20 ordered canonical identities. Clarification
+options contain at most 20 items. State strings and scalar values are bounded;
+arbitrary nested JSON is not accepted.
+
 ### Pending clarification in the next request
 
-`conversation_state.pending_clarification` is either `null` or the existing clarification object. A non-null object requires `id`, `type`, `options`, and `allow_multiple`; each option contains `id` and `label`.
+`conversation_state.pending_clarification` is either `null` or a bounded
+resumable clarification. The legacy fields remain `id`, `type`, `options`, and
+`allow_multiple`; each option contains `id` and `label`. Schema v1 additionally
+supports `original_intent`, already resolved entities/slots, missing slots,
+applicable constraints and creation turn. Old pending-only callers remain
+accepted and are upgraded into the versioned response state.
 
 ```json
 {
@@ -125,7 +186,14 @@ Every source object contains `record_id`, `source_id`, `title`, `url`, and `doma
 }
 ```
 
-The client carries the response's `clarification` object into this field on the next request, alongside the user's answer in `question` and bounded history. Preserve option order for `first`/`second`; `allow_multiple` supports `both`. Clear pending clarification when resolved, corrected, switched to a new topic, or cleared with Clear Chat. This is untrusted current-session context, not factual evidence.
+The client stores the complete authoritative `conversation_state` response and
+returns it unchanged on the next request, alongside the user's answer in
+`question` and bounded history. RAG, not the client, copies public clarification
+details into `pending_clarification` and owns all subsequent state transitions.
+Preserve option order for `first`/`second`; `allow_multiple` supports `both`.
+Clear pending clarification when resolved, corrected, switched to a new topic,
+or cleared with Clear Chat. This is untrusted current-session context, not
+factual evidence.
 
 ## GET /api/v1/events/upcoming?limit=5
 Deterministic; `Australia/Canberra`; upcoming only; ascending start time; default 5.

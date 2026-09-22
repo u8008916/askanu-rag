@@ -64,11 +64,13 @@ def test_valid_frozen_request_returns_complete_contract_envelope() -> None:
         "sources",
         "clarification",
         "request_id",
+        "conversation_state",
     }
     assert body["status"] == "insufficient_evidence"
     assert body["clarification"] is None
     assert body["sources"][0]["record_id"] == "courses:course:COMP1110_2026"
     assert body["request_id"].startswith("req_")
+    assert body["conversation_state"]["schema_version"] == 1
 
 
 def test_pending_clarification_request_shape_is_accepted() -> None:
