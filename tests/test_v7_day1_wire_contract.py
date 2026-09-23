@@ -4,15 +4,39 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+import askanu_rag.main as main_module
 from askanu_rag.main import MOCK_CLARIFICATION_TRIGGER, create_app
 from askanu_rag.models import (
+    ConstraintLifecycle,
+    ConstraintScope,
+    ConstraintSemanticType,
     ConversationState,
     Domain,
     EntityKind,
     EntityResolutionBasis,
     ResolvedEntity,
+    ResolvedIntent,
+    ResultSet,
+    ResultSetStatus,
+    ScopedConstraint,
+    StudentFactType,
+    StudentStatedFact,
 )
-from askanu_rag.state_transitions import advance_turn, remember_entity
+from askanu_rag.models.conversation_state import (
+    MAX_CLARIFICATION_OPTIONS,
+    MAX_RESULT_IDENTITIES,
+    MAX_RETAINED_CONSTRAINTS,
+    MAX_RETAINED_ENTITIES,
+    MAX_RETAINED_RESULT_SETS,
+    MAX_RETAINED_STUDENT_FACTS,
+)
+from askanu_rag.state_transitions import (
+    advance_turn,
+    put_constraint,
+    remember_entity,
+    remember_result_set,
+    remember_student_fact,
+)
 
 
 def payload(question: str, *, state: object = ...) -> dict[str, object]:
@@ -214,6 +238,146 @@ def test_client_collection_order_is_canonicalized_before_round_trip() -> None:
     assert response.status_code == 200
     returned = response.json()["conversation_state"]["recent_entities"]
     assert [item["canonical_id"] for item in returned] == ["COMP1110", "COMP1100"]
+
+
+def test_api_conversation_state_round_trips_for_20_turns_with_bounded_lifecycle(
+    monkeypatch,
+) -> None:
+    """Exercise the client-carried lifecycle through twenty fresh app instances.
+
+    The patched transition is a deterministic Day 1 state writer, not a natural-
+    language interpreter. It lets the wire test exercise every collection bound
+    while the client still returns each authoritative response state unchanged.
+    """
+
+    real_advance_turn = advance_turn
+    constraint_keys = [
+        (semantic_type, domain)
+        for domain in Domain
+        for semantic_type in ConstraintSemanticType
+    ][:MAX_RETAINED_CONSTRAINTS]
+    fact_keys = [
+        (semantic_type, domain)
+        for domain in Domain
+        for semantic_type in StudentFactType
+    ]
+
+    def day1_lifecycle_transition(incoming: ConversationState) -> ConversationState:
+        state = real_advance_turn(incoming)
+        turn = state.turn_index
+        state = remember_entity(
+            state,
+            ResolvedEntity(
+                domain=Domain.JOBS,
+                kind=EntityKind.JOB,
+                canonical_id=f"wire-job-{turn}",
+                canonical_name=f"Wire job {turn}",
+                source_record_id=f"jobs:job:wire-{turn}",
+                resolution_basis=EntityResolutionBasis.EXPLICIT_IDENTIFIER,
+                mentioned_turn=turn,
+            ),
+        )
+        state = remember_result_set(
+            state,
+            ResultSet(
+                result_set_id=f"rs:wire:{turn}",
+                domain=Domain.JOBS,
+                entity_kind=EntityKind.JOB,
+                ordered_canonical_ids=tuple(
+                    f"wire-job-{turn}-{index}"
+                    for index in range(1, MAX_RESULT_IDENTITIES + 1)
+                ),
+                originating_query=f"wire lifecycle turn {turn}",
+                intent=ResolvedIntent(name="discover", operation="list"),
+                created_turn=turn,
+                last_refined_turn=turn,
+                status=ResultSetStatus.RESULTS,
+            ),
+        )
+        constraint_type, constraint_domain = constraint_keys[
+            (turn - 1) % len(constraint_keys)
+        ]
+        state = put_constraint(
+            state,
+            ScopedConstraint(
+                semantic_type=constraint_type,
+                value=turn,
+                scope=ConstraintScope(domain=constraint_domain),
+                lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                introduced_turn=turn,
+            ),
+        )
+        fact_type, fact_domain = fact_keys[turn - 1]
+        return remember_student_fact(
+            state,
+            StudentStatedFact(
+                semantic_type=fact_type,
+                value=f"wire-value-{turn}",
+                domain_scope=fact_domain,
+                stated_turn=turn,
+            ),
+        )
+
+    monkeypatch.setattr(main_module, "advance_turn", day1_lifecycle_transition)
+
+    returned_state: dict[str, object] | None = None
+    for request_number in range(1, 21):
+        question = (
+            MOCK_CLARIFICATION_TRIGGER
+            if request_number == 20
+            else "Prerequisites for COMP1110"
+        )
+        request_body = payload(
+            question,
+            state=returned_state if returned_state is not None else ...,
+        )
+        assert request_body["history"] == []
+        if returned_state is None:
+            assert "conversation_state" not in request_body
+        else:
+            assert request_body["conversation_state"] is returned_state
+
+        # A new app instance per turn demonstrates that continuity requires no
+        # server-side session ID or process-local session store.
+        with TestClient(create_app()) as client:
+            response = client.post("/api/v1/ask", json=request_body)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "session_id" not in body
+        returned_state = body["conversation_state"]
+        validated = ConversationState.model_validate(returned_state)
+        assert validated.schema_version == 1
+        assert validated.turn_index == request_number
+        assert len(validated.recent_entities) <= MAX_RETAINED_ENTITIES
+        assert len(validated.result_sets) <= MAX_RETAINED_RESULT_SETS
+        assert all(
+            len(result_set.ordered_canonical_ids) <= MAX_RESULT_IDENTITIES
+            for result_set in validated.result_sets
+        )
+        assert len(validated.constraints.items) <= MAX_RETAINED_CONSTRAINTS
+        assert len(validated.student_facts) <= MAX_RETAINED_STUDENT_FACTS
+        options = (
+            validated.pending_clarification.options
+            if validated.pending_clarification is not None
+            else ()
+        )
+        assert len(options) <= MAX_CLARIFICATION_OPTIONS
+
+    assert returned_state is not None
+    final_state = ConversationState.model_validate(returned_state)
+    assert len(final_state.recent_entities) == MAX_RETAINED_ENTITIES
+    assert [entity.canonical_id for entity in final_state.recent_entities] == [
+        f"wire-job-{turn}" for turn in range(20, 8, -1)
+    ]
+    assert len(final_state.result_sets) == MAX_RETAINED_RESULT_SETS
+    assert [result.result_set_id for result in final_state.result_sets] == [
+        f"rs:wire:{turn}" for turn in range(20, 14, -1)
+    ]
+    assert len(final_state.constraints.items) == MAX_RETAINED_CONSTRAINTS
+    assert len(final_state.student_facts) == MAX_RETAINED_STUDENT_FACTS
+    assert final_state.pending_clarification is not None
+    assert len(final_state.pending_clarification.options) == 2
 
 
 def test_client_state_is_not_used_as_factual_evidence() -> None:

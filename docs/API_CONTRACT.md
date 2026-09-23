@@ -143,7 +143,8 @@ references and collection-limit violations return the controlled HTTP 400
 error envelope. A malformed state is never partially trusted or used as
 evidence.
 
-The frozen top-level fields are:
+The implemented Day 1 schema-version-1 top-level fields submitted for PM review
+are:
 
 | Field | Type | Bound |
 |---|---|---:|

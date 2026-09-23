@@ -1,13 +1,15 @@
-# V7 Day 1 shared conversational contracts
+# V7 Day 1 shared conversational contract review candidate
 
 Date: 2026-09-22
 Repository: `askanu-rag`
 Branch: `carmen/v7-day1-shared-contracts`
 Base: `91109b2268671bfc2b8f98c8fb0ef79f1c53325f`
 
-This artifact freezes the RAG-owned semantic schema and deterministic state
-transitions for V7. It is deliberately not the Day 2 natural-language resolver
-or production orchestration implementation.
+This artifact records Carmen's implementation-complete candidate for the
+RAG-owned semantic schema and deterministic state transitions for V7. It is
+ready for PM review; Qasim owns the final shared-contract freeze, the Day 1
+GO/HOLD decision and authorization to begin Day 2. It is deliberately not the
+Day 2 natural-language resolver or production orchestration implementation.
 
 ## V6 to V7 gap inventory
 
@@ -49,7 +51,7 @@ types, duplicate semantic keys, dangling references or exceeded bounds returns
 the existing controlled HTTP 400 envelope. RAG does not partially salvage an
 invalid object.
 
-## Frozen primitives
+## Shared primitives ready for PM review
 
 ### ConversationState
 
@@ -196,7 +198,7 @@ complete supported population was evaluated.
 
 ## Resolver precedence and ambiguity
 
-Frozen order:
+Proposed resolver order for PM review:
 
 1. explicit exact entity/name/identifier in the current turn;
 2. explicit compatible entity type/domain in the current turn;
@@ -266,7 +268,11 @@ Golden semantic transitions cover:
 
 Additional tests cover deterministic ResultSet eviction, constraint overflow,
 state-not-evidence, UNKNOWN missing-evidence requirements, authoritative-first
-RetrievalPlan order and wire validation.
+RetrievalPlan order and wire validation. The wire suite also performs 20
+sequential `/api/v1/ask` requests through fresh app instances: the first omits
+state, every later request sends the preceding authoritative state unchanged,
+and every response is schema-validated while exercising the exact collection
+bounds and deterministic entity/ResultSet eviction.
 
 ## Clear Chat
 
@@ -302,9 +308,10 @@ catered?` then has no Warrumbul referent and must clarify or fail safely.
 - No retrieval optimization, BM25/FTS, embedding change, reranking, framework
   migration, schema migration, deployment or production action is included.
 
-## Day 2 implementation handoff
+## Day 2 implementation handoff candidate
 
-Day 2 should implement these exact interfaces without changing the Day 1
+Day 2 remains on hold pending PM review/freeze. After that approval, it should
+implement these exact interfaces without changing the reviewed Day 1
 contracts:
 
 1. `src/askanu_rag/interpretation.py`
@@ -330,3 +337,13 @@ contracts:
 The App integration contract is intentionally narrow: store current-chat state,
 return it unchanged, and discard it with Clear Chat. Any App-specific storage or
 transport detail is Ben-owned and cannot alter these semantics.
+
+## Author-side status
+
+- V7 Day 1 RAG implementation: **READY FOR PM REVIEW**
+- Shared conversational contracts: **READY FOR PM REVIEW**
+- Day 2 RAG implementation: **HOLD pending PM review/freeze**
+- Carmen-owned blockers: none identified
+
+Passing implementation evidence does not self-approve the shared contract.
+Qasim owns the final freeze, Day 1 GO/HOLD and Day 2 GO decisions.
