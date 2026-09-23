@@ -4,6 +4,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
+from askanu_rag.models.conversation_state import ConversationState
+
 MAX_QUESTION_CHARS = 2_000
 MAX_HISTORY_TURNS = 10
 
@@ -32,14 +34,10 @@ class Clarification(ContractModel):
     allow_multiple: bool
 
 
-class ConversationState(ContractModel):
-    pending_clarification: Clarification | None
-
-
 class AskRequest(ContractModel):
     question: str = Field(max_length=MAX_QUESTION_CHARS)
     history: list[HistoryTurn] = Field(max_length=MAX_HISTORY_TURNS)
-    conversation_state: ConversationState
+    conversation_state: ConversationState = Field(default_factory=ConversationState)
 
 
 class Source(ContractModel):
@@ -55,6 +53,7 @@ class ResponseBody(ContractModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
     sources: list[Source] = Field(default_factory=list)
     request_id: str
+    conversation_state: ConversationState = Field(default_factory=ConversationState)
 
 
 class OkResponse(ResponseBody):

@@ -44,6 +44,13 @@ Freeze conversational intelligence contracts and prove the state model is execut
 
 PR/SHA; behavioural tests; state/evidence traces; full regression; known unsupported cases; no-prod-action/deploy confirmation.
 
+The executable RAG-owned contract review candidate and conditional Day 2
+interface handoff are recorded in
+[`DAY_01_SHARED_CONTRACTS.md`](DAY_01_SHARED_CONTRACTS.md). Carmen's
+implementation is ready for PM review; Qasim owns the final shared-contract
+freeze, Day 1 GO/HOLD and Day 2 GO decisions. Day 2 remains on hold until that
+review/freeze is complete.
+
 ## Copy-paste AI kickoff prompt
 
 You are Carmen working on AskANU V7 in the RAG/backend lane. Start from latest reviewed main and the frozen V7 behavioural contract. Implement only Day 1's scope through shared primitives. Do not invent unsupported institutional facts, silent source/schema/API changes, domain-specific state engines, or magic-wording shortcuts. Show planned files, behavioural impact, tests, risks and dependencies before implementation. Finish with exact evidence that Qasim can review against today's gate.

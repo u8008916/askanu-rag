@@ -50,6 +50,7 @@ from askanu_rag.models import (
     OffTopicResponse,
     UpcomingEventsResponse,
 )
+from askanu_rag.models.conversation_state import ConversationState
 from askanu_rag.retrieval import (
     CourseProgramReader,
     CourseProgramRepository,
@@ -67,6 +68,12 @@ from askanu_rag.scholarship_queries import (
     ScholarshipQueryService,
     is_plausible_scholarship_question,
 )
+from askanu_rag.state_transitions import (
+    advance_turn,
+    canonicalize_conversation_state,
+    pending_from_public_clarification,
+    set_pending_clarification,
+)
 
 MOCK_CLARIFICATION_TRIGGER = "mock:needs_clarification"
 SAFE_ERROR_ANSWER = "The request could not be completed."
@@ -82,14 +89,23 @@ def new_request_id() -> str:
 
 
 def controlled_error_response(
-    status_code: int, request_id: str | None = None
+    status_code: int,
+    request_id: str | None = None,
+    conversation_state: ConversationState | None = None,
+    *,
+    include_conversation_state: bool = False,
 ) -> JSONResponse:
     """Build the frozen error envelope for controlled HTTP failures."""
 
     payload = ErrorResponse(
-        answer=SAFE_ERROR_ANSWER, request_id=request_id or new_request_id()
+        answer=SAFE_ERROR_ANSWER,
+        request_id=request_id or new_request_id(),
+        conversation_state=conversation_state or ConversationState(),
     )
-    return JSONResponse(status_code=status_code, content=payload.model_dump(mode="json"))
+    content = payload.model_dump(mode="json")
+    if not include_conversation_state:
+        content.pop("conversation_state")
+    return JSONResponse(status_code=status_code, content=content)
 
 
 def _request_id(request: Request) -> str:
@@ -108,6 +124,24 @@ def _validated_upstream_request_id(request: Request) -> str:
 
 
 def _mark_response(request: Request, response: AskResponse) -> AskResponse:
+    state = getattr(request.state, "conversation_state", ConversationState())
+    if response.clarification is not None:
+        clarification = response.clarification
+        state = set_pending_clarification(
+            state,
+            pending_from_public_clarification(
+                clarification_id=clarification.id,
+                clarification_type=clarification.type,
+                options=tuple(
+                    (option.id, option.label) for option in clarification.options
+                ),
+                allow_multiple=clarification.allow_multiple,
+                turn=state.turn_index,
+            ),
+        )
+    else:
+        state = set_pending_clarification(state, None)
+    response = response.model_copy(update={"conversation_state": state})
     request.state.response_status = response.status
     return response
 
@@ -231,19 +265,32 @@ def create_app(
     ) -> JSONResponse:
         status_code = 413 if _is_oversized_input(exc.errors()) else 400
         _request.state.response_status = "error"
-        return controlled_error_response(status_code, _request_id(_request))
+        return controlled_error_response(
+            status_code,
+            _request_id(_request),
+            include_conversation_state=_request.url.path == "/api/v1/ask",
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error_handler(
         _request: Request, exc: StarletteHTTPException
     ) -> JSONResponse:
         _request.state.response_status = "error"
-        return controlled_error_response(exc.status_code, _request_id(_request))
+        return controlled_error_response(
+            exc.status_code,
+            _request_id(_request),
+            include_conversation_state=_request.url.path == "/api/v1/ask",
+        )
 
     @app.exception_handler(Exception)
     async def internal_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
         _request.state.response_status = "error"
-        return controlled_error_response(500, _request_id(_request))
+        return controlled_error_response(
+            500,
+            _request_id(_request),
+            getattr(_request.state, "conversation_state", None),
+            include_conversation_state=_request.url.path == "/api/v1/ask",
+        )
 
     @app.exception_handler(SynthesisError)
     async def synthesis_error_handler(
@@ -251,7 +298,12 @@ def create_app(
     ) -> JSONResponse:
         # Handled explicitly so ASGI does not log provider exception tracebacks.
         _request.state.response_status = "error"
-        return controlled_error_response(502, _request_id(_request))
+        return controlled_error_response(
+            502,
+            _request_id(_request),
+            getattr(_request.state, "conversation_state", None),
+            include_conversation_state=True,
+        )
 
     @app.exception_handler(RepositoryUnavailableError)
     async def repository_error_handler(
@@ -260,7 +312,12 @@ def create_app(
         # A known dependency failure is handled below ServerErrorMiddleware so
         # Uvicorn does not print a redundant exception traceback.
         _request.state.response_status = "error"
-        return controlled_error_response(500, _request_id(_request))
+        return controlled_error_response(
+            500,
+            _request_id(_request),
+            getattr(_request.state, "conversation_state", None),
+            include_conversation_state=_request.url.path == "/api/v1/ask",
+        )
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -298,6 +355,12 @@ def create_app(
 
     @app.post("/api/v1/ask", response_model=AskResponse)
     async def ask(payload: AskRequest, request: Request) -> AskResponse:
+        # The client carries this bounded, untrusted structure between turns.
+        # RAG validates it and returns the authoritative next state; no server
+        # session or factual evidence is created from it.
+        request.state.conversation_state = advance_turn(
+            canonicalize_conversation_state(payload.conversation_state)
+        )
         # Temporary Day 1 mock hook. It is not query-planning behaviour.
         if payload.question == MOCK_CLARIFICATION_TRIGGER:
             return _mark_response(

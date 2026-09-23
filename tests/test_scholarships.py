@@ -127,6 +127,7 @@ def ask(repo, question, *, history=(), pending=None, vector=None, dense=None):
         "sources",
         "clarification",
         "request_id",
+        "conversation_state",
     }
     return response.json()
 

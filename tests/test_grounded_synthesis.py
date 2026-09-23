@@ -80,7 +80,7 @@ def ask(fake, records=None, question=QUESTION, timeout=30, history=None):
         )
     body = response.json()
     TypeAdapter(AskResponse).validate_python(body)
-    assert len(body) == 6
+    assert len(body) == 7
     assert body["request_id"].startswith("req_")
     return response
 

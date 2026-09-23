@@ -54,7 +54,7 @@ def post(repo, question, vector=None, gemini=None):
         response = client.post("/api/v1/ask", json={"question": question, "history": [], "conversation_state": {"pending_clarification": None}})
     body = response.json()
     TypeAdapter(AskResponse).validate_python(body)
-    assert len(body) == 6 and body["request_id"].startswith("req_")
+    assert len(body) == 7 and body["request_id"].startswith("req_")
     return response
 
 
