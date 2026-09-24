@@ -154,7 +154,11 @@ class ResolvedIntent(StateModel):
 
 class ConstraintSemanticType(str, Enum):
     MAX_PRICE = "max_price"
-    TEMPORAL_WINDOW = "temporal_window"
+    # Accepted only so existing schema-version-1 client state still validates.
+    # Day 2 interpretation never emits this legacy combined dimension.
+    LEGACY_TEMPORAL_WINDOW = "temporal_window"
+    DATE_WINDOW = "date_window"
+    TIME_OF_DAY_WINDOW = "time_of_day_window"
     STUDENT_TYPE = "student_type"
     PROGRAM = "program"
     STUDY_LEVEL = "study_level"
@@ -529,7 +533,25 @@ class QueryInterpretation(StateModel):
         default_factory=tuple, max_length=MAX_CLARIFICATION_OPTIONS
     )
     intent: ResolvedIntent | None = None
+    explicit_constraints: ConstraintSet = Field(default_factory=ConstraintSet)
+    inherited_constraints: ConstraintSet = Field(default_factory=ConstraintSet)
     constraints: ConstraintSet = Field(default_factory=ConstraintSet)
+    entity_origin: Literal[
+        "none", "explicit", "typed_reference", "retained_state", "result_set"
+    ] = "none"
+    reference_origin: Literal[
+        "none", "prior_typed_state", "prior_result_set", "pending_clarification"
+    ] = "none"
+    referenced_result_set_id: Identifier | None = None
+    ambiguity: Literal[
+        "none", "domain", "entity", "result_set", "missing_reference", "missing_slot"
+    ] = "none"
+    replaced_constraint_types: tuple[ConstraintSemanticType, ...] = Field(
+        default_factory=tuple, max_length=MAX_RETAINED_CONSTRAINTS
+    )
+    surviving_constraint_types: tuple[ConstraintSemanticType, ...] = Field(
+        default_factory=tuple, max_length=MAX_RETAINED_CONSTRAINTS
+    )
     missing_slots: tuple[SemanticName, ...] = Field(
         default_factory=tuple, max_length=12
     )
@@ -542,4 +564,16 @@ class QueryInterpretation(StateModel):
             raise ValueError("possible domains must be unique")
         if (self.possible_domains or self.possible_entities or self.missing_slots) and not self.requires_clarification:
             raise ValueError("unresolved alternatives or slots require clarification")
+        if self.ambiguity != "none" and not self.requires_clarification:
+            raise ValueError("ambiguity requires clarification")
+        explicit_types = {
+            item.semantic_type for item in self.explicit_constraints.items
+        }
+        inherited_types = {
+            item.semantic_type for item in self.inherited_constraints.items
+        }
+        if explicit_types.intersection(inherited_types):
+            raise ValueError(
+                "explicit constraints must replace inherited constraints of the same type"
+            )
         return self
