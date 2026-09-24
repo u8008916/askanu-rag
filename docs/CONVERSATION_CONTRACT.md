@@ -46,6 +46,31 @@ copied wholesale into the Gemini prompt, never treated as a source of course
 requirements or URLs, and is not written to default request logs. Every factual
 follow-up uses a new repository read.
 
+## V7 transport boundary
+
+The client-carried design is bounded at the wire as well as by semantic
+collection counts. Serialized `conversation_state` is limited to 128 KiB and
+serialized history to 96 KiB. A question remains limited to 2,000 Unicode code
+points and also has an 8 KiB UTF-8 defense-in-depth guard. The complete Ask
+request is limited to 256 KiB, matching the App proxy contract target.
+
+History retains at most ten turns. Each `turn_id` is limited to 128 characters
+and each `content` value to 10,000 characters; the aggregate 96 KiB history
+limit still applies. Neither history nor structured state is truncated. RAG
+returns only state that fits the 128 KiB round-trip limit, and any request that
+exceeds an applicable size bound uses the controlled 413 response.
+
+For aggregate component limits, RAG measures deterministic compact JSON encoded
+as UTF-8 with non-ASCII characters unescaped, non-finite numbers disallowed,
+`,`/`:` separators and sorted object keys. The complete-body limit measures raw
+HTTP bytes before parsing. These size rules do not change conversation meaning,
+state retention, statelessness, source authority or evidence handling.
+
+Because valid UTF-8 code points use at most four bytes, the current 2,000-code-
+point question cap implies a maximum of 8,000 UTF-8 bytes. The separate 8,192-
+byte validator is intentionally redundant today and preserves the shared
+transport invariant if the character limit changes in the future.
+
 ## Clear Chat
 Clears:
 - visible chat

@@ -2,9 +2,18 @@
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from askanu_rag.models.conversation_state import ConversationState
+from askanu_rag.transport_limits import (
+    HISTORY_MAX_BYTES,
+    HISTORY_TURN_CONTENT_MAX_CHARS,
+    HISTORY_TURN_ID_MAX_CHARS,
+    QUESTION_MAX_UTF8_BYTES,
+    STATE_MAX_BYTES,
+    validate_serialized_limit,
+    validate_utf8_text_limit,
+)
 
 MAX_QUESTION_CHARS = 2_000
 MAX_HISTORY_TURNS = 10
@@ -17,9 +26,9 @@ class ContractModel(BaseModel):
 
 
 class HistoryTurn(ContractModel):
-    turn_id: str
+    turn_id: str = Field(max_length=HISTORY_TURN_ID_MAX_CHARS)
     role: Literal["user", "assistant"]
-    content: str
+    content: str = Field(max_length=HISTORY_TURN_CONTENT_MAX_CHARS)
 
 
 class ClarificationOption(ContractModel):
@@ -39,6 +48,41 @@ class AskRequest(ContractModel):
     history: list[HistoryTurn] = Field(max_length=MAX_HISTORY_TURNS)
     conversation_state: ConversationState = Field(default_factory=ConversationState)
 
+    @field_validator("question")
+    @classmethod
+    def question_fits_utf8_budget(cls, value: str) -> str:
+        return validate_utf8_text_limit(
+            value, QUESTION_MAX_UTF8_BYTES, "question"
+        )
+
+    @field_validator("history", mode="before")
+    @classmethod
+    def submitted_history_fits_serialized_budget(cls, value: Any) -> Any:
+        return validate_serialized_limit(value, HISTORY_MAX_BYTES, "history")
+
+    @field_validator("history")
+    @classmethod
+    def history_fits_serialized_budget(
+        cls, value: list[HistoryTurn]
+    ) -> list[HistoryTurn]:
+        return validate_serialized_limit(value, HISTORY_MAX_BYTES, "history")
+
+    @field_validator("conversation_state", mode="before")
+    @classmethod
+    def submitted_state_fits_serialized_budget(cls, value: Any) -> Any:
+        return validate_serialized_limit(
+            value, STATE_MAX_BYTES, "conversation_state"
+        )
+
+    @field_validator("conversation_state")
+    @classmethod
+    def state_fits_serialized_budget(
+        cls, value: ConversationState
+    ) -> ConversationState:
+        return validate_serialized_limit(
+            value, STATE_MAX_BYTES, "conversation_state"
+        )
+
 
 class Source(ContractModel):
     record_id: str
@@ -54,6 +98,15 @@ class ResponseBody(ContractModel):
     sources: list[Source] = Field(default_factory=list)
     request_id: str
     conversation_state: ConversationState = Field(default_factory=ConversationState)
+
+    @field_validator("conversation_state")
+    @classmethod
+    def state_fits_serialized_budget(
+        cls, value: ConversationState
+    ) -> ConversationState:
+        return validate_serialized_limit(
+            value, STATE_MAX_BYTES, "conversation_state"
+        )
 
 
 class OkResponse(ResponseBody):

@@ -38,9 +38,36 @@ context; `conversation_state` is bounded structured semantic context. Neither
 is institutional factual evidence. There is no server session ID/store,
 persistent profile, account memory, Redis/cache or sticky-session requirement.
 
-Initial V3 limits:
-- question max 2,000 characters
-- history max 10 prior turns
+Frozen request transport limits:
+
+- question max 2,000 Unicode characters/code points and max 8,192 UTF-8 bytes;
+- history max 10 prior turns and max 98,304 serialized UTF-8 bytes;
+- each `HistoryTurn.turn_id` max 128 characters;
+- each `HistoryTurn.content` max 10,000 characters;
+- `conversation_state` max 131,072 serialized UTF-8 bytes; and
+- complete `/api/v1/ask` request body max 262,144 bytes as received.
+
+Binary units are used (`1 KiB = 1,024 bytes`). Component serialization size
+for `history` and `conversation_state` is measured using compact JSON with
+UTF-8, `ensure_ascii=False`, no non-finite numbers, separators `,` and `:`, and
+lexicographically sorted object keys. Complete-body size is the raw HTTP body
+byte count before JSON parsing. The App proxy shares the 262,144-byte complete
+request target so every production-valid Ask request can traverse App to RAG.
+
+No over-limit component or body is truncated. It is rejected through the
+controlled HTTP 413 path. RAG also refuses to emit an authoritative
+`conversation_state` above 131,072 bytes, so every returned state remains
+eligible for the next client-carried request.
+
+The 8 KiB question byte guard is intentionally defense-in-depth under the
+current character cap. A valid Unicode code point uses at most four UTF-8
+bytes, so 2,000 code points can use at most 8,000 bytes and therefore cannot
+exceed 8,192 bytes. The separate byte validator keeps the transport contract
+stable if the character cap changes later; it does not imply an impossible
+case where a question is both at most 2,000 code points and above 8,192 bytes.
+
+Other initial V3 operational limits:
+
 - output target about 800 model tokens
 - backend timeout target about 30 seconds
 
@@ -60,7 +87,7 @@ No Relief Mate confidence labels.
 |---|---|
 | Malformed JSON | 400 |
 | Request validation failure other than oversized input | 400 |
-| Oversized input, including question/history exceeding the documented limits | 413 |
+| Oversized input, including any documented component or complete-body limit | 413 |
 | Rate limit exceeded | 429 |
 | DB, model or internal dependency failure | Controlled 5xx |
 
