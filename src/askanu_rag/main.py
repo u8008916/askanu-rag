@@ -15,7 +15,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, CourseQueryService
 from askanu_rag.config import Settings
+from askanu_rag.conversation_orchestrator import orchestrate_turn
 from askanu_rag.conversation import resolve_current_session
+from askanu_rag.domain_resolution import (
+    DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    ProblemDomainResolver,
+)
+from askanu_rag.entity_resolution import (
+    DEFAULT_ENTITY_CATALOGUE,
+    DEFAULT_SAFE_ENTITY_ALIASES,
+    EntityCatalogue,
+    SafeEntityAlias,
+)
 from askanu_rag.database import DatabaseConfigurationError, RepositoryUnavailableError
 from askanu_rag.gemini import GeminiSynthesisClient
 from askanu_rag.event_queries import (
@@ -69,8 +80,6 @@ from askanu_rag.scholarship_queries import (
     is_plausible_scholarship_question,
 )
 from askanu_rag.state_transitions import (
-    advance_turn,
-    canonicalize_conversation_state,
     pending_from_public_clarification,
     set_pending_clarification,
 )
@@ -139,8 +148,9 @@ def _mark_response(request: Request, response: AskResponse) -> AskResponse:
                 turn=state.turn_index,
             ),
         )
-    else:
-        state = set_pending_clarification(state, None)
+    # Without a public clarification, preserve the orchestrator-owned pending
+    # lifecycle.  It has already completed, superseded, or retained the
+    # operation deterministically for this turn.
     response = response.model_copy(update={"conversation_state": state})
     request.state.response_status = response.status
     return response
@@ -171,6 +181,9 @@ def create_app(
     jobs_today_provider: Callable[[], date] | None = None,
     events_now_provider: Callable[[], datetime] | None = None,
     max_merged_candidates: int = 10,
+    entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
+    entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
+    problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
@@ -358,9 +371,16 @@ def create_app(
         # The client carries this bounded, untrusted structure between turns.
         # RAG validates it and returns the authoritative next state; no server
         # session or factual evidence is created from it.
-        request.state.conversation_state = advance_turn(
-            canonicalize_conversation_state(payload.conversation_state)
+        conversation_turn = orchestrate_turn(
+            payload.question,
+            payload.history,
+            payload.conversation_state,
+            entity_catalogue=entity_catalogue,
+            entity_aliases=entity_aliases,
+            problem_domain_resolver=problem_domain_resolver,
         )
+        request.state.conversation_state = conversation_turn.state
+        request.state.query_interpretation = conversation_turn.interpretation
         # Temporary Day 1 mock hook. It is not query-planning behaviour.
         if payload.question == MOCK_CLARIFICATION_TRIGGER:
             return _mark_response(

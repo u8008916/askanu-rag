@@ -114,6 +114,22 @@ def clear_conversation_state() -> ConversationState:
     return ConversationState()
 
 
+def set_semantic_focus(
+    state: ConversationState, focus: SemanticFocus | None
+) -> ConversationState:
+    """Set validated focus without changing any retained typed memory."""
+
+    return _replace(state, focus=focus)
+
+
+def set_constraints(
+    state: ConversationState, constraints: ConstraintSet
+) -> ConversationState:
+    """Replace the validated constraint collection without changing other state."""
+
+    return _replace(state, constraints=constraints)
+
+
 def remember_entity(
     state: ConversationState,
     entity: ResolvedEntity,

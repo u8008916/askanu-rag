@@ -45,6 +45,45 @@ Implement bounded session state, entity resolution, intent, constraints, and cla
 
 PR/SHA; behavioural tests; state/evidence traces; full regression; known unsupported cases; no-prod-action/deploy confirmation.
 
+## Frozen Day 2 clarification and implementation
+
+Qasim's 2026-09-24 clarification freezes:
+
+- independent `DATE_WINDOW` and `TIME_OF_DAY_WINDOW` constraints;
+- additive internal `QueryInterpretation` provenance for explicit/inherited
+  constraints and typed-state/ResultSet references; and
+- intent families `LOOKUP`, `FACT_LOOKUP`, `DISCOVER`, `COMPARE`,
+  `CLARIFICATION_RESPONSE`, with operations `REFINE_RESULTS`,
+  `CONTINUE_RESULTS`, and `RETURN_TOPIC`.
+
+Implementation lives in:
+
+- `src/askanu_rag/interpretation.py` — deterministic domain/entity/intent/
+  constraint interpretation, bounded safe aliases and user-stated context;
+- `src/askanu_rag/conversation_orchestrator.py` — authoritative state writes,
+  clarification lifecycle, corrections and typed ResultSet selections;
+- `src/askanu_rag/retrieval_planning.py` — contract-only retrieval handoff; and
+- `src/askanu_rag/evidence_selection.py` — approved-evidence bundle boundary.
+
+The external `conversation_state` schema version, shape and retention bounds are
+unchanged. Retrieval ranking, BM25/FTS, embeddings, reranking and framework
+selection remain Day 3 work.
+
+### Targeted review corrections
+
+- Canonical identity resolution accepts an injected approved entity catalogue;
+  bounded aliases and typo handling remain separate understanding-layer inputs.
+- A replaceable deterministic problem-language resolver complements lexical
+  domain signals. Ambiguous multi-domain matches clarify rather than guess.
+- Day 2 acceptance includes both deterministic 10-turn and 20-turn
+  context/state journeys.
+- When explicit `DATE_WINDOW` or `TIME_OF_DAY_WINDOW` meets legacy
+  `temporal_window`, overlapping legacy authority is removed while a recognised
+  independent temporal component is converted and preserved.
+
+These corrections do not add retrieval optimisation or change the V1 state
+envelope, source authority, evidence rules, migrations or production state.
+
 ## Copy-paste AI kickoff prompt
 
 You are Carmen working on AskANU V7 in the RAG/backend lane. Start from latest reviewed main and the frozen V7 behavioural contract. Implement only Day 2's scope through shared primitives. Do not invent unsupported institutional facts, silent source/schema/API changes, domain-specific state engines, or magic-wording shortcuts. Show planned files, behavioural impact, tests, risks and dependencies before implementation. Finish with exact evidence that Qasim can review against today's gate.

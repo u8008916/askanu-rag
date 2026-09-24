@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-import askanu_rag.main as main_module
+import askanu_rag.conversation_orchestrator as orchestrator_module
 from askanu_rag.main import MOCK_CLARIFICATION_TRIGGER, create_app
 from askanu_rag.models import (
     ConstraintLifecycle,
@@ -58,7 +58,7 @@ def test_old_caller_may_omit_conversation_state_and_receives_v1_state() -> None:
     returned = response.json()["conversation_state"]
     assert returned["schema_version"] == 1
     assert returned["turn_index"] == 1
-    assert returned["recent_entities"] == []
+    assert returned["recent_entities"][0]["canonical_id"] == "COMP1110"
 
 
 def test_legacy_pending_only_shape_remains_accepted() -> None:
@@ -104,7 +104,10 @@ def test_valid_structured_state_round_trips_through_rag_owned_transition() -> No
     assert response.status_code == 200
     returned = response.json()["conversation_state"]
     assert returned["turn_index"] == 2
-    assert returned["recent_entities"][0]["canonical_id"] == "warrumbul-lodge"
+    assert {item["canonical_id"] for item in returned["recent_entities"]} == {
+        "COMP1110",
+        "warrumbul-lodge",
+    }
 
 
 def test_response_clarification_is_copied_into_authoritative_state() -> None:
@@ -318,14 +321,16 @@ def test_api_conversation_state_round_trips_for_20_turns_with_bounded_lifecycle(
             ),
         )
 
-    monkeypatch.setattr(main_module, "advance_turn", day1_lifecycle_transition)
+    monkeypatch.setattr(
+        orchestrator_module, "advance_turn", day1_lifecycle_transition
+    )
 
     returned_state: dict[str, object] | None = None
     for request_number in range(1, 21):
         question = (
             MOCK_CLARIFICATION_TRIGGER
             if request_number == 20
-            else "Prerequisites for COMP1110"
+            else "hello"
         )
         request_body = payload(
             question,

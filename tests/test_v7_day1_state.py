@@ -257,7 +257,7 @@ def test_golden_07_explicit_constraint_replaces_conflicting_value() -> None:
     state = put_constraint(
         state,
         scoped_constraint(
-            ConstraintSemanticType.TEMPORAL_WINDOW,
+            ConstraintSemanticType.DATE_WINDOW,
             "this_week",
             Domain.JOBS,
             1,
@@ -267,7 +267,7 @@ def test_golden_07_explicit_constraint_replaces_conflicting_value() -> None:
     state = put_constraint(
         state,
         scoped_constraint(
-            ConstraintSemanticType.TEMPORAL_WINDOW,
+            ConstraintSemanticType.DATE_WINDOW,
             "next_month",
             Domain.JOBS,
             2,
