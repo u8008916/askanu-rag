@@ -122,6 +122,14 @@ def set_semantic_focus(
     return _replace(state, focus=focus)
 
 
+def set_constraints(
+    state: ConversationState, constraints: ConstraintSet
+) -> ConversationState:
+    """Replace the validated constraint collection without changing other state."""
+
+    return _replace(state, constraints=constraints)
+
+
 def remember_entity(
     state: ConversationState,
     entity: ResolvedEntity,

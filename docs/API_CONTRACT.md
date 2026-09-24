@@ -168,7 +168,11 @@ the schema-version-1 envelope nor its collection bounds. It allows a scoped
 date and time-of-day rule to coexist and be replaced independently. Existing
 schema-version-1 state carrying `temporal_window` remains accepted and
 round-trippable for wire compatibility, but the Day 2 interpreter never emits
-that legacy combined value.
+that legacy combined value. On the first explicit split-temporal refinement,
+the overlapping legacy meaning is superseded and the legacy entry is removed.
+Any recognised independent date or time component is preserved as its split
+equivalent, so the returned state has one deterministic authority per temporal
+dimension.
 
 ### Pending clarification in the next request
 

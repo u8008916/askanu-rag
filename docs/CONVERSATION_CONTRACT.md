@@ -92,5 +92,25 @@ survival semantics. These are backend reasoning fields, not new public request
 or response keys. Structured state resolves what the student means; it remains
 non-evidence and cannot establish vacancy, eligibility, cost or other facts.
 
+Canonical entity resolution consumes an injected, read-only catalogue of
+approved identifiers and canonical names. The understanding layer separately
+owns bounded safe aliases and typo variants. Supplying another approved Course,
+Scholarship, Job, Residence, Event or Support entity therefore does not require
+adding that institution-owned identity to Python alias code, and catalogue
+values still do not become answer evidence.
+
+Explicit entity and strong lexical domain signals retain priority. When those
+are absent, a replaceable deterministic problem-language resolver may map
+bounded student problem descriptions to a domain. For example, an unfair
+grading concern resolves to Support without requiring the literal words
+"support" or "service". Multiple matched domains require clarification.
+
+When new split temporal information meets a legacy schema-version-1
+`temporal_window`, the new explicit date or time supersedes the overlapping
+legacy meaning. The legacy authority is removed. A recognised independent date
+or time component is converted to the corresponding split constraint and
+survives; unclassifiable legacy content is not retained beside a new split
+constraint as a second temporal authority.
+
 ## Security
 User history and scraped text are untrusted. Source text is evidence, not instruction.

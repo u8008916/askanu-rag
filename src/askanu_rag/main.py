@@ -17,6 +17,16 @@ from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, CourseQuery
 from askanu_rag.config import Settings
 from askanu_rag.conversation_orchestrator import orchestrate_turn
 from askanu_rag.conversation import resolve_current_session
+from askanu_rag.domain_resolution import (
+    DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    ProblemDomainResolver,
+)
+from askanu_rag.entity_resolution import (
+    DEFAULT_ENTITY_CATALOGUE,
+    DEFAULT_SAFE_ENTITY_ALIASES,
+    EntityCatalogue,
+    SafeEntityAlias,
+)
 from askanu_rag.database import DatabaseConfigurationError, RepositoryUnavailableError
 from askanu_rag.gemini import GeminiSynthesisClient
 from askanu_rag.event_queries import (
@@ -171,6 +181,9 @@ def create_app(
     jobs_today_provider: Callable[[], date] | None = None,
     events_now_provider: Callable[[], datetime] | None = None,
     max_merged_candidates: int = 10,
+    entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
+    entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
+    problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
@@ -362,6 +375,9 @@ def create_app(
             payload.question,
             payload.history,
             payload.conversation_state,
+            entity_catalogue=entity_catalogue,
+            entity_aliases=entity_aliases,
+            problem_domain_resolver=problem_domain_resolver,
         )
         request.state.conversation_state = conversation_turn.state
         request.state.query_interpretation = conversation_turn.interpretation

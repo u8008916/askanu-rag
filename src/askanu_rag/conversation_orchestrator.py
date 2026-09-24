@@ -5,6 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from askanu_rag.domain_resolution import (
+    DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    ProblemDomainResolver,
+)
+from askanu_rag.entity_resolution import (
+    DEFAULT_ENTITY_CATALOGUE,
+    DEFAULT_SAFE_ENTITY_ALIASES,
+    EntityCatalogue,
+    SafeEntityAlias,
+)
 from askanu_rag.interpretation import (
     extract_student_facts,
     interpret_turn,
@@ -28,8 +38,12 @@ from askanu_rag.state_transitions import (
     resolve_pending_clarification,
     resolve_result_reference,
     select_result,
+    set_constraints,
     set_pending_clarification,
     set_semantic_focus,
+)
+from askanu_rag.temporal_compatibility import (
+    normalise_legacy_temporal_constraints,
 )
 
 
@@ -62,6 +76,10 @@ def orchestrate_turn(
     question: str,
     history: Sequence[HistoryTurn],
     state: ConversationState,
+    *,
+    entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
+    entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
+    problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
 ) -> ConversationTurn:
     """Validate, interpret and deterministically update one conversational turn."""
 
@@ -78,7 +96,20 @@ def orchestrate_turn(
         )
 
     updated = advance_turn(canonicalize_conversation_state(state))
-    interpretation = interpret_turn(question, history, updated)
+    interpretation = interpret_turn(
+        question,
+        history,
+        updated,
+        entity_catalogue=entity_catalogue,
+        entity_aliases=entity_aliases,
+        problem_domain_resolver=problem_domain_resolver,
+    )
+    temporal_normalisation = normalise_legacy_temporal_constraints(
+        updated.constraints,
+        interpretation.explicit_constraints,
+    )
+    if temporal_normalisation.removed_legacy:
+        updated = set_constraints(updated, temporal_normalisation.constraints)
     action = ClarificationAction.NO_PENDING
 
     if updated.pending_clarification is not None:

@@ -10,6 +10,17 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from askanu_rag.domain_resolution import (
+    DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    ProblemDomainResolver,
+)
+from askanu_rag.entity_resolution import (
+    DEFAULT_ENTITY_CATALOGUE,
+    DEFAULT_SAFE_ENTITY_ALIASES,
+    EntityCatalogue,
+    SafeEntityAlias,
+    resolve_explicit_entity,
+)
 from askanu_rag.models import (
     ConstraintLifecycle,
     ConstraintScope,
@@ -33,9 +44,11 @@ from askanu_rag.state_transitions import (
     resolve_entity_reference,
     resolve_result_reference,
 )
+from askanu_rag.temporal_compatibility import (
+    normalise_legacy_temporal_constraints,
+)
 
 _SPACE_RE = re.compile(r"\s+")
-_COURSE_CODE_RE = re.compile(r"\bCOMP\s*(\d{4}[A-Z]?)\b", re.IGNORECASE)
 _PRICE_RE = re.compile(r"(?:under|below|less than|max(?:imum)?(?: of)?|<)\s*\$?\s*(\d{2,6})", re.IGNORECASE)
 _AFTER_RE = re.compile(r"\bafter\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 _BEFORE_RE = re.compile(r"\bbefore\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
@@ -43,30 +56,6 @@ _BETWEEN_RE = re.compile(
     r"\bbetween\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+and\s+"
     r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
     re.IGNORECASE,
-)
-
-_ALIASES: tuple[tuple[tuple[str, ...], Domain, EntityKind, str, str], ...] = (
-    (
-        ("structured programming", "structurd programming", "structured programing"),
-        Domain.COURSES,
-        EntityKind.COURSE,
-        "COMP1110",
-        "Structured Programming",
-    ),
-    (
-        ("warrumbul lodge", "warrumbul"),
-        Domain.ACCOMMODATION,
-        EntityKind.RESIDENCE,
-        "warrumbul-lodge",
-        "Warrumbul Lodge",
-    ),
-    (
-        ("bruce hall",),
-        Domain.ACCOMMODATION,
-        EntityKind.RESIDENCE,
-        "bruce-hall",
-        "Bruce Hall",
-    ),
 )
 
 _TYPED_REFERENCES: tuple[tuple[tuple[str, ...], Domain, EntityKind], ...] = (
@@ -95,32 +84,6 @@ def _entity(
         resolution_basis=basis,
         mentioned_turn=turn,
     )
-
-
-def _explicit_entity(question: str, turn: int) -> ResolvedEntity | None:
-    code = _COURSE_CODE_RE.search(question)
-    if code:
-        canonical = f"COMP{code.group(1).upper()}"
-        return _entity(
-            domain=Domain.COURSES,
-            kind=EntityKind.COURSE,
-            canonical_id=canonical,
-            name=canonical,
-            turn=turn,
-            basis=EntityResolutionBasis.EXPLICIT_IDENTIFIER,
-        )
-    normalised = _normalise(question)
-    for aliases, domain, kind, canonical_id, name in _ALIASES:
-        if any(alias in normalised for alias in aliases):
-            return _entity(
-                domain=domain,
-                kind=kind,
-                canonical_id=canonical_id,
-                name=name,
-                turn=turn,
-                basis=EntityResolutionBasis.SAFE_ALIAS,
-            )
-    return None
 
 
 def _typed_reference(question: str) -> tuple[Domain, EntityKind] | None:
@@ -308,24 +271,59 @@ def extract_student_facts(question: str, turn: int) -> tuple[StudentStatedFact, 
     return tuple(facts)
 
 
-def interpret_turn(question: str, history: Sequence[HistoryTurn], state: ConversationState) -> QueryInterpretation:
+def interpret_turn(
+    question: str,
+    history: Sequence[HistoryTurn],
+    state: ConversationState,
+    *,
+    entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
+    entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
+    problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+) -> QueryInterpretation:
     """Interpret one already-numbered turn without mutating structured state."""
 
     del history  # bounded language history is intentionally not factual authority
     turn = state.turn_index
     normalised = _normalise(question)
-    explicit = _explicit_entity(question, turn)
+    explicit_resolution = resolve_explicit_entity(
+        question,
+        turn,
+        catalogue=entity_catalogue,
+        aliases=entity_aliases,
+    )
+    explicit = explicit_resolution.entity
     typed = _typed_reference(question)
     domain_return = _is_domain_return(question)
     if domain_return:
         typed = None
-    domain = explicit.domain if explicit else _domain_from_words(question)
-    if domain is None and state.focus is not None and any(
+    lexical_domain = _domain_from_words(question)
+    problem_resolution = (
+        problem_domain_resolver.resolve(question)
+        if explicit is None and lexical_domain is None
+        else None
+    )
+    domain = (
+        explicit.domain
+        if explicit
+        else lexical_domain
+        or (problem_resolution.domain if problem_resolution is not None else None)
+    )
+    possible_domains = (
+        problem_resolution.possible_domains
+        if problem_resolution is not None
+        else ()
+    )
+    if (
+        domain is None
+        and not possible_domains
+        and state.focus is not None
+        and any(
         token in normalised
         for token in (
             "after ", "before ", "today", "tomorrow", "any more",
             "cost", "apply", "available", "vacancy", "prerequisite", "units",
             "where", "when", "close", "catered", "is it", "its ",
+        )
         )
     ):
         domain = state.focus.domain
@@ -335,8 +333,14 @@ def interpret_turn(question: str, history: Sequence[HistoryTurn], state: Convers
     entity_origin = "explicit" if explicit else "none"
     reference_origin = "none"
     referenced_result_set_id = None
-    requires_clarification = False
-    ambiguity = "none"
+    requires_clarification = bool(
+        explicit_resolution.possible_entities or possible_domains
+    )
+    ambiguity = (
+        "entity"
+        if explicit_resolution.possible_entities
+        else "domain" if possible_domains else "none"
+    )
 
     if result_reference is not None:
         expected_kind = typed[1] if typed else None
@@ -411,6 +415,11 @@ def interpret_turn(question: str, history: Sequence[HistoryTurn], state: Convers
         if domain is not None
         else ConstraintSet()
     )
+    temporal_normalisation = normalise_legacy_temporal_constraints(
+        inherited_before_override,
+        explicit_constraints,
+    )
+    inherited_before_override = temporal_normalisation.constraints
     explicit_types = {item.semantic_type for item in explicit_constraints.items}
     inherited = ConstraintSet(
         items=tuple(
@@ -419,7 +428,18 @@ def interpret_turn(question: str, history: Sequence[HistoryTurn], state: Convers
             if item.semantic_type not in explicit_types
         )
     )
-    merged, replaced, surviving = _merge_constraints(explicit_constraints, inherited_before_override)
+    merged, replaced, surviving = _merge_constraints(
+        explicit_constraints,
+        inherited_before_override,
+    )
+    if temporal_normalisation.removed_legacy:
+        replaced = tuple(
+            sorted(
+                set(replaced)
+                | {ConstraintSemanticType.LEGACY_TEMPORAL_WINDOW},
+                key=lambda item: item.value,
+            )
+        )
     refining = bool(explicit_constraints.items) and (
         bool(inherited_before_override.items)
         or any(item.domain == domain for item in state.result_sets)
@@ -452,14 +472,20 @@ def interpret_turn(question: str, history: Sequence[HistoryTurn], state: Convers
 
     clarification_response = intent.name == "clarification_response"
     explicit_new = not clarification_response and (
-        explicit is not None or domain is not None or "actually" in normalised
+        explicit is not None
+        or domain is not None
+        or bool(possible_domains)
+        or bool(explicit_resolution.possible_entities)
+        or "actually" in normalised
     )
     if clarification_response:
         reference_origin = "pending_clarification"
 
     return QueryInterpretation(
         domain=domain,
+        possible_domains=possible_domains,
         entity=entity,
+        possible_entities=explicit_resolution.possible_entities,
         intent=intent,
         explicit_constraints=explicit_constraints,
         inherited_constraints=inherited,

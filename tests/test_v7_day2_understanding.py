@@ -1,10 +1,24 @@
 """V7 Day 2 deterministic context and understanding acceptance."""
 
+from fastapi.testclient import TestClient
+
 from askanu_rag.conversation_orchestrator import orchestrate_turn
+from askanu_rag.domain_resolution import (
+    PatternProblemDomainResolver,
+    ProblemDomainSignal,
+)
+from askanu_rag.entity_resolution import (
+    CanonicalEntity,
+    InMemoryEntityCatalogue,
+)
 from askanu_rag.evidence_selection import build_evidence_bundle
+from askanu_rag.main import create_app
 from askanu_rag.models import (
     AnswerState,
+    ConstraintLifecycle,
+    ConstraintScope,
     ConstraintSemanticType,
+    ConstraintSet,
     ConversationState,
     Domain,
     EntityKind,
@@ -15,6 +29,8 @@ from askanu_rag.models import (
     ResolvedIntent,
     ResultSet,
     ResultSetStatus,
+    ScopedConstraint,
+    SemanticFocus,
     StudentFactType,
 )
 from askanu_rag.retrieval_planning import build_retrieval_plan
@@ -63,6 +79,62 @@ def test_external_v1_legacy_temporal_value_still_round_trips() -> None:
     } == {ConstraintSemanticType.DATE_WINDOW}
 
 
+def legacy_temporal_state(value: str) -> ConversationState:
+    return ConversationState(
+        turn_index=1,
+        focus=SemanticFocus(domain=Domain.EVENTS),
+        constraints=ConstraintSet(
+            items=(
+                ScopedConstraint(
+                    semantic_type=ConstraintSemanticType.LEGACY_TEMPORAL_WINDOW,
+                    value=value,
+                    scope=ConstraintScope(domain=Domain.EVENTS),
+                    lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                    introduced_turn=1,
+                ),
+            )
+        ),
+    )
+
+
+def test_explicit_date_replaces_legacy_date_and_preserves_legacy_time() -> None:
+    turn = orchestrate_turn(
+        "Actually tomorrow",
+        (),
+        legacy_temporal_state("today after 5pm"),
+    )
+
+    assert values(turn.state, Domain.EVENTS) == {
+        ConstraintSemanticType.DATE_WINDOW: "tomorrow",
+        ConstraintSemanticType.TIME_OF_DAY_WINDOW: "after 17:00",
+    }
+    assert ConstraintSemanticType.LEGACY_TEMPORAL_WINDOW not in values(
+        turn.state, Domain.EVENTS
+    )
+    assert turn.interpretation.replaced_constraint_types == (
+        ConstraintSemanticType.LEGACY_TEMPORAL_WINDOW,
+    )
+
+
+def test_explicit_time_replaces_legacy_time_and_preserves_legacy_date() -> None:
+    turn = orchestrate_turn(
+        "Only before 2pm",
+        (),
+        legacy_temporal_state("today after 5pm"),
+    )
+
+    assert values(turn.state, Domain.EVENTS) == {
+        ConstraintSemanticType.DATE_WINDOW: "today",
+        ConstraintSemanticType.TIME_OF_DAY_WINDOW: "before 14:00",
+    }
+    assert ConstraintSemanticType.LEGACY_TEMPORAL_WINDOW not in values(
+        turn.state, Domain.EVENTS
+    )
+    assert turn.interpretation.replaced_constraint_types == (
+        ConstraintSemanticType.LEGACY_TEMPORAL_WINDOW,
+    )
+
+
 def retained_entity(kind: EntityKind, identifier: str, name: str, turn: int) -> ResolvedEntity:
     domain = {
         EntityKind.COURSE: Domain.COURSES,
@@ -106,6 +178,105 @@ def event_results(turn: int = 1) -> ResultSet:
         last_refined_turn=turn,
         status=ResultSetStatus.RESULTS,
     )
+
+
+def test_injected_catalogue_resolves_all_domains_without_python_alias_edits() -> None:
+    entities = (
+        CanonicalEntity(Domain.COURSES, EntityKind.COURSE, "MATH1005", "Discrete Mathematical Models"),
+        CanonicalEntity(Domain.SCHOLARSHIPS, EntityKind.SCHOLARSHIP, "scholarship-x", "Example Scholars Award"),
+        CanonicalEntity(Domain.JOBS, EntityKind.JOB, "job-x", "Example Student Role"),
+        CanonicalEntity(Domain.ACCOMMODATION, EntityKind.RESIDENCE, "fenner-hall", "Fenner Hall"),
+        CanonicalEntity(Domain.EVENTS, EntityKind.EVENT, "event-x", "Example Public Lecture"),
+        CanonicalEntity(Domain.SUPPORT, EntityKind.SUPPORT_SERVICE, "academic-help", "Academic Help Service"),
+    )
+    catalogue = InMemoryEntityCatalogue(entities)
+
+    for expected in entities:
+        by_name = orchestrate_turn(
+            f"Tell me about {expected.canonical_name}",
+            (),
+            ConversationState(),
+            entity_catalogue=catalogue,
+        )
+        by_identifier = orchestrate_turn(
+            f"Tell me about {expected.canonical_id}",
+            (),
+            ConversationState(),
+            entity_catalogue=catalogue,
+        )
+        assert by_name.interpretation.entity.canonical_id == expected.canonical_id
+        assert by_name.interpretation.entity.resolution_basis.value == "canonical_name"
+        assert by_identifier.interpretation.entity.canonical_id == expected.canonical_id
+        assert by_identifier.interpretation.entity.resolution_basis.value == "explicit_identifier"
+
+
+def test_api_uses_injected_approved_entity_catalogue() -> None:
+    catalogue = InMemoryEntityCatalogue(
+        (
+            CanonicalEntity(
+                Domain.COURSES,
+                EntityKind.COURSE,
+                "approved-course-x",
+                "Algebra Alpha",
+            ),
+        )
+    )
+    with TestClient(create_app(entity_catalogue=catalogue)) as client:
+        response = client.post(
+            "/api/v1/ask",
+            json={"question": "Tell me about Algebra Alpha", "history": []},
+        )
+
+    assert response.status_code == 200
+    retained = response.json()["conversation_state"]["recent_entities"]
+    assert retained[0]["canonical_id"] == "approved-course-x"
+    assert retained[0]["resolution_basis"] == "canonical_name"
+
+
+def test_multiple_explicit_entity_identifiers_clarify_instead_of_guessing() -> None:
+    turn = orchestrate_turn(
+        "Compare COMP1110 and COMP2120",
+        (),
+        ConversationState(),
+    )
+    assert turn.interpretation.entity is None
+    assert {
+        entity.canonical_id for entity in turn.interpretation.possible_entities
+    } == {"COMP1110", "COMP2120"}
+    assert turn.interpretation.requires_clarification is True
+    assert turn.interpretation.ambiguity == "entity"
+
+
+def test_problem_language_routes_unfair_grading_concern_to_support() -> None:
+    turn = orchestrate_turn(
+        "I think I was graded unfairly on an assignment, who should I talk to?",
+        (),
+        ConversationState(),
+    )
+    assert turn.interpretation.domain == Domain.SUPPORT
+    assert turn.interpretation.requires_clarification is False
+
+
+def test_ambiguous_problem_language_clarifies_instead_of_guessing() -> None:
+    resolver = PatternProblemDomainResolver(
+        (
+            ProblemDomainSignal("support_advice", Domain.SUPPORT, (r"\badvice\b",)),
+            ProblemDomainSignal("course_advice", Domain.COURSES, (r"\badvice\b",)),
+        )
+    )
+    turn = orchestrate_turn(
+        "I need advice",
+        (),
+        ConversationState(),
+        problem_domain_resolver=resolver,
+    )
+    assert turn.interpretation.domain is None
+    assert turn.interpretation.possible_domains == (
+        Domain.COURSES,
+        Domain.SUPPORT,
+    )
+    assert turn.interpretation.requires_clarification is True
+    assert turn.interpretation.ambiguity == "domain"
 
 
 def test_temporal_date_and_time_refine_independently() -> None:
@@ -261,6 +432,66 @@ def test_ten_turn_cross_domain_understanding_journey() -> None:
         ConstraintSemanticType.DATE_WINDOW: "tomorrow",
         ConstraintSemanticType.TIME_OF_DAY_WINDOW: "after 17:00",
     }
+
+
+def test_twenty_turn_context_understanding_lifecycle() -> None:
+    questions = (
+        "Structured Programming",
+        "What are its prerequisites?",
+        "Actually, what about COMP2120?",
+        "How many units is it?",
+        "Tell me about Warrumbul",
+        "Is it catered?",
+        "What events are on today?",
+        "Only after 5pm",
+        "Any more?",
+        "Show scholarships",
+        "Tell me about the second scholarship",
+        "When does it close?",
+        "Back to the course, how many units is it?",
+        "Back to the events",
+        "Actually tomorrow",
+        "Tell me about Bruce Hall",
+        "Back to the events",
+        "Where is the second job?",
+        "Actually, tell me about COMP1100",
+        "Back to the course, what are its prerequisites?",
+    )
+    state = ConversationState()
+    turns = []
+    for turn_number, question in enumerate(questions, start=1):
+        turn = orchestrate_turn(question, (), state)
+        turns.append(turn)
+        state = turn.state
+        if turn_number == 8:
+            state = remember_result_set(state, event_results(turn=turn_number))
+        elif turn_number == 10:
+            state = remember_result_set(state, scholarship_results(turn=turn_number))
+
+    assert state.turn_index == 20
+    assert turns[1].interpretation.entity.canonical_id == "COMP1110"
+    assert turns[3].interpretation.entity.canonical_id == "COMP2120"
+    assert turns[5].interpretation.entity.canonical_id == "warrumbul-lodge"
+    assert turns[8].interpretation.intent.operation == "continue_results"
+    assert turns[8].interpretation.referenced_result_set_id == "rs:events:today"
+    assert turns[10].selected_canonical_ids == ("scholarship-b",)
+    assert turns[11].interpretation.entity.canonical_id == "scholarship-b"
+    assert turns[12].interpretation.intent.operation == "return_topic"
+    assert turns[12].interpretation.entity.canonical_id == "COMP2120"
+    assert turns[12].interpretation.constraints.items == ()
+    assert turns[13].interpretation.domain == Domain.EVENTS
+    assert turns[17].interpretation.requires_clarification is True
+    assert turns[18].clarification_action.value == "SUPERSEDED"
+    assert turns[19].interpretation.entity.canonical_id == "COMP1100"
+    assert values(state, Domain.EVENTS) == {
+        ConstraintSemanticType.DATE_WINDOW: "tomorrow",
+        ConstraintSemanticType.TIME_OF_DAY_WINDOW: "after 17:00",
+    }
+    assert len(state.recent_entities) <= 12
+    assert len({(item.kind, item.canonical_id) for item in state.recent_entities}) == len(
+        state.recent_entities
+    )
+    assert len(state.result_sets) <= 6
 
 
 def test_explicit_request_interrupts_pending_clarification() -> None:
