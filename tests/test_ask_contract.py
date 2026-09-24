@@ -92,7 +92,7 @@ def test_pending_clarification_request_shape_is_accepted() -> None:
     assert response.status_code == 200
 
 
-def test_history_content_has_no_undocumented_per_message_limit() -> None:
+def test_history_content_accepts_the_documented_10000_character_limit() -> None:
     payload = valid_request()
     payload["history"] = [
         {"turn_id": "t1", "role": "user", "content": "x" * 10_000}

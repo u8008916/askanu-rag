@@ -83,6 +83,10 @@ from askanu_rag.state_transitions import (
     pending_from_public_clarification,
     set_pending_clarification,
 )
+from askanu_rag.transport_limits import (
+    ASK_REQUEST_MAX_BYTES,
+    state_fits_transport,
+)
 
 MOCK_CLARIFICATION_TRIGGER = "mock:needs_clarification"
 SAFE_ERROR_ANSWER = "The request could not be completed."
@@ -106,10 +110,13 @@ def controlled_error_response(
 ) -> JSONResponse:
     """Build the frozen error envelope for controlled HTTP failures."""
 
+    safe_state = conversation_state or ConversationState()
+    if not state_fits_transport(safe_state):
+        safe_state = ConversationState()
     payload = ErrorResponse(
         answer=SAFE_ERROR_ANSWER,
         request_id=request_id or new_request_id(),
-        conversation_state=conversation_state or ConversationState(),
+        conversation_state=safe_state,
     )
     content = payload.model_dump(mode="json")
     if not include_conversation_state:
@@ -151,20 +158,27 @@ def _mark_response(request: Request, response: AskResponse) -> AskResponse:
     # Without a public clarification, preserve the orchestrator-owned pending
     # lifecycle.  It has already completed, superseded, or retained the
     # operation deterministically for this turn.
+    if not state_fits_transport(state):
+        raise RuntimeError("authoritative conversation_state exceeds transport limit")
     response = response.model_copy(update={"conversation_state": state})
     request.state.response_status = response.status
     return response
 
 
 def _is_oversized_input(errors: Sequence[dict[str, Any]]) -> bool:
-    """Identify only the two frozen size-limit validation failures."""
+    """Identify frozen component size-limit validation failures."""
 
     for error in errors:
         location = tuple(error.get("loc", ()))
         error_type = error.get("type")
+        if error_type == "bytes_too_long" and location[:1] == ("body",):
+            return True
         if location == ("body", "question") and error_type == "string_too_long":
             return True
-        if location == ("body", "history") and error_type == "too_long":
+        if location[:2] == ("body", "history") and error_type in {
+            "string_too_long",
+            "too_long",
+        }:
             return True
     return False
 
@@ -250,6 +264,16 @@ def create_app(
         started = perf_counter()
         status_code = 500
         try:
+            if request.method == "POST" and request.url.path == "/api/v1/ask":
+                body = await request.body()
+                if len(body) > ASK_REQUEST_MAX_BYTES:
+                    status_code = 413
+                    request.state.response_status = "error"
+                    return controlled_error_response(
+                        413,
+                        request.state.request_id,
+                        include_conversation_state=True,
+                    )
             response = await call_next(request)
             status_code = response.status_code
             return response

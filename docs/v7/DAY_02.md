@@ -84,6 +84,27 @@ selection remain Day 3 work.
 These corrections do not add retrieval optimisation or change the V1 state
 envelope, source authority, evidence rules, migrations or production state.
 
+### Final shared transport contract
+
+The App-to-RAG Ask boundary is frozen at 256 KiB for the complete raw request.
+Within it, compact serialized history is limited to 96 KiB, compact serialized
+`conversation_state` to 128 KiB, and the question to 2,000 Unicode code points
+plus an 8 KiB UTF-8 defense-in-depth guard. One history turn allows a 128-
+character `turn_id` and 10,000-character `content`; the existing ten-turn limit
+and aggregate history budget remain authoritative.
+
+Component measurement uses deterministic compact JSON (`ensure_ascii=False`,
+finite JSON values only, `,`/`:` separators, sorted object keys) encoded as
+UTF-8. Complete-body measurement uses the raw HTTP bytes before parsing. No
+field is truncated. Oversize requests follow the controlled 413 path, and RAG
+must not emit authoritative state above 128 KiB.
+
+The question byte guard is deliberately redundant under the current character
+cap: 2,000 valid Unicode code points require at most 8,000 UTF-8 bytes, below
+8,192. Keeping both validators protects the shared transport contract if the
+character cap changes later. This correction adds no conversation semantic,
+retrieval, migration, server-session or production behaviour.
+
 ## Copy-paste AI kickoff prompt
 
 You are Carmen working on AskANU V7 in the RAG/backend lane. Start from latest reviewed main and the frozen V7 behavioural contract. Implement only Day 2's scope through shared primitives. Do not invent unsupported institutional facts, silent source/schema/API changes, domain-specific state engines, or magic-wording shortcuts. Show planned files, behavioural impact, tests, risks and dependencies before implementation. Finish with exact evidence that Qasim can review against today's gate.
