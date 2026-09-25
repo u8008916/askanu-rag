@@ -12,8 +12,11 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from askanu_rag.config import Settings
+from askanu_rag.evidence_selection import classify_result_set_status
 from askanu_rag.gemini import GeminiSynthesisClient
+from askanu_rag.models import ResultSetStatus
 from askanu_rag.retrieval.embeddings import (
+    DeterministicFakeEmbedder,
     EmbeddingProviderError,
     GeminiEmbeddingProvider,
 )
@@ -30,7 +33,13 @@ from askanu_rag.retrieval.reranking import (
     RerankerUnavailableError,
 )
 from askanu_rag.retrieval.units import RetrievalUnitBuilder
-from askanu_rag.retrieval.vector import EmbeddingIndexService, InMemoryVectorRepository
+from askanu_rag.retrieval.semantic import LocalBm25Retriever
+from askanu_rag.retrieval.vector import (
+    EmbeddingIndexService,
+    InMemoryVectorRepository,
+    PersistedEmbedding,
+    PersistedSemanticRetriever,
+)
 from askanu_rag.synthesis import SynthesisError, assemble_context
 from test_grounded_synthesis import QUESTION, record
 
@@ -114,6 +123,29 @@ def test_production_factory_cannot_substitute_test_fake(monkeypatch):
     assert vector_constructor.call_args.kwargs["target_version"] == settings.embedding_version
     assert app_constructor.call_args.kwargs["vector_retriever"] is vector
     assert app_constructor.call_args.kwargs["reranker"] is reranker
+
+
+def test_production_missing_gemini_key_disables_dense_without_fake(monkeypatch):
+    import askanu_rag.main as main
+
+    settings = Settings(
+        environment="production",
+        database_url=SecretStr("postgresql://test.invalid/askanu"),
+    )
+    application = object()
+    monkeypatch.setattr(Settings, "from_environment", classmethod(lambda cls: settings))
+    monkeypatch.setattr(main, "create_configured_repository", lambda _settings: object())
+    real_provider = MagicMock(side_effect=AssertionError("real provider must not start without a key"))
+    vector_constructor = MagicMock(side_effect=AssertionError("dense retriever must remain disabled"))
+    app_constructor = MagicMock(return_value=application)
+    monkeypatch.setattr(main, "GeminiEmbeddingProvider", real_provider)
+    monkeypatch.setattr(main, "PersistedSemanticRetriever", vector_constructor)
+    monkeypatch.setattr(main, "create_app", app_constructor)
+
+    assert main.create_configured_app() is application
+    real_provider.assert_not_called()
+    vector_constructor.assert_not_called()
+    assert app_constructor.call_args.kwargs["vector_retriever"] is None
 
 
 def test_structure_aware_chunking_v2_is_bounded_deterministic_and_provenanced():
@@ -265,7 +297,6 @@ def test_cohere_payload_is_bounded_and_contains_no_application_metadata(monkeypa
 def test_backfill_accounts_for_reuse_without_reembedding():
     source = record()
     repository = InMemoryVectorRepository([source])
-    from askanu_rag.retrieval.embeddings import DeterministicFakeEmbedder
 
     provider = DeterministicFakeEmbedder(version="v1")
     service = EmbeddingIndexService(repository, provider)
@@ -277,6 +308,106 @@ def test_backfill_accounts_for_reuse_without_reembedding():
 
     assert (report.total, report.reused, report.attempted, report.failed) == (1, 1, 0, 0)
     assert repository.readiness(embedding_version=service.target_version).dense_ready == 1
+
+
+def test_three_unit_hit_cap_does_not_truncate_dense_indexing_or_sparse_content():
+    content = "\n\n".join(
+        f"Section {index}: " + (f"topic{index} " * 45)
+        for index in range(1, 7)
+    )
+    source = record(content=content)
+    builder = RetrievalUnitBuilder(max_chars=256, max_units=20)
+    units = builder.build(source)
+    assert len(units) > 3
+
+    class ConstantProvider:
+        model = "constant-test"
+        version = "v1"
+
+        def __init__(self):
+            self.document_calls = 0
+
+        def embed_documents(self, texts):
+            self.document_calls += len(texts)
+            return tuple((1.0, 0.0) for _text in texts)
+
+        def embed_query(self, _text):
+            return (1.0, 0.0)
+
+    repository = InMemoryVectorRepository([source])
+    provider = ConstantProvider()
+    indexer = EmbeddingIndexService(
+        repository,
+        provider,
+        unit_builder=builder,
+        dimension=2,
+    )
+
+    assert indexer.index_record(source) == len(units)
+    assert provider.document_calls == len(units)
+    assert len(repository.rows) == len(units)
+
+    indexed = repository.records[source.record_id].model_copy(update={"status": "UNCHANGED"})
+    repository.records[source.record_id] = indexed
+    hits = PersistedSemanticRetriever(
+        repository,
+        provider,
+        top_k=1,
+        min_score=0.5,
+        max_units_per_record=3,
+        dimension=2,
+        target_version=indexer.target_version,
+    ).search("topic6", domain="courses", allowed_records=(indexed,))
+
+    assert len(hits) == 1
+    assert len(hits[0].retrieval_unit_ids) == 3
+    sparse = LocalBm25Retriever().search(
+        "topic6", (indexed,), top_k=1, min_score=0.2
+    )
+    assert sparse and sparse[0].record_id == indexed.record_id
+
+
+def test_partial_dense_population_is_incomplete_not_empty_and_sparse_still_works():
+    content = "\n\n".join(
+        f"Section {index}: " + (f"evidence{index} " * 45)
+        for index in range(1, 6)
+    )
+    source = record(content=content)
+    builder = RetrievalUnitBuilder(max_chars=256, max_units=20)
+    units = builder.build(source)
+    assert len(units) > 1
+
+    repository = InMemoryVectorRepository([source])
+    repository.rows[
+        (source.record_id, units[0].retrieval_unit_id, units[0].retrieval_content_hash, "model", "v1")
+    ] = PersistedEmbedding(
+        source.record_id,
+        units[0].retrieval_unit_id,
+        source.content_hash,
+        units[0].retrieval_content_hash,
+        "model",
+        "v1",
+        (1.0, 0.0),
+    )
+
+    readiness = repository.readiness(embedding_version="v1")
+    assert (readiness.eligible, readiness.dense_ready, readiness.incomplete) == (1, 0, 1)
+    assert repository.search(
+        (1.0, 0.0),
+        domain="courses",
+        embedding_model="model",
+        embedding_version="v1",
+        top_k=1,
+        min_score=0.5,
+        max_units_per_record=3,
+    ) == ()
+    assert classify_result_set_status(
+        (), population_complete=readiness.incomplete == 0
+    ) == ResultSetStatus.INCOMPLETE
+    sparse = LocalBm25Retriever().search(
+        "evidence5", (source,), top_k=1, min_score=0.2
+    )
+    assert sparse and sparse[0].record_id == source.record_id
 
 
 def test_generation_retries_only_transient_transport_errors(monkeypatch):

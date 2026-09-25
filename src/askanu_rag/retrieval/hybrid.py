@@ -161,9 +161,11 @@ class SharedHybridRetriever:
                 )
                 selected = tuple(valid[item.index] for item in ranked)
                 reranker_used = True
-            except RerankerUnavailableError:
+            except RerankerUnavailableError as exc:
                 fallback = True
-                error_category = "transient"
+                error_category = (
+                    exc.diagnostic.category if exc.diagnostic is not None else "transient"
+                )
                 selected = valid[:top_n]
         LOGGER.info(
             "hybrid_selection sparse_status=%s dense_status=%s "
