@@ -50,7 +50,7 @@ def test_sdk_receives_minimal_separated_context_and_structured_output_config(mon
     args = constructor.call_args.kwargs
     assert args["vertexai"] is False
     assert args["http_options"].base_url == "https://generativelanguage.googleapis.com"
-    assert args["http_options"].timeout == 30000
+    assert args["http_options"].timeout == 20000
     assert args["http_options"].retry_options.attempts == 1
     call = generate.call_args.kwargs
     assert call["model"] == DEFAULT_GEMINI_MODEL
@@ -60,7 +60,8 @@ def test_sdk_receives_minimal_separated_context_and_structured_output_config(mon
     assert config.response_mime_type == "application/json"
     assert config.response_json_schema["additionalProperties"] is False
     assert config.response_json_schema["properties"]["answer"]["enum"] == list(context.allowed_answers)
-    assert config.max_output_tokens == 800
+    assert config.max_output_tokens == 4096
+    assert config.thinking_config.thinking_level == "LOW"
     assert config.tools is None
     assert config.automatic_function_calling.disable
     sync_manager.__exit__.assert_called_once()
@@ -187,7 +188,7 @@ def test_cloud_run_supplied_port_is_honoured(monkeypatch):
 
 @pytest.mark.parametrize("values", [
     {"timeout_seconds": 0}, {"timeout_seconds": 31},
-    {"max_output_tokens": 0}, {"max_output_tokens": 801}, {"model": ""},
+    {"max_output_tokens": 0}, {"max_output_tokens": 4097}, {"model": ""},
     {"port": 0}, {"port": 65_536}, {"log_level": "verbose"},
 ])
 def test_settings_reject_unbounded_or_empty_config(values):

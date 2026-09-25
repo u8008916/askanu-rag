@@ -80,11 +80,12 @@ def make_job(
     )
 
 
-def ask(repo, question: str, *, pending=None, history=(), vector=None):
+def ask(repo, question: str, *, pending=None, history=(), vector=None, sparse=None):
     with TestClient(
         create_app(
             repo,
             jobs_today_provider=lambda: TODAY,
+            semantic_retriever=sparse,
             vector_retriever=vector,
         )
     ) as client:
@@ -583,7 +584,8 @@ def test_semantic_current_jobs_rank_over_complete_hard_filtered_pool():
         vector=FixedVector(),
     )
 
-    assert [item["record_id"] for item in body["items"]] == [best.record_id]
+    assert best.record_id in {item["record_id"] for item in body["items"]}
+    assert len(body["items"]) <= 5
     assert closed.record_id not in {source["record_id"] for source in body["sources"]}
 
 def test_status_null_without_deadline_is_never_promoted_to_current():
@@ -616,7 +618,7 @@ def test_general_topic_jobs_reach_semantic_current_retrieval(question):
             assert query == question
             assert domain == "jobs"
             assert allowed_records == (job,)
-            assert top_k == 10
+            assert top_k == 20
             assert min_score == 0.2
             return (VectorHit(job, 0.9, ("whole",)),)
 
@@ -641,11 +643,16 @@ def test_semantic_job_failure_never_falls_back_to_arbitrary_current_list(failure
                 return (VectorHit(first, 0.1, ("whole",)),)
             return ()
 
+    class EmptySparse:
+        def search(self, *_args, **_kwargs):
+            return ()
+
     vector = None if failure == "unavailable" else FailingOrIrrelevantVector()
     body = ask(
         CourseProgramRepository([first, second]),
         "What current ANU jobs are related to cybersecurity?",
         vector=vector,
+        sparse=EmptySparse(),
     )
 
     assert body["status"] == "insufficient_evidence"

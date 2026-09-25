@@ -247,10 +247,10 @@ without modifying the process environment. Tests do not read the local file.
 
 ```dotenv
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-3.5-flash-lite
+GENERATION_MODEL=gemini-3.8-flash
 COURSE_RECORDS_PATH=
-MAX_OUTPUT_TOKENS=800
-REQUEST_TIMEOUT_SECONDS=30
+GENERATION_MAX_OUTPUT_TOKENS=4096
+GENERATION_TIMEOUT_SECONDS=20
 ```
 
 Set the legacy-named `COURSE_RECORDS_PATH` to an existing shared schema-v1
@@ -315,23 +315,40 @@ with its official HTTPS host. Returned IDs are rehydrated exclusively from that
 prefiltered snapshot; foreign IDs, wrong-year/type results and invalid/low scores
 cannot supply facts or URLs.
 
-The default `LocalTfidfRetriever` uses in-memory sparse TF-IDF vectors and cosine
-similarity over stored title + normalized content. It is a **lexical vector
-baseline**, not a pretrained semantic embedding model: synonyms/paraphrases with
-no lexical overlap can yield insufficient evidence. It performs no network calls,
-does not index history or model answers, and does not persist/change source hashes
-or index status. The small interface permits a future provider-backed replacement
-without changing identity/filter ownership. It is not a production pgvector deployment.
+The default `LocalBm25Retriever` is the V7 sparse candidate retriever. It
+runs ephemeral BM25 over the prefiltered stored title + normalized content using
+`k1=1.2`, `b=0.75`, Unicode case-folding and `[a-z0-9]+` tokens, with no stemming,
+stop-word removal or field weighting. Every positive score is eligible; raw BM25
+scores are internal ranking signals, not normalized confidence or product truth.
+Ties are resolved by canonical record ID. It performs no network calls, does not
+index history or model answers, and does not persist/change source hashes or index
+status. `LocalTfidfRetriever` remains
+only for explicit historical benchmark comparison and injected compatibility tests.
+
+The final configured production path combines BM25 Top-20 with Gemini
+`gemini-embedding-2` 768-dimensional pgvector Top-20, applies RRF (`k=60`) to a
+maximum 20 candidates, removes only conclusive hard-constraint violations and
+uses Cohere `rerank-v4.0-fast` to choose at most five relevance candidates.
+Transient reranker failure preserves deterministic RRF order. Exact/structured
+identity, source authority, provenance, currentness and evidence truth remain
+application-owned and cannot be displaced by this ranking path.
 
 Optional environment settings, using the existing configuration path:
 
 ```dotenv
-SEMANTIC_TOP_K=3
+SPARSE_CANDIDATE_K=20
+DENSE_CANDIDATE_K=20
+FUSED_CANDIDATE_K=20
+RRF_K=60
+RERANK_TOP_N=5
 SEMANTIC_MIN_SCORE=0.2
 ```
 
-Top-k is bounded to 1–3; score threshold is greater than 0 and at most 1. These
-are local operational defaults, not public contract/confidence guarantees.
+Candidate K is bounded to 1–20 and final reranked evidence to 1–5.
+`SEMANTIC_MIN_SCORE` still applies to normalized injected
+sparse retrievers; the selected BM25 configuration deliberately accepts every
+positive raw score because its scores are not normalized confidence. These are
+local operational defaults, not public contract/confidence guarantees.
 No eligible candidate means no vector/provider call; no usable evidence means
 no Gemini call. Broader-catalog tests use the explicit synthetic Day 5 fixture:
 
@@ -372,8 +389,10 @@ Only the standalone question and three evidence fields are sent: course code,
 academic year and prerequisites. Full record content, title, URLs, IDs, history,
 timestamps, hashes and unrelated metadata are excluded. Instructions are sent
 separately from JSON-encoded untrusted question/evidence data. No tools/search are
-enabled. SDK and service deadlines are capped at 30 seconds, output at 800 tokens,
-and SDK attempts at one.
+enabled. The frozen generation model is `gemini-3.8-flash` with low thinking,
+a 20-second deadline, 4,096 output-token cap and at most two application retries
+for transient 429, 5xx or transport failures. SDK attempts remain one per
+application attempt; deterministic validation/configuration failures are not retried.
 
 Internal output is exactly `{"answer": "...", "supported": true}`. Strict Pydantic
 validation rejects extra/missing fields, coercions and empty output. Duplicate JSON
@@ -420,7 +439,7 @@ source title/URL and a `req_` identifier in the six-field envelope. A null artif
 must instead return `insufficient_evidence` without calling Gemini. Check the
 artifact first; do not treat abstention as proof of a real provider call.
 
-## V6 shared hybrid retrieval (local review candidate)
+## Shared hybrid retrieval and V7 production-complete wiring
 
 The V6 candidate adds one shared retrieval-unit, embedding, pgvector query and
 precedence-merge layer. Exact/structured facts remain authoritative; vector
@@ -430,16 +449,17 @@ open/current hard filters before dense ranking. Accommodation and Support use
 the approved scraper-registry sources with conservative vacancy, advertised
 rate, hours and high-stakes routing behavior.
 
-`EmbeddingProvider` is configurable and has a deterministic fake for tests.
-Because no production provider/model/dimension was frozen, normal app startup
-does not construct one. Indexing is an explicit service primitive and never
+`EmbeddingProvider` is configurable and has a deterministic fake for tests only.
+Production configuration constructs the real Gemini adapter and never substitutes
+the fake. Indexing is an explicit service primitive and never
 embeds the full dataset in a request handler. Revisions `20260915_0005` through
-`20260916_0008` are local only until Qasim reviews PostgreSQL 18,
-source-contract synchronization, provider configuration and deployment order.
+`20260916_0008` supplied compatible vector storage; no new migration is required
+for 768-dimensional vectors.
 The stored embedding version also includes the retrieval-unit/chunking policy;
 historical vector rows are retained but excluded unless current source hash,
-model, policy version and `INDEXED` state all match. Production vector wiring,
-credentials, worker invocation and thresholds remain approval-gated.
+model, policy version and `INDEXED` state all match. Production backfill,
+credentials/tier validation, worker invocation, readiness thresholds and
+deployment remain approval-gated and were not executed here.
 
 A failed model/policy rollout over unchanged content preserves a valid prior
 `INDEXED` version as last-known-good evidence. A content-change failure has no

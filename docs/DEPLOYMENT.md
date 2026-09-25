@@ -200,10 +200,23 @@ GOOGLE_CLOUD_LOCATION=australia-southeast1
 CLOUD_SQL_INSTANCE_CONNECTION_NAME=askanu-dev-gdg:australia-southeast1:askanu-postgres-dev
 DB_NAME=askanu
 DB_USER=askanu_backend
-GEMINI_MODEL=gemini-3.5-flash-lite
-MAX_OUTPUT_TOKENS=800
-REQUEST_TIMEOUT_SECONDS=30
-SEMANTIC_TOP_K=3
+GENERATION_MODEL=gemini-3.8-flash
+GENERATION_THINKING_LEVEL=low
+GENERATION_MAX_OUTPUT_TOKENS=4096
+GENERATION_TIMEOUT_SECONDS=20
+GENERATION_MAX_RETRIES=2
+SPARSE_CANDIDATE_K=20
+DENSE_CANDIDATE_K=20
+FUSED_CANDIDATE_K=20
+RRF_K=60
+RERANK_MODEL=rerank-v4.0-fast
+RERANK_TOP_N=5
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-2
+EMBEDDING_DIMENSION=768
+EMBEDDING_VERSION=gemini-embedding-2:768:retrieval-format-v1:retrieval-unit-v2-structured
+RETRIEVAL_FORMAT_VERSION=retrieval-format-v1
+CHUNK_POLICY_VERSION=retrieval-unit-v2-structured
 SEMANTIC_MIN_SCORE=0.2
 ```
 
@@ -221,6 +234,7 @@ requires them, are:
 | Process environment variable | Secret Manager resource/version |
 |---|---|
 | `GEMINI_API_KEY` | `askanu-gemini-api-key:1` |
+| `COHERE_API_KEY` | reviewed Cohere key secret/version before reranker enablement |
 | `DB_PASSWORD` | `askanu-db-password:1` |
 
 The values above name secret resources, not versions or payloads. The DB secret is
@@ -243,7 +257,7 @@ does not load a local `.env`. Local development retains the existing explicit
 
 Production now selects `PostgresCourseProgramRepository` through the same
 `CatalogReader` boundary used by the fixture implementation. Exact code/year,
-program, normalized-name/metadata and bounded TF-IDF planner paths therefore keep
+program, normalized-name/metadata and bounded local BM25 planner paths therefore keep
 the existing ordering and logic. Every row is read fresh with parameterised SQL
 and validated back through `CourseProgramRecord`; `canonical_url`, `content_hash`,
 JSON nulls and all 16 schema-v1 fields come from storage unchanged.
@@ -297,10 +311,20 @@ source ID, timezone-aware start/completion timestamps, bounded run status,
 non-negative persisted record counts and an optional error. It does not auto-run
 at web startup and does not silently destroy data.
 
-Current Day 5 retrieval is local sparse TF-IDF/cosine, not dense embeddings.
-Accordingly this migration does **not** enable pgvector and the runtime does not
-use pgvector. Future embedding/indexing work requires a reviewed migration and
-must not be claimed as operational here.
+Current V7 retrieval retains local ephemeral BM25 over prefiltered source
+snapshots and adds a configuration-gated dense/rerank path. BM25 is `k1=1.2`, `b=0.75`,
+case-folded `[a-z0-9]+` tokens, title plus content, no stop-word removal or
+stemming, positive scores eligible, deterministic record-ID tie breaking and
+candidate Top-K 20. Gemini `gemini-embedding-2` supplies 768-dimensional dense
+Top-20; exact cosine pgvector retrieval is version/hash/current-state scoped.
+RRF (`k=60`) produces at most 20 candidates and Cohere `rerank-v4.0-fast`
+selects at most five relevance candidates, with deterministic RRF fallback.
+Hard filters and source rehydration remain application-owned.
+
+The existing `vector` column is untyped/non-null and therefore 768-compatible;
+the query explicitly requires matching dimensions. No migration is required.
+There is no HNSW/IVFFlat index or vector operator class today. Build one only
+after reviewed production-like measurement; do not imply ANN performance.
 
 For a disposable local PostgreSQL database, set a local-only `DATABASE_URL` and
 run the command twice; the second invocation should report that the database is
@@ -330,8 +354,13 @@ The approved handoff uses the existing uppercase stored values:
 - `MISSING` or a failed source run preserves last-known-good data and triggers
   neither deletion nor re-embedding.
 
-No scraper writer, dense embedding call, pgvector workflow or live indexing
-worker is introduced by this schema follow-up.
+No scraper writer, live dense embedding call, production backfill or deployment
+is performed by this implementation. The reviewed rollout order is: verify
+schema/head; build deterministic V2 units; run the explicit bounded backfill;
+record eligible/reused/indexed/failed/incomplete counts; validate version-scoped
+768-dimensional cosine retrieval; review readiness and latency; then enable the
+configured path. Removing provider credentials/config degrades safely to
+exact/structured + BM25/RRF.
 
 App Cloud Run may send `X-Request-Id` for cross-service correlation. RAG accepts
 only a bounded safe-character value for logging and records it as

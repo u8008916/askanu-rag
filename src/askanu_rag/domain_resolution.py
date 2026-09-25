@@ -56,6 +56,23 @@ DEFAULT_PROBLEM_DOMAIN_RESOLVER = PatternProblemDomainResolver(
                 r"\bunfair(?:ly)? graded\b",
                 r"\bappeal(?:ing)? (?:a |my |the )?grade\b",
                 r"\bgrade (?:appeal|review)\b",
+                r"\bchallenge (?:a |my |the )?(?:mark|grade|assessment)\b",
+            ),
+        ),
+        ProblemDomainSignal(
+            name="financial_hardship_concern",
+            domain=Domain.SUPPORT,
+            patterns=(
+                r"\b(?:cannot|can't) afford (?:food|groceries|rent)\b",
+                r"\bmoney stress\b",
+                r"\bfinancial hardship\b",
+            ),
+        ),
+        ProblemDomainSignal(
+            name="international_settling_concern",
+            domain=Domain.SUPPORT,
+            patterns=(
+                r"\binternational student\b.*\bsettling in\b",
             ),
         ),
     )

@@ -20,6 +20,10 @@ from askanu_rag.models import (
 )
 from askanu_rag.retrieval import JobReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
+from askanu_rag.retrieval.semantic import (
+    LocalBm25Retriever,
+    sparse_score_is_usable,
+)
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
 
 CANBERRA = ZoneInfo("Australia/Canberra")
@@ -427,15 +431,24 @@ class JobQueryService:
         today_provider: Callable[[], date] = canberra_today,
         vector_retriever=None,
         *,
-        max_candidates: int = 10,
+        sparse_retriever=None,
+        top_k: int = 20,
+        max_candidates: int = 20,
         min_score: float = 0.2,
+        reranker=None,
+        evidence_top_k: int = 5,
+        rrf_k: int = 60,
     ) -> None:
-        if not 0 < min_score <= 1:
+        if not 1 <= top_k <= 20 or not 1 <= evidence_top_k <= 5 or not 0 < min_score <= 1:
             raise ValueError("min_score must be in (0, 1]")
         self._repository = repository
         self._today_provider = today_provider
         self._vector = vector_retriever
-        self._merger = SharedHybridRetriever(max_candidates=max_candidates)
+        self._sparse = sparse_retriever or LocalBm25Retriever()
+        self._reranker = reranker
+        self._merger = SharedHybridRetriever(max_candidates=max_candidates, rrf_k=rrf_k)
+        self._top_k = top_k
+        self._evidence_top_k = evidence_top_k
         self._min_score = min_score
 
     async def answer(
@@ -532,23 +545,7 @@ class JobQueryService:
                 )
             )
             if semantic_intent:
-                if self._vector is None or not records:
-                    return InsufficientEvidenceResponse(
-                        answer=(
-                            "I could not establish sufficiently relevant current "
-                            "Jobs evidence for that topic."
-                        ),
-                        request_id=request_id,
-                    )
-                try:
-                    vector_hits = self._vector.search(
-                        question,
-                        domain="jobs",
-                        allowed_records=records,
-                        top_k=self._merger.max_candidates,
-                        min_score=self._min_score,
-                    )
-                except Exception:
+                if not records:
                     return InsufficientEvidenceResponse(
                         answer=(
                             "I could not establish sufficiently relevant current "
@@ -557,21 +554,62 @@ class JobQueryService:
                         request_id=request_id,
                     )
                 by_id = {record.record_id: record for record in records}
+                sparse_status = "ok"
+                try:
+                    sparse_hits = self._sparse.search(
+                        question,
+                        records,
+                        top_k=self._top_k,
+                        min_score=self._min_score,
+                    )
+                except Exception:
+                    sparse_hits = ()
+                    sparse_status = "failed"
+                sparse = [
+                    (by_id[hit.record_id], hit.score)
+                    for hit in sparse_hits
+                    if hit.record_id in by_id
+                    and sparse_score_is_usable(
+                        self._sparse, hit.score, min_score=self._min_score
+                    )
+                ]
+                semantic = []
+                dense_status = "disabled"
+                if self._vector is not None:
+                    try:
+                        vector_hits = self._vector.search(
+                            question,
+                            domain="jobs",
+                            allowed_records=records,
+                            top_k=self._top_k,
+                            min_score=self._min_score,
+                        )
+                        dense_status = "ok"
+                    except Exception:
+                        vector_hits = ()
+                        dense_status = "failed"
+                    semantic = [
+                        (
+                            by_id[hit.record.record_id],
+                            hit.score,
+                            hit.retrieval_unit_ids,
+                        )
+                        for hit in vector_hits
+                        if hit.record.record_id in by_id
+                        and math.isfinite(hit.score)
+                        and self._min_score <= hit.score <= 1
+                    ]
                 records = tuple(
                     ranked.record
-                    for ranked in self._merger.merge(
-                        semantic=(
-                            (
-                                by_id[hit.record.record_id],
-                                hit.score,
-                                hit.retrieval_unit_ids,
-                            )
-                            for hit in vector_hits
-                            if hit.record.record_id in by_id
-                            and math.isfinite(hit.score)
-                            and self._min_score <= hit.score <= 1
-                        )
-                    )
+                    for ranked in self._merger.select(
+                        query=question,
+                        sparse=sparse,
+                        semantic=semantic,
+                        reranker=self._reranker,
+                        top_n=self._evidence_top_k,
+                        sparse_status=sparse_status,
+                        dense_status=dense_status,
+                    ).candidates
                 )
             else:
                 records = records[:20]

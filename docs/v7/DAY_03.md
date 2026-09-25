@@ -1,5 +1,8 @@
 # AskANU V7 — Day 3: Build retrieval + reasoning
 
+Measured implementation evidence:
+`DAY_03_RETRIEVAL_REASONING_HANDOFF.md`.
+
 **Date:** 2026-09-23  
 **Repository:** `askanu-rag`  
 **Primary owner:** Carmen  
@@ -41,6 +44,25 @@ Build the shared retrieval planner, typed result memory, and grounded reasoning 
 - No embeddings/framework migration without benchmark need.
 - Internal scores never become product truth.
 - Performance evidence ends with proposed numeric release gates.
+
+## Final frozen retrieval decision — 2026-09-25
+
+- Preserve the benchmarked local BM25 (`k1=1.2`, `b=0.75`) as sparse Top-20;
+  the earlier BM25-only head is historical intermediate evidence, not the final
+  production architecture.
+- Use Gemini `gemini-embedding-2` at 768 dimensions for dense Top-20 over V2
+  structured retrieval units, then deterministic RRF (`k=60`) to fused Top-20.
+- Reject only conclusively invalid hard-constraint candidates, then use Cohere
+  `rerank-v4.0-fast` for relevance Top-5. A transient Cohere failure retains the
+  deterministic RRF order.
+- Exact/structured paths, application-owned authority/provenance/currentness,
+  UNKNOWN/PARTIAL and EMPTY/INCOMPLETE semantics remain unchanged. Events stays
+  deterministic.
+- Use grounded Gemini `gemini-3.8-flash`, thinking level low, 4,096 output-token
+  cap, 20-second timeout and at most two application retries for transient 429,
+  5xx or transport failures only.
+- No framework/FTS migration, production backfill, provider rollout or deployment
+  is part of this implementation. Day 4 remains on HOLD pending review.
 
 ## Evidence to hand off
 

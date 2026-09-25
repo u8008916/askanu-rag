@@ -17,6 +17,11 @@ from askanu_rag.index_lifecycle import (
 )
 from askanu_rag.models import CommonRecord
 from askanu_rag.retrieval.embeddings import EmbeddingProvider, validate_vector
+from askanu_rag.retrieval.formatting import (
+    ResolvedRetrievalRequest,
+    format_embedding_document,
+    format_embedding_query,
+)
 from askanu_rag.retrieval.units import RetrievalUnit, RetrievalUnitBuilder
 
 
@@ -36,6 +41,24 @@ class VectorHit:
     record: CommonRecord
     score: float
     retrieval_unit_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BackfillReport:
+    total: int
+    attempted: int
+    indexed: int
+    reused: int
+    failed: int
+    skipped: int
+
+
+@dataclass(frozen=True)
+class VectorReadiness:
+    eligible: int
+    dense_ready: int
+    failed: int
+    incomplete: int
 
 
 class VectorRepository(Protocol):
@@ -88,12 +111,13 @@ class EmbeddingIndexService:
         *,
         unit_builder: RetrievalUnitBuilder | None = None,
         dimension: int | None = None,
+        target_version: str | None = None,
     ) -> None:
         self.repository = repository
         self.provider = provider
         self.unit_builder = unit_builder or RetrievalUnitBuilder()
         self.dimension = dimension
-        self.target_version = effective_embedding_version(
+        self.target_version = target_version or effective_embedding_version(
             provider.version, self.unit_builder.policy_version
         )
 
@@ -132,7 +156,9 @@ class EmbeddingIndexService:
         )
         try:
             vectors = (
-                self.provider.embed_documents([unit.content for unit in missing])
+                self.provider.embed_documents(
+                    [format_embedding_document(record, unit) for unit in missing]
+                )
                 if missing
                 else ()
             )
@@ -159,6 +185,41 @@ class EmbeddingIndexService:
         self.repository.persist_success(record, rows, self.target_version)
         return len(rows)
 
+    def backfill(
+        self,
+        records: Iterable[CommonRecord],
+        *,
+        explicit_retry: bool = True,
+    ) -> BackfillReport:
+        """Run an explicitly invoked bounded batch and account for every record."""
+
+        values = tuple(records)
+        attempted = indexed = reused = failed = skipped = 0
+        for record in values:
+            decision = plan_index_action(
+                record,
+                explicit_retry=explicit_retry,
+                target_version=self.target_version,
+            )
+            if decision.action is IndexAction.NONE:
+                if (
+                    record.index_status == "INDEXED"
+                    and record.embedding_version == self.target_version
+                ):
+                    reused += 1
+                else:
+                    skipped += 1
+                continue
+            attempted += 1
+            try:
+                self.index_record(record, explicit_retry=explicit_retry)
+                indexed += 1
+            except Exception:
+                failed += 1
+        return BackfillReport(
+            len(values), attempted, indexed, reused, failed, skipped
+        )
+
     def _row(
         self, unit: RetrievalUnit, vector: Sequence[float]
     ) -> PersistedEmbedding:
@@ -183,11 +244,12 @@ class PersistedSemanticRetriever:
         repository: VectorRepository,
         provider: EmbeddingProvider,
         *,
-        top_k: int = 5,
+        top_k: int = 20,
         min_score: float = 0.35,
         max_units_per_record: int = 3,
         dimension: int | None = None,
         retrieval_policy_version: str | None = None,
+        target_version: str | None = None,
     ) -> None:
         if not 1 <= top_k <= 20:
             raise ValueError("top_k must be between 1 and 20")
@@ -202,7 +264,9 @@ class PersistedSemanticRetriever:
         self.max_units_per_record = max_units_per_record
         self.dimension = dimension
         policy_version = retrieval_policy_version or RetrievalUnitBuilder().policy_version
-        self.target_version = effective_embedding_version(provider.version, policy_version)
+        self.target_version = target_version or effective_embedding_version(
+            provider.version, policy_version
+        )
 
     def search(
         self,
@@ -215,8 +279,11 @@ class PersistedSemanticRetriever:
     ) -> tuple[VectorHit, ...]:
         limit = self.top_k if top_k is None else top_k
         threshold = self.min_score if min_score is None else min_score
+        formatted_query = format_embedding_query(
+            ResolvedRetrievalRequest(question=query, domain=domain)
+        )
         vector = validate_vector(
-            self.provider.embed_query(query), dimension=self.dimension
+            self.provider.embed_query(formatted_query), dimension=self.dimension
         )
         return self.repository.search(
             vector,
@@ -349,6 +416,16 @@ class InMemoryVectorRepository:
                 )
             )
         return tuple(sorted(hits, key=lambda hit: (-hit.score, hit.record.record_id))[:top_k])
+
+    def readiness(self, *, embedding_version: str) -> VectorReadiness:
+        eligible = list(self.records.values())
+        ready = sum(
+            record.index_status == "INDEXED"
+            and record.embedding_version == embedding_version
+            for record in eligible
+        )
+        failed = sum(record.index_status == "FAILED" for record in eligible)
+        return VectorReadiness(len(eligible), ready, failed, len(eligible) - ready)
 
 
 class PostgresVectorRepository:
@@ -495,6 +572,33 @@ class PostgresVectorRepository:
         except Exception:
             raise RepositoryUnavailableError() from None
 
+    def readiness(self, *, embedding_version: str) -> VectorReadiness:
+        query = """
+            SELECT
+              count(*) AS eligible,
+              count(*) FILTER (
+                WHERE index_status = 'INDEXED'
+                  AND embedding_version = %s
+              ) AS dense_ready,
+              count(*) FILTER (
+                WHERE index_status = 'FAILED'
+              ) AS failed
+            FROM source_records
+        """
+        try:
+            with self._connection_factory() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(query, (embedding_version,))
+                    row = cursor.fetchone()
+        except Exception:
+            raise RepositoryUnavailableError() from None
+        eligible = int(row["eligible"])
+        dense_ready = int(row["dense_ready"])
+        failed = int(row["failed"])
+        return VectorReadiness(
+            eligible, dense_ready, failed, eligible - dense_ready
+        )
+
     def search(
         self,
         query_vector: Sequence[float],
@@ -517,6 +621,7 @@ class PostgresVectorRepository:
             vector,
             vector,
             domain,
+            vector,
             embedding_version,
             embedding_model,
         ]
@@ -542,6 +647,7 @@ class PostgresVectorRepository:
                 FROM source_record_embeddings e
                 JOIN source_records s ON s.record_id = e.source_record_id
                 WHERE s.domain = %s
+                  AND vector_dims(e.embedding) = vector_dims(%s::vector)
                   AND s.index_status = 'INDEXED'
                   AND s.embedding_version = %s
                   AND e.source_content_hash = s.content_hash

@@ -1,0 +1,1232 @@
+{
+  "benchmark_id": "v7-day3-six-domain-holdout-v1",
+  "corpus": {
+    "canonical_records": 29,
+    "domain_distribution": {
+      "accommodation": 5,
+      "courses": 5,
+      "events": 5,
+      "jobs": 4,
+      "scholarships": 5,
+      "support": 5
+    },
+    "production_database_used": false,
+    "retrieval_units": 29,
+    "source": "frozen holdout benchmark record projections",
+    "storage": "isolated in-memory benchmark repository",
+    "vectors": 29
+  },
+  "failure_counts": {
+    "DATA": 4,
+    "NONE": 20
+  },
+  "hard_constraint_pass_rate": 1.0,
+  "holdout_sha256": "13b061af57a6c2730dc7434f325996f0e2ce536ceddf00281545a89f58bf65b6",
+  "label": "V7 Day 3 final retrieval baseline",
+  "measured_at_utc": "2026-09-25T12:12:59.730114Z",
+  "measured_query_count": 24,
+  "pipeline": {
+    "benchmark_provider_pacing": "Cohere calls spaced by at least 6.1 seconds; wait excluded from per-query retrieval latency",
+    "dense": "Gemini gemini-embedding-2 768-dimensional cosine Top20",
+    "embedding_version": "gemini-embedding-2:768:retrieval-format-v1:retrieval-unit-v2-structured",
+    "fusion": "RRF k=60 fused max20",
+    "hard_filter": "frozen eligible population plus post-fusion conclusive-invalid guard",
+    "max_retrieval_unit_chars": 2000,
+    "max_retrieval_units_per_record": 20,
+    "max_returned_vector_units_per_record": 3,
+    "reranker": "Cohere rerank-v4.0-fast Top5",
+    "retrieval_unit_policy": "retrieval-unit-v2-structured",
+    "sparse": "BM25 k1=1.2 b=0.75 Top20",
+    "vector_min_score": 0.35
+  },
+  "pre_rerank_recall_at_10": 1.0,
+  "provenance_pass_rate": 1.0,
+  "provider_errors": [],
+  "query_count": 24,
+  "query_domain_distribution": {
+    "accommodation": 4,
+    "courses": 4,
+    "events": 4,
+    "jobs": 4,
+    "scholarships": 4,
+    "support": 4
+  },
+  "recall_at_k": {
+    "1": 0.9236111111111112,
+    "3": 1.0,
+    "5": 1.0
+  },
+  "results": [
+    {
+      "dense_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "domain": "courses",
+      "expected_relevant_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 0.0,
+        "cohere_rerank_provider_call": 623.4053,
+        "dense_local_compute": 0.29549999999994725,
+        "dense_total": 960.1736,
+        "fusion_local": 0.0708,
+        "gemini_query_embedding_provider_call": 959.8781,
+        "selection_local_overhead": 0.07479999999998199,
+        "sparse_local": 0.1107,
+        "total_retrieval": 1583.8352
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-course-natural-name",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "sparse_ids": [
+        "courses:course:COMP1110_2026"
+      ]
+    },
+    {
+      "dense_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "domain": "courses",
+      "expected_relevant_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4286.4666,
+        "cohere_rerank_provider_call": 342.0401,
+        "dense_local_compute": 0.25090000000000146,
+        "dense_total": 1190.1015,
+        "fusion_local": 0.1045,
+        "gemini_query_embedding_provider_call": 1189.8506,
+        "selection_local_overhead": 0.05500000000000682,
+        "sparse_local": 0.0565,
+        "total_retrieval": 1532.3575999999998
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-course-prereq-followup",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "sparse_ids": [
+        "courses:course:COMP1110_2026"
+      ]
+    },
+    {
+      "dense_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "domain": "courses",
+      "expected_relevant_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4705.4963,
+        "cohere_rerank_provider_call": 371.412,
+        "dense_local_compute": 0.39800000000013824,
+        "dense_total": 1052.583,
+        "fusion_local": 0.0672,
+        "gemini_query_embedding_provider_call": 1052.185,
+        "selection_local_overhead": 0.04200000000003001,
+        "sparse_local": 0.0594,
+        "total_retrieval": 1424.1636000000003
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-course-units-spacing",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "courses:course:COMP1110_2026"
+      ],
+      "sparse_ids": []
+    },
+    {
+      "dense_ids": [
+        "courses:course:COMP2200_2026",
+        "courses:course:COMP1110_2026",
+        "courses:course:COMP1100_2026",
+        "courses:program:BACCT_2026",
+        "courses:course:BIOL9001P_2026"
+      ],
+      "domain": "courses",
+      "expected_relevant_ids": [
+        "courses:course:COMP2200_2026"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "courses:course:COMP2200_2026",
+        "courses:course:COMP1100_2026",
+        "courses:course:COMP1110_2026",
+        "courses:course:BIOL9001P_2026",
+        "courses:program:BACCT_2026"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4641.3368,
+        "cohere_rerank_provider_call": 376.7186,
+        "dense_local_compute": 0.5584999999998672,
+        "dense_total": 1087.0518,
+        "fusion_local": 0.1548,
+        "gemini_query_embedding_provider_call": 1086.4933,
+        "selection_local_overhead": 0.07290000000000418,
+        "sparse_local": 0.0901,
+        "total_retrieval": 1464.0882
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-course-topic-discovery",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "courses:course:COMP2200_2026",
+        "courses:course:COMP1100_2026",
+        "courses:course:COMP1110_2026",
+        "courses:course:BIOL9001P_2026",
+        "courses:program:BACCT_2026"
+      ],
+      "sparse_ids": [
+        "courses:course:COMP2200_2026",
+        "courses:course:COMP1100_2026",
+        "courses:course:COMP1110_2026",
+        "courses:course:BIOL9001P_2026",
+        "courses:program:BACCT_2026"
+      ]
+    },
+    {
+      "dense_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "domain": "scholarships",
+      "expected_relevant_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4625.4777,
+        "cohere_rerank_provider_call": 350.9496,
+        "dense_local_compute": 0.421100000000024,
+        "dense_total": 1097.871,
+        "fusion_local": 0.1001,
+        "gemini_query_embedding_provider_call": 1097.4499,
+        "selection_local_overhead": 0.10800000000000409,
+        "sparse_local": 0.0882,
+        "total_retrieval": 1449.1169
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-scholarship-match",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "sparse_ids": [
+        "scholarships:scholarship:international-science"
+      ]
+    },
+    {
+      "dense_ids": [
+        "scholarships:scholarship:computing-merit"
+      ],
+      "domain": "scholarships",
+      "expected_relevant_ids": [
+        "scholarships:scholarship:computing-merit"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "scholarships:scholarship:computing-merit"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4792.6401,
+        "cohere_rerank_provider_call": 391.2414,
+        "dense_local_compute": 0.47050000000001546,
+        "dense_total": 956.263,
+        "fusion_local": 0.0814,
+        "gemini_query_embedding_provider_call": 955.7925,
+        "selection_local_overhead": 0.049400000000048294,
+        "sparse_local": 0.0763,
+        "total_retrieval": 1347.7115
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-scholarship-deadline",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "scholarships:scholarship:computing-merit"
+      ],
+      "sparse_ids": [
+        "scholarships:scholarship:computing-merit"
+      ]
+    },
+    {
+      "dense_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "domain": "scholarships",
+      "expected_relevant_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4702.9685,
+        "cohere_rerank_provider_call": 352.2671,
+        "dense_local_compute": 0.25339999999994234,
+        "dense_total": 1005.8969,
+        "fusion_local": 0.0913,
+        "gemini_query_embedding_provider_call": 1005.6435,
+        "selection_local_overhead": 0.0544999999999618,
+        "sparse_local": 0.073,
+        "total_retrieval": 1358.3827999999999
+      },
+      "observed_failure_class": "DATA",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-scholarship-eligibility",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "scholarships:scholarship:international-science"
+      ],
+      "sparse_ids": [
+        "scholarships:scholarship:international-science"
+      ]
+    },
+    {
+      "dense_ids": [
+        "scholarships:scholarship:engineering-equity",
+        "scholarships:scholarship:computing-merit",
+        "scholarships:scholarship:international-science",
+        "scholarships:scholarship:closed-computing",
+        "scholarships:scholarship:research-travel"
+      ],
+      "domain": "scholarships",
+      "expected_relevant_ids": [
+        "scholarships:scholarship:engineering-equity"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "scholarships:scholarship:engineering-equity",
+        "scholarships:scholarship:computing-merit",
+        "scholarships:scholarship:closed-computing",
+        "scholarships:scholarship:international-science",
+        "scholarships:scholarship:research-travel"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4729.0984,
+        "cohere_rerank_provider_call": 451.8434,
+        "dense_local_compute": 0.5965999999999667,
+        "dense_total": 1018.3886,
+        "fusion_local": 0.1419,
+        "gemini_query_embedding_provider_call": 1017.792,
+        "selection_local_overhead": 0.06920000000002346,
+        "sparse_local": 0.1449,
+        "total_retrieval": 1470.588
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-scholarship-equity-discovery",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "scholarships:scholarship:engineering-equity",
+        "scholarships:scholarship:computing-merit",
+        "scholarships:scholarship:research-travel",
+        "scholarships:scholarship:closed-computing",
+        "scholarships:scholarship:international-science"
+      ],
+      "sparse_ids": [
+        "scholarships:scholarship:engineering-equity",
+        "scholarships:scholarship:computing-merit",
+        "scholarships:scholarship:closed-computing"
+      ]
+    },
+    {
+      "dense_ids": [
+        "accommodation:residence:burgmann-college",
+        "accommodation:residence:bruce-hall",
+        "accommodation:residence:ursula-hall"
+      ],
+      "domain": "accommodation",
+      "expected_relevant_ids": [
+        "accommodation:residence:bruce-hall",
+        "accommodation:residence:ursula-hall",
+        "accommodation:residence:burgmann-college"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "accommodation:residence:burgmann-college",
+        "accommodation:residence:bruce-hall",
+        "accommodation:residence:ursula-hall"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4702.2604,
+        "cohere_rerank_provider_call": 397.6294,
+        "dense_local_compute": 0.33169999999995525,
+        "dense_total": 945.8344,
+        "fusion_local": 0.0869,
+        "gemini_query_embedding_provider_call": 945.5027,
+        "selection_local_overhead": 0.05099999999998772,
+        "sparse_local": 0.0925,
+        "total_retrieval": 1343.6942
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-accommodation-catering",
+      "recall_at_1": 0.3333333333333333,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "accommodation:residence:bruce-hall",
+        "accommodation:residence:burgmann-college",
+        "accommodation:residence:ursula-hall"
+      ],
+      "sparse_ids": [
+        "accommodation:residence:burgmann-college",
+        "accommodation:residence:bruce-hall"
+      ]
+    },
+    {
+      "dense_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "domain": "accommodation",
+      "expected_relevant_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 3781.6909,
+        "cohere_rerank_provider_call": 320.6511,
+        "dense_local_compute": 0.25289999999995416,
+        "dense_total": 1920.8215,
+        "fusion_local": 0.0938,
+        "gemini_query_embedding_provider_call": 1920.5686,
+        "selection_local_overhead": 0.05110000000001946,
+        "sparse_local": 0.072,
+        "total_retrieval": 2241.6895
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-accommodation-cost",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "sparse_ids": [
+        "accommodation:residence:yukeembruk"
+      ]
+    },
+    {
+      "dense_ids": [
+        "accommodation:residence:ursula-hall",
+        "accommodation:residence:bruce-hall",
+        "accommodation:residence:wright-hall",
+        "accommodation:residence:yukeembruk",
+        "accommodation:residence:burgmann-college"
+      ],
+      "domain": "accommodation",
+      "expected_relevant_ids": [
+        "accommodation:residence:ursula-hall"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "accommodation:residence:ursula-hall",
+        "accommodation:residence:bruce-hall",
+        "accommodation:residence:wright-hall",
+        "accommodation:residence:yukeembruk",
+        "accommodation:residence:burgmann-college"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4722.9681,
+        "cohere_rerank_provider_call": 369.5447,
+        "dense_local_compute": 0.46910000000002583,
+        "dense_total": 1056.1766,
+        "fusion_local": 0.0874,
+        "gemini_query_embedding_provider_call": 1055.7075,
+        "selection_local_overhead": 0.05690000000004147,
+        "sparse_local": 0.1011,
+        "total_retrieval": 1425.9667000000002
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-accommodation-preference",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "accommodation:residence:ursula-hall",
+        "accommodation:residence:yukeembruk",
+        "accommodation:residence:burgmann-college",
+        "accommodation:residence:bruce-hall",
+        "accommodation:residence:wright-hall"
+      ],
+      "sparse_ids": [
+        "accommodation:residence:ursula-hall"
+      ]
+    },
+    {
+      "dense_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "domain": "accommodation",
+      "expected_relevant_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4764.855,
+        "cohere_rerank_provider_call": 438.2259,
+        "dense_local_compute": 0.2884000000000242,
+        "dense_total": 965.5055,
+        "fusion_local": 0.0939,
+        "gemini_query_embedding_provider_call": 965.2171,
+        "selection_local_overhead": 0.05669999999997799,
+        "sparse_local": 0.0956,
+        "total_retrieval": 1403.9776
+      },
+      "observed_failure_class": "DATA",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-accommodation-vacancy",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "accommodation:residence:yukeembruk"
+      ],
+      "sparse_ids": [
+        "accommodation:residence:yukeembruk"
+      ]
+    },
+    {
+      "dense_ids": [
+        "jobs:job:100001",
+        "jobs:job:100003",
+        "jobs:job:100002",
+        "jobs:job:100004"
+      ],
+      "domain": "jobs",
+      "expected_relevant_ids": [
+        "jobs:job:100001"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "jobs:job:100001",
+        "jobs:job:100003",
+        "jobs:job:100002",
+        "jobs:job:100004"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4673.8421,
+        "cohere_rerank_provider_call": 352.7105,
+        "dense_local_compute": 0.438199999999938,
+        "dense_total": 987.885,
+        "fusion_local": 0.12,
+        "gemini_query_embedding_provider_call": 987.4468,
+        "selection_local_overhead": 0.05899999999996908,
+        "sparse_local": 0.2151,
+        "total_retrieval": 1340.9895999999999
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-jobs-topic-discovery",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "jobs:job:100001",
+        "jobs:job:100002",
+        "jobs:job:100003",
+        "jobs:job:100004"
+      ],
+      "sparse_ids": [
+        "jobs:job:100001",
+        "jobs:job:100003"
+      ]
+    },
+    {
+      "dense_ids": [
+        "jobs:job:100002"
+      ],
+      "domain": "jobs",
+      "expected_relevant_ids": [
+        "jobs:job:100002"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "jobs:job:100002"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4794.0127,
+        "cohere_rerank_provider_call": 415.4198,
+        "dense_local_compute": 0.23130000000003292,
+        "dense_total": 953.201,
+        "fusion_local": 0.096,
+        "gemini_query_embedding_provider_call": 952.9697,
+        "selection_local_overhead": 0.05829999999997426,
+        "sparse_local": 0.0488,
+        "total_retrieval": 1368.8239
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-jobs-closing-date",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "jobs:job:100002"
+      ],
+      "sparse_ids": [
+        "jobs:job:100002"
+      ]
+    },
+    {
+      "dense_ids": [
+        "jobs:job:100001"
+      ],
+      "domain": "jobs",
+      "expected_relevant_ids": [
+        "jobs:job:100001"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "jobs:job:100001"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4675.0114,
+        "cohere_rerank_provider_call": 412.525,
+        "dense_local_compute": 0.27890000000002146,
+        "dense_total": 1009.4579,
+        "fusion_local": 0.0934,
+        "gemini_query_embedding_provider_call": 1009.179,
+        "selection_local_overhead": 0.05760000000003629,
+        "sparse_local": 0.0983,
+        "total_retrieval": 1422.2322
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-jobs-requirements",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "jobs:job:100001"
+      ],
+      "sparse_ids": [
+        "jobs:job:100001"
+      ]
+    },
+    {
+      "dense_ids": [
+        "jobs:job:100004"
+      ],
+      "domain": "jobs",
+      "expected_relevant_ids": [
+        "jobs:job:100004"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "jobs:job:100004"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 3794.7083,
+        "cohere_rerank_provider_call": 945.8557,
+        "dense_local_compute": 0.44219999999995707,
+        "dense_total": 1892.9275,
+        "fusion_local": 0.092,
+        "gemini_query_embedding_provider_call": 1892.4853,
+        "selection_local_overhead": 0.048000000000115506,
+        "sparse_local": 0.0484,
+        "total_retrieval": 2838.9716
+      },
+      "observed_failure_class": "DATA",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-jobs-incomplete",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "jobs:job:100004"
+      ],
+      "sparse_ids": [
+        "jobs:job:100004"
+      ]
+    },
+    {
+      "dense_ids": [
+        "events:event:2002",
+        "events:event:2001",
+        "events:event:rubric-9001"
+      ],
+      "domain": "events",
+      "expected_relevant_ids": [
+        "events:event:2001",
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "events:event:2001",
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4173.2498,
+        "cohere_rerank_provider_call": 390.4784,
+        "dense_local_compute": 0.3857999999999038,
+        "dense_total": 981.0215,
+        "fusion_local": 0.1344,
+        "gemini_query_embedding_provider_call": 980.6357,
+        "selection_local_overhead": 0.07169999999996435,
+        "sparse_local": 0.0692,
+        "total_retrieval": 1371.7752
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-events-date",
+      "recall_at_1": 0.3333333333333333,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "events:event:2001",
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ],
+      "sparse_ids": [
+        "events:event:2001",
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ]
+    },
+    {
+      "dense_ids": [
+        "events:event:rubric-9001",
+        "events:event:2002"
+      ],
+      "domain": "events",
+      "expected_relevant_ids": [
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4715.5212,
+        "cohere_rerank_provider_call": 417.795,
+        "dense_local_compute": 0.4273000000000593,
+        "dense_total": 993.9356,
+        "fusion_local": 0.2314,
+        "gemini_query_embedding_provider_call": 993.5083,
+        "selection_local_overhead": 0.06899999999995998,
+        "sparse_local": 0.1067,
+        "total_retrieval": 1412.1377
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-events-time-followup",
+      "recall_at_1": 0.5,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ],
+      "sparse_ids": [
+        "events:event:2002",
+        "events:event:rubric-9001"
+      ]
+    },
+    {
+      "dense_ids": [
+        "events:event:2003"
+      ],
+      "domain": "events",
+      "expected_relevant_ids": [
+        "events:event:2003"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "events:event:2003"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 3984.005,
+        "cohere_rerank_provider_call": 430.7609,
+        "dense_local_compute": 0.22769999999991342,
+        "dense_total": 1698.0147,
+        "fusion_local": 0.0669,
+        "gemini_query_embedding_provider_call": 1697.787,
+        "selection_local_overhead": 0.04600000000004911,
+        "sparse_local": 0.072,
+        "total_retrieval": 2128.9604999999997
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-events-venue",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "events:event:2003"
+      ],
+      "sparse_ids": [
+        "events:event:2003"
+      ]
+    },
+    {
+      "dense_ids": [
+        "events:event:rubric-9001"
+      ],
+      "domain": "events",
+      "expected_relevant_ids": [
+        "events:event:rubric-9001"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "events:event:rubric-9001"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4734.1783,
+        "cohere_rerank_provider_call": 380.8565,
+        "dense_local_compute": 0.24310000000002674,
+        "dense_total": 934.948,
+        "fusion_local": 0.0951,
+        "gemini_query_embedding_provider_call": 934.7049,
+        "selection_local_overhead": 0.052900000000022374,
+        "sparse_local": 0.0843,
+        "total_retrieval": 1316.0367999999999
+      },
+      "observed_failure_class": "DATA",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-events-rubric-organiser",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "events:event:rubric-9001"
+      ],
+      "sparse_ids": [
+        "events:event:rubric-9001"
+      ]
+    },
+    {
+      "dense_ids": [
+        "support:support_service:academic",
+        "support:support_service:international",
+        "support:support_service:student-safety",
+        "support:support_service:financial",
+        "support:support_service:legal"
+      ],
+      "domain": "support",
+      "expected_relevant_ids": [
+        "support:support_service:academic"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "support:support_service:academic",
+        "support:support_service:legal",
+        "support:support_service:international",
+        "support:support_service:student-safety",
+        "support:support_service:financial"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4754.0686,
+        "cohere_rerank_provider_call": 356.8661,
+        "dense_local_compute": 0.4834000000000742,
+        "dense_total": 964.6814,
+        "fusion_local": 0.125,
+        "gemini_query_embedding_provider_call": 964.198,
+        "selection_local_overhead": 0.06729999999998881,
+        "sparse_local": 0.1579,
+        "total_retrieval": 1321.8977
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-support-assessment",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "support:support_service:academic",
+        "support:support_service:international",
+        "support:support_service:legal",
+        "support:support_service:student-safety",
+        "support:support_service:financial"
+      ],
+      "sparse_ids": [
+        "support:support_service:legal",
+        "support:support_service:academic"
+      ]
+    },
+    {
+      "dense_ids": [
+        "support:support_service:financial",
+        "support:support_service:international",
+        "support:support_service:academic",
+        "support:support_service:student-safety",
+        "support:support_service:legal"
+      ],
+      "domain": "support",
+      "expected_relevant_ids": [
+        "support:support_service:financial"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "support:support_service:academic",
+        "support:support_service:international",
+        "support:support_service:legal",
+        "support:support_service:student-safety",
+        "support:support_service:financial"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4759.9966,
+        "cohere_rerank_provider_call": 439.5312,
+        "dense_local_compute": 0.45659999999998035,
+        "dense_total": 982.7894,
+        "fusion_local": 0.141,
+        "gemini_query_embedding_provider_call": 982.3328,
+        "selection_local_overhead": 0.07129999999995107,
+        "sparse_local": 0.1107,
+        "total_retrieval": 1422.6435999999999
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-support-financial",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "support:support_service:financial",
+        "support:support_service:academic",
+        "support:support_service:legal",
+        "support:support_service:international",
+        "support:support_service:student-safety"
+      ],
+      "sparse_ids": [
+        "support:support_service:academic",
+        "support:support_service:international",
+        "support:support_service:legal",
+        "support:support_service:student-safety"
+      ]
+    },
+    {
+      "dense_ids": [
+        "support:support_service:international",
+        "support:support_service:student-safety",
+        "support:support_service:academic",
+        "support:support_service:financial",
+        "support:support_service:legal"
+      ],
+      "domain": "support",
+      "expected_relevant_ids": [
+        "support:support_service:international"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "support:support_service:international",
+        "support:support_service:student-safety",
+        "support:support_service:legal",
+        "support:support_service:academic",
+        "support:support_service:financial"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4712.6811,
+        "cohere_rerank_provider_call": 390.9243,
+        "dense_local_compute": 0.6105000000000018,
+        "dense_total": 947.4115,
+        "fusion_local": 0.1429,
+        "gemini_query_embedding_provider_call": 946.801,
+        "selection_local_overhead": 0.06619999999998072,
+        "sparse_local": 0.1121,
+        "total_retrieval": 1338.6570000000002
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-support-overseas-settling",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "support:support_service:international",
+        "support:support_service:legal",
+        "support:support_service:student-safety",
+        "support:support_service:financial",
+        "support:support_service:academic"
+      ],
+      "sparse_ids": [
+        "support:support_service:legal",
+        "support:support_service:international",
+        "support:support_service:student-safety",
+        "support:support_service:academic"
+      ]
+    },
+    {
+      "dense_ids": [
+        "support:support_service:legal"
+      ],
+      "domain": "support",
+      "expected_relevant_ids": [
+        "support:support_service:legal"
+      ],
+      "first_relevant_rank": 1,
+      "fused_ids": [
+        "support:support_service:legal"
+      ],
+      "hard_constraints_preserved": true,
+      "latency_ms": {
+        "cohere_rate_limit_wait": 4690.034,
+        "cohere_rerank_provider_call": 352.1821,
+        "dense_local_compute": 0.2583000000000766,
+        "dense_total": 1018.7448,
+        "fusion_local": 0.0905,
+        "gemini_query_embedding_provider_call": 1018.4865,
+        "selection_local_overhead": 0.05289999999996553,
+        "sparse_local": 0.0629,
+        "total_retrieval": 1371.1332
+      },
+      "observed_failure_class": "NONE",
+      "pre_rerank_recall_at_10": 1.0,
+      "provenance_preserved": true,
+      "query_id": "holdout-support-legal-cost",
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "rejected_by_hard_filter": 0,
+      "reranker_used": true,
+      "selected_evidence_complete": true,
+      "selected_ids": [
+        "support:support_service:legal"
+      ],
+      "sparse_ids": [
+        "support:support_service:legal"
+      ]
+    }
+  ],
+  "selected_evidence_complete_rate": 1.0,
+  "selected_evidence_precision_proxy": 0.5178571428571429,
+  "stage_latency_ms": {
+    "cohere_rate_limit_wait": {
+      "mean_ms": 4371.5236625,
+      "p50_ms": 4702.61445,
+      "p95_ms": 4792.6401,
+      "samples": 24
+    },
+    "cohere_rerank_provider_call": {
+      "mean_ms": 419.6597541666667,
+      "p50_ms": 390.70135000000005,
+      "p95_ms": 623.4053,
+      "samples": 24
+    },
+    "corpus_indexing_total": {
+      "mean_ms": 2522.7916,
+      "p50_ms": 2522.7916,
+      "p95_ms": 2522.7916,
+      "samples": 1
+    },
+    "dense_local_compute": {
+      "mean_ms": 0.37791249999999366,
+      "p50_ms": 0.391900000000021,
+      "p95_ms": 0.5965999999999667,
+      "samples": 24
+    },
+    "dense_total": {
+      "mean_ms": 1109.2369041666666,
+      "p50_ms": 999.91625,
+      "p95_ms": 1892.9275,
+      "samples": 24
+    },
+    "fusion_local": {
+      "mean_ms": 0.10844166666666666,
+      "p50_ms": 0.0945,
+      "p95_ms": 0.1548,
+      "samples": 24
+    },
+    "gemini_document_embedding_provider_call": {
+      "mean_ms": 2521.2739,
+      "p50_ms": 2521.2739,
+      "p95_ms": 2521.2739,
+      "samples": 1
+    },
+    "gemini_query_embedding_provider_call": {
+      "mean_ms": 1108.8589916666667,
+      "p50_ms": 999.5759,
+      "p95_ms": 1892.4853,
+      "samples": 24
+    },
+    "selection_local_overhead": {
+      "mean_ms": 0.06090416666666935,
+      "p50_ms": 0.05725000000003888,
+      "p95_ms": 0.07479999999998199,
+      "samples": 24
+    },
+    "sparse_local": {
+      "mean_ms": 0.0936125,
+      "p50_ms": 0.08915000000000001,
+      "p95_ms": 0.1579,
+      "samples": 24
+    },
+    "total_retrieval": {
+      "mean_ms": 1529.1596166666666,
+      "p50_ms": 1417.1849499999998,
+      "p95_ms": 2241.6895,
+      "samples": 24
+    }
+  }
+}
