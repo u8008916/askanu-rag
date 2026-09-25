@@ -1,5 +1,8 @@
 # AskANU V7 — Day 3: Build retrieval + reasoning
 
+Measured implementation evidence:
+`DAY_03_RETRIEVAL_REASONING_HANDOFF.md`.
+
 **Date:** 2026-09-23  
 **Repository:** `askanu-rag`  
 **Primary owner:** Carmen  

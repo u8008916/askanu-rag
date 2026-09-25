@@ -54,6 +54,7 @@ from askanu_rag.models import (
     Clarification,
     ClarificationOption,
     CurrentJobsResponse,
+    Domain,
     ErrorResponse,
     HealthResponse,
     InsufficientEvidenceResponse,
@@ -481,14 +482,22 @@ def create_app(
             if accommodation_response is not None:
                 return _mark_response(request, accommodation_response)
 
-        if support_queries is not None and is_plausible_resource_question(
-            resolved_question, "support", pending, payload.history
+        support_domain_resolved = (
+            conversation_turn.interpretation.domain == Domain.SUPPORT
+            and not conversation_turn.interpretation.requires_clarification
+        )
+        if support_queries is not None and (
+            support_domain_resolved
+            or is_plausible_resource_question(
+                resolved_question, "support", pending, payload.history
+            )
         ):
             support_response = await support_queries.answer(
                 resolved_question,
                 request_id,
                 payload.conversation_state.pending_clarification,
                 payload.history,
+                resolved_domain=support_domain_resolved,
             )
             if support_response is not None:
                 return _mark_response(request, support_response)

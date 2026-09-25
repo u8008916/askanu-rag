@@ -20,6 +20,7 @@ from askanu_rag.models import (
 )
 from askanu_rag.retrieval import JobReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
+from askanu_rag.retrieval.semantic import LocalTfidfRetriever
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
 
 CANBERRA = ZoneInfo("Australia/Canberra")
@@ -427,6 +428,7 @@ class JobQueryService:
         today_provider: Callable[[], date] = canberra_today,
         vector_retriever=None,
         *,
+        sparse_retriever=None,
         max_candidates: int = 10,
         min_score: float = 0.2,
     ) -> None:
@@ -435,6 +437,7 @@ class JobQueryService:
         self._repository = repository
         self._today_provider = today_provider
         self._vector = vector_retriever
+        self._sparse = sparse_retriever or LocalTfidfRetriever()
         self._merger = SharedHybridRetriever(max_candidates=max_candidates)
         self._min_score = min_score
 
@@ -532,23 +535,7 @@ class JobQueryService:
                 )
             )
             if semantic_intent:
-                if self._vector is None or not records:
-                    return InsufficientEvidenceResponse(
-                        answer=(
-                            "I could not establish sufficiently relevant current "
-                            "Jobs evidence for that topic."
-                        ),
-                        request_id=request_id,
-                    )
-                try:
-                    vector_hits = self._vector.search(
-                        question,
-                        domain="jobs",
-                        allowed_records=records,
-                        top_k=self._merger.max_candidates,
-                        min_score=self._min_score,
-                    )
-                except Exception:
+                if not records:
                     return InsufficientEvidenceResponse(
                         answer=(
                             "I could not establish sufficiently relevant current "
@@ -557,20 +544,47 @@ class JobQueryService:
                         request_id=request_id,
                     )
                 by_id = {record.record_id: record for record in records}
+                sparse_hits = self._sparse.search(
+                    question,
+                    records,
+                    top_k=self._merger.max_candidates,
+                    min_score=self._min_score,
+                )
+                sparse = [
+                    (by_id[hit.record_id], hit.score)
+                    for hit in sparse_hits
+                    if hit.record_id in by_id
+                    and math.isfinite(hit.score)
+                    and self._min_score <= hit.score <= 1
+                ]
+                semantic = []
+                if self._vector is not None:
+                    try:
+                        vector_hits = self._vector.search(
+                            question,
+                            domain="jobs",
+                            allowed_records=records,
+                            top_k=self._merger.max_candidates,
+                            min_score=self._min_score,
+                        )
+                    except Exception:
+                        vector_hits = ()
+                    semantic = [
+                        (
+                            by_id[hit.record.record_id],
+                            hit.score,
+                            hit.retrieval_unit_ids,
+                        )
+                        for hit in vector_hits
+                        if hit.record.record_id in by_id
+                        and math.isfinite(hit.score)
+                        and self._min_score <= hit.score <= 1
+                    ]
                 records = tuple(
                     ranked.record
                     for ranked in self._merger.merge(
-                        semantic=(
-                            (
-                                by_id[hit.record.record_id],
-                                hit.score,
-                                hit.retrieval_unit_ids,
-                            )
-                            for hit in vector_hits
-                            if hit.record.record_id in by_id
-                            and math.isfinite(hit.score)
-                            and self._min_score <= hit.score <= 1
-                        )
+                        sparse=sparse,
+                        semantic=semantic,
                     )
                 )
             else:

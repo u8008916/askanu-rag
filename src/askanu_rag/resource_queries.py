@@ -19,6 +19,7 @@ from askanu_rag.models import (
 )
 from askanu_rag.retrieval import ResourceReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
+from askanu_rag.retrieval.query_expansion import expand_support_problem_query
 from askanu_rag.retrieval.repository import ResourceRecord, normalize_job_title
 from askanu_rag.retrieval.semantic import LocalTfidfRetriever
 from askanu_rag.synthesis import SynthesisError
@@ -283,10 +284,13 @@ class DomainResourceQueryService:
         request_id: str,
         pending: Clarification | None = None,
         history=(),
+        *,
+        resolved_domain: bool = False,
     ) -> AskResponse | None:
         pattern = ACCOMMODATION_PATTERN if self.domain == "accommodation" else SUPPORT_PATTERN
         has_domain_signal = bool(
-            pattern.search(question)
+            resolved_domain
+            or pattern.search(question)
             or (self.domain == "support" and TOPIC_PATTERN.search(question))
         )
         records = self.repository.all_domain_records(self.domain)
@@ -351,8 +355,13 @@ class DomainResourceQueryService:
         elif exact:
             selected = exact
         else:
+            ranking_query = (
+                expand_support_problem_query(question)
+                if self.domain == "support"
+                else question
+            )
             sparse_hits = self.sparse.search(
-                question,
+                ranking_query,
                 records,
                 top_k=self.top_k,
                 min_score=self.min_sparse_score,
