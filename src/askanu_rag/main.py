@@ -27,7 +27,7 @@ from askanu_rag.entity_resolution import (
     EntityCatalogue,
     SafeEntityAlias,
 )
-from askanu_rag.database import DatabaseConfigurationError, RepositoryUnavailableError
+from askanu_rag.database import DatabaseConfigurationError, DatabaseConnectionConfig, RepositoryUnavailableError
 from askanu_rag.gemini import GeminiSynthesisClient
 from askanu_rag.event_queries import (
     EventQueryService,
@@ -48,6 +48,9 @@ from askanu_rag.resource_queries import (
 )
 from askanu_rag.retrieval.catalog import CatalogReader
 from askanu_rag.retrieval.semantic import LocalBm25Retriever
+from askanu_rag.retrieval.embeddings import GeminiEmbeddingProvider
+from askanu_rag.retrieval.reranking import CohereReranker
+from askanu_rag.retrieval.vector import PersistedSemanticRetriever, PostgresVectorRepository
 from askanu_rag.synthesis import SynthesisClient, SynthesisError
 from askanu_rag.models import (
     AskRequest,
@@ -192,11 +195,14 @@ def create_app(
     timeout_seconds: float = 30,
     semantic_retriever=None,
     vector_retriever=None,
-    semantic_top_k: int = 5,
+    reranker=None,
+    semantic_top_k: int = 20,
     semantic_min_score: float = 0.2,
     jobs_today_provider: Callable[[], date] | None = None,
     events_now_provider: Callable[[], datetime] | None = None,
-    max_merged_candidates: int = 10,
+    max_merged_candidates: int = 20,
+    evidence_top_k: int = 5,
+    rrf_k: int = 60,
     entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
     entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
     problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
@@ -209,7 +215,8 @@ def create_app(
         course_queries = HybridQueryService(repository, synthesis_client, candidate_retriever,
             vector_retriever=vector_retriever, timeout_seconds=timeout_seconds,
             top_k=semantic_top_k, min_score=semantic_min_score,
-            max_candidates=max_merged_candidates)
+            max_candidates=max_merged_candidates, reranker=reranker,
+            evidence_top_k=evidence_top_k, rrf_k=rrf_k)
     else:
         course_queries = CourseQueryService(repository, synthesis_client, timeout_seconds)
     scholarship_queries = (
@@ -220,6 +227,9 @@ def create_app(
             top_k=semantic_top_k,
             min_score=semantic_min_score,
             max_candidates=max_merged_candidates,
+            reranker=reranker,
+            evidence_top_k=evidence_top_k,
+            rrf_k=rrf_k,
         )
         if isinstance(repository, ScholarshipReader)
         else None
@@ -235,6 +245,9 @@ def create_app(
             top_k=semantic_top_k,
             max_candidates=max_merged_candidates,
             min_score=semantic_min_score,
+            reranker=reranker,
+            evidence_top_k=evidence_top_k,
+            rrf_k=rrf_k,
         )
         if isinstance(repository, JobReader)
         else None
@@ -248,6 +261,9 @@ def create_app(
             top_k=semantic_top_k,
             min_sparse_score=semantic_min_score,
             max_candidates=max_merged_candidates,
+            reranker=reranker,
+            evidence_top_k=evidence_top_k,
+            rrf_k=rrf_k,
         )
         if isinstance(repository, ResourceReader)
         else None
@@ -261,6 +277,9 @@ def create_app(
             top_k=semantic_top_k,
             min_sparse_score=semantic_min_score,
             max_candidates=max_merged_candidates,
+            reranker=reranker,
+            evidence_top_k=evidence_top_k,
+            rrf_k=rrf_k,
         )
         if isinstance(repository, ResourceReader)
         else None
@@ -584,13 +603,46 @@ def create_configured_app() -> FastAPI:
     """Runtime entrypoint: explicit local data path and environment-based Gemini."""
     settings = Settings.from_environment()
     repository = create_configured_repository(settings)
+    vector_retriever = None
+    if settings.environment == "production" and settings.api_key.get_secret_value():
+        try:
+            connection = DatabaseConnectionConfig.from_settings(settings)
+            embedder = GeminiEmbeddingProvider(
+                settings.api_key.get_secret_value(),
+                model=settings.embedding_model,
+                dimension=settings.embedding_dimension,
+                format_version=settings.retrieval_format_version,
+                timeout_seconds=settings.timeout_seconds,
+            )
+            vector_retriever = PersistedSemanticRetriever(
+                PostgresVectorRepository(connection.connect),
+                embedder,
+                top_k=settings.vector_top_k,
+                min_score=settings.vector_min_score,
+                max_units_per_record=settings.max_vector_units_per_record,
+                dimension=settings.embedding_dimension,
+                target_version=settings.embedding_version,
+            )
+        except (DatabaseConfigurationError, ValueError):
+            vector_retriever = None
+    reranker = None
+    if settings.cohere_api_key.get_secret_value():
+        reranker = CohereReranker(
+            settings.cohere_api_key.get_secret_value(),
+            model=settings.rerank_model,
+            timeout_seconds=settings.rerank_timeout_seconds,
+        )
     return create_app(
         repository,
         GeminiSynthesisClient(settings),
         timeout_seconds=settings.timeout_seconds,
+        vector_retriever=vector_retriever,
+        reranker=reranker,
         semantic_top_k=settings.semantic_top_k,
         semantic_min_score=settings.semantic_min_score,
         max_merged_candidates=settings.max_merged_candidates,
+        evidence_top_k=settings.rerank_top_n,
+        rrf_k=settings.rrf_k,
     )
 
 

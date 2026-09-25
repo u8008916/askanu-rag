@@ -618,7 +618,7 @@ def test_general_topic_jobs_reach_semantic_current_retrieval(question):
             assert query == question
             assert domain == "jobs"
             assert allowed_records == (job,)
-            assert top_k == 5
+            assert top_k == 20
             assert min_score == 0.2
             return (VectorHit(job, 0.9, ("whole",)),)
 

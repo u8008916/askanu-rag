@@ -432,18 +432,23 @@ class JobQueryService:
         vector_retriever=None,
         *,
         sparse_retriever=None,
-        top_k: int = 5,
-        max_candidates: int = 10,
+        top_k: int = 20,
+        max_candidates: int = 20,
         min_score: float = 0.2,
+        reranker=None,
+        evidence_top_k: int = 5,
+        rrf_k: int = 60,
     ) -> None:
-        if not 1 <= top_k <= 5 or not 0 < min_score <= 1:
+        if not 1 <= top_k <= 20 or not 1 <= evidence_top_k <= 5 or not 0 < min_score <= 1:
             raise ValueError("min_score must be in (0, 1]")
         self._repository = repository
         self._today_provider = today_provider
         self._vector = vector_retriever
         self._sparse = sparse_retriever or LocalBm25Retriever()
-        self._merger = SharedHybridRetriever(max_candidates=max_candidates)
+        self._reranker = reranker
+        self._merger = SharedHybridRetriever(max_candidates=max_candidates, rrf_k=rrf_k)
         self._top_k = top_k
+        self._evidence_top_k = evidence_top_k
         self._min_score = min_score
 
     async def answer(
@@ -549,12 +554,17 @@ class JobQueryService:
                         request_id=request_id,
                     )
                 by_id = {record.record_id: record for record in records}
-                sparse_hits = self._sparse.search(
-                    question,
-                    records,
-                    top_k=self._top_k,
-                    min_score=self._min_score,
-                )
+                sparse_status = "ok"
+                try:
+                    sparse_hits = self._sparse.search(
+                        question,
+                        records,
+                        top_k=self._top_k,
+                        min_score=self._min_score,
+                    )
+                except Exception:
+                    sparse_hits = ()
+                    sparse_status = "failed"
                 sparse = [
                     (by_id[hit.record_id], hit.score)
                     for hit in sparse_hits
@@ -564,6 +574,7 @@ class JobQueryService:
                     )
                 ]
                 semantic = []
+                dense_status = "disabled"
                 if self._vector is not None:
                     try:
                         vector_hits = self._vector.search(
@@ -573,8 +584,10 @@ class JobQueryService:
                             top_k=self._top_k,
                             min_score=self._min_score,
                         )
+                        dense_status = "ok"
                     except Exception:
                         vector_hits = ()
+                        dense_status = "failed"
                     semantic = [
                         (
                             by_id[hit.record.record_id],
@@ -588,11 +601,16 @@ class JobQueryService:
                     ]
                 records = tuple(
                     ranked.record
-                    for ranked in self._merger.merge(
+                    for ranked in self._merger.select(
+                        query=question,
                         sparse=sparse,
                         semantic=semantic,
-                    )
-                )[: self._top_k]
+                        reranker=self._reranker,
+                        top_n=self._evidence_top_k,
+                        sparse_status=sparse_status,
+                        dense_status=dense_status,
+                    ).candidates
+                )
             else:
                 records = records[:20]
             if not records:

@@ -251,7 +251,7 @@ def test_day5_uses_day4_strict_output_boundary(repo, output):
     assert response.json()["sources"] == []
 
 
-@pytest.mark.parametrize("settings", [{"semantic_top_k":0},{"semantic_top_k":6},{"semantic_min_score":0},{"semantic_min_score":1.1}])
+@pytest.mark.parametrize("settings", [{"semantic_top_k":0},{"semantic_top_k":21},{"semantic_min_score":0},{"semantic_min_score":1.1}])
 def test_semantic_settings_are_bounded(settings):
     with pytest.raises(ValidationError):
         Settings(**settings)
@@ -262,7 +262,8 @@ def test_semantic_failure_does_not_leak_provider_diagnostics(repo, caplog):
         def search(self, *args, **kwargs):
             raise RuntimeError("private-query-and-key-sentinel")
     response = post(repo, "Which course teaches programming?", BrokenVectors())
-    assert response.status_code == 502
+    assert response.status_code == 200
+    assert response.json()["status"] == "insufficient_evidence"
     assert "sentinel" not in response.text + caplog.text
 
 

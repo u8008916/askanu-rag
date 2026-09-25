@@ -447,7 +447,7 @@ def test_courses_preserve_sparse_signal_and_merge_dense_candidates_by_record():
         uses_persistent_index = False
 
         def search(self, _query, _candidates, *, top_k, min_score):
-            assert top_k == 5
+            assert top_k == 20
             assert min_score == 0.2
             return (SemanticHit(comp1110.record_id, 0.8),)
 

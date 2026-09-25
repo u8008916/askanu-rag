@@ -135,6 +135,7 @@ def test_postgres_vector_search_hard_filters_and_rehydrates_source_record():
         "[1,0]",
         "[1,0]",
         "courses",
+        "[1,0]",
         "v1",
         "model-a",
         [record.record_id],

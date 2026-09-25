@@ -45,22 +45,24 @@ Build the shared retrieval planner, typed result memory, and grounded reasoning 
 - Internal scores never become product truth.
 - Performance evidence ends with proposed numeric release gates.
 
-## PM-frozen retrieval decision — 2026-09-25
+## Final frozen retrieval decision — 2026-09-25
 
-- Select the exact benchmarked repository-owned local BM25 candidate retriever
-  for the V7 request path: `k1=1.2`, `b=0.75`, Unicode case-folding,
-  `[a-z0-9]+` tokens, title plus content, no stop-word removal, stemming or
-  field weighting, every positive score eligible, canonical record-ID tie
-  breaking, and candidate Top-K 5.
-- Apply domain hard filters before ranking and rehydrate only from that eligible
-  source snapshot. Exact/structured paths, source authority, provenance,
-  UNKNOWN/PARTIAL and EMPTY/INCOMPLETE semantics remain unchanged.
-- Do not select the tuned bounded TF-IDF correction as the V7 architecture.
-  Do not run a current+BM25 hybrid experiment or tune against the sealed holdout.
-- Defer hybrid retrieval, reranking, real embeddings, PostgreSQL FTS and a
-  retrieval framework. No migration, production indexing or deployment is part
-  of this decision.
-- Day 4 remains on HOLD until PM review of this Day 3 evidence and implementation.
+- Preserve the benchmarked local BM25 (`k1=1.2`, `b=0.75`) as sparse Top-20;
+  the earlier BM25-only head is historical intermediate evidence, not the final
+  production architecture.
+- Use Gemini `gemini-embedding-2` at 768 dimensions for dense Top-20 over V2
+  structured retrieval units, then deterministic RRF (`k=60`) to fused Top-20.
+- Reject only conclusively invalid hard-constraint candidates, then use Cohere
+  `rerank-v4.0-fast` for relevance Top-5. A transient Cohere failure retains the
+  deterministic RRF order.
+- Exact/structured paths, application-owned authority/provenance/currentness,
+  UNKNOWN/PARTIAL and EMPTY/INCOMPLETE semantics remain unchanged. Events stays
+  deterministic.
+- Use grounded Gemini `gemini-3.8-flash`, thinking level low, 4,096 output-token
+  cap, 20-second timeout and at most two application retries for transient 429,
+  5xx or transport failures only.
+- No framework/FTS migration, production backfill, provider rollout or deployment
+  is part of this implementation. Day 4 remains on HOLD pending review.
 
 ## Evidence to hand off
 

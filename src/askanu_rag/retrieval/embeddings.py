@@ -7,6 +7,9 @@ import math
 import re
 from typing import Protocol, Sequence
 
+from google import genai
+from google.genai import types
+
 
 class EmbeddingProvider(Protocol):
     """Provider boundary; model/version live here, not in retrieval code."""
@@ -17,6 +20,80 @@ class EmbeddingProvider(Protocol):
     def embed_documents(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]: ...
 
     def embed_query(self, text: str) -> tuple[float, ...]: ...
+
+
+class EmbeddingProviderError(RuntimeError):
+    """Safe provider boundary error without remote request details."""
+
+
+class GeminiEmbeddingProvider:
+    """Official Gemini Embedding 2 adapter with frozen 768-dimension output."""
+
+    provider = "gemini"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "gemini-embedding-2",
+        dimension: int = 768,
+        format_version: str = "retrieval-format-v1",
+        timeout_seconds: float = 20,
+    ) -> None:
+        if not api_key or not model.strip() or dimension != 768:
+            raise ValueError("invalid frozen Gemini embedding configuration")
+        if format_version != "retrieval-format-v1" or not 0 < timeout_seconds <= 30:
+            raise ValueError("invalid embedding format or timeout")
+        self._api_key = api_key
+        self.model = model
+        self.dimension = dimension
+        self.version = f"{model}:{dimension}:{format_version}"
+        self.timeout_seconds = timeout_seconds
+
+    def _embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        if not texts:
+            return ()
+        try:
+            contents = [
+                types.Content(parts=[types.Part(text=text)]) for text in texts
+            ]
+            with genai.Client(
+                api_key=self._api_key,
+                vertexai=False,
+                http_options=types.HttpOptions(
+                    base_url="https://generativelanguage.googleapis.com",
+                    timeout=int(self.timeout_seconds * 1000),
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            ) as client:
+                response = client.models.embed_content(
+                    model=self.model,
+                    contents=contents,
+                    config=types.EmbedContentConfig(
+                        output_dimensionality=self.dimension
+                    ),
+                )
+            embeddings = response.embeddings or []
+            if len(embeddings) != len(texts):
+                raise ValueError
+            return tuple(
+                validate_vector(item.values or (), dimension=self.dimension)
+                for item in embeddings
+            )
+        except Exception:
+            raise EmbeddingProviderError(
+                "Embedding provider request failed."
+            ) from None
+
+    def embed_documents(
+        self, texts: Sequence[str]
+    ) -> tuple[tuple[float, ...], ...]:
+        return self._embed(texts)
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        if not text.strip():
+            raise ValueError("embedding query must not be blank")
+        return self._embed((text,))[0]
 
 
 def validate_vector(vector: Sequence[float], *, dimension: int | None = None) -> tuple[float, ...]:

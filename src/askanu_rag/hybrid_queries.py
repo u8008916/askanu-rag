@@ -43,9 +43,10 @@ def _display_identity(record):
 
 class HybridQueryService:
     def __init__(self, repository, synthesis_client=None, semantic_retriever=None,
-                 *, vector_retriever=None, timeout_seconds=30, top_k=5,
-                 min_score=0.2, max_candidates=10):
-        if not 1 <= top_k <= 5 or not 0 < min_score <= 1:
+                 *, vector_retriever=None, timeout_seconds=30, top_k=20,
+                 min_score=0.2, max_candidates=20, reranker=None,
+                 evidence_top_k=5, rrf_k=60):
+        if not 1 <= top_k <= 20 or not 1 <= evidence_top_k <= 5 or not 0 < min_score <= 1:
             raise ValueError("Invalid bounded retrieval settings.")
         self.repository = repository
         self.synthesis_client = synthesis_client
@@ -55,9 +56,11 @@ class HybridQueryService:
             else LocalBm25Retriever()
         )
         self.vector = vector_retriever
-        self.merger = SharedHybridRetriever(max_candidates=max_candidates)
+        self.reranker = reranker
+        self.merger = SharedHybridRetriever(max_candidates=max_candidates, rrf_k=rrf_k)
         self.timeout_seconds = timeout_seconds
         self.top_k = top_k
+        self.evidence_top_k = evidence_top_k
         self.min_score = min_score
         self.legacy = CourseQueryService(repository, synthesis_client, timeout_seconds)
 
@@ -126,10 +129,12 @@ class HybridQueryService:
             )
         if not candidates or not plan.semantic_allowed:
             return ()
+        sparse_status = "ok"
         try:
             sparse_hits = self.semantic.search(plan.semantic_query, candidates, top_k=self.top_k, min_score=self.min_score)
         except Exception:
-            raise SynthesisError() from None
+            sparse_hits = ()
+            sparse_status = "failed"
         by_id = {record.record_id: record for record in candidates}
         sparse = [
             (by_id[hit.record_id], hit.score)
@@ -140,6 +145,7 @@ class HybridQueryService:
             )
         ]
         dense = []
+        dense_status = "disabled"
         if self.vector is not None:
             try:
                 vector_hits = self.vector.search(
@@ -148,10 +154,12 @@ class HybridQueryService:
                     allowed_records=candidates,
                     top_k=self.top_k,
                 )
+                dense_status = "ok"
             except Exception:
                 # Courses retain the proven sparse path if dense retrieval is
                 # unavailable; deterministic/exact behavior never depends on it.
                 vector_hits = ()
+                dense_status = "failed"
             dense = [
                 (by_id[hit.record.record_id], hit.score, hit.retrieval_unit_ids)
                 for hit in vector_hits
@@ -161,8 +169,16 @@ class HybridQueryService:
             ]
         chosen = [
             candidate.record
-            for candidate in self.merger.merge(sparse=sparse, semantic=dense)
-        ][: self.top_k]
+            for candidate in self.merger.select(
+                query=plan.semantic_query,
+                sparse=sparse,
+                semantic=dense,
+                reranker=self.reranker,
+                top_n=self.evidence_top_k,
+                sparse_status=sparse_status,
+                dense_status=dense_status,
+            ).candidates
+        ]
         if not plan.academic_year:
             keys = {(r.metadata_json.entity_type, record_code(r)) for r in chosen}
             siblings = tuple(r for r in candidates if (r.metadata_json.entity_type, record_code(r)) in keys)
@@ -193,7 +209,7 @@ class HybridQueryService:
                     and len(records) > 1
                     and not plan.list_shaped
                 )
-                or len(records) > self.top_k):
+                or len(records) > self.evidence_top_k):
             return NeedsClarificationResponse(
                 answer="Please choose a specific entity and academic year to narrow the request.",
                 clarification=Clarification(id="clar-course-program-selection", type="entity_selection",

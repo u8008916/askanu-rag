@@ -272,19 +272,24 @@ class DomainResourceQueryService:
         vector_retriever=None,
         *,
         sparse_retriever=None,
-        top_k: int = 5,
+        top_k: int = 20,
         min_sparse_score: float = 0.2,
-        max_candidates: int = 10,
+        max_candidates: int = 20,
+        reranker=None,
+        evidence_top_k: int = 5,
+        rrf_k: int = 60,
     ) -> None:
-        if not 1 <= top_k <= 5 or not 0 < min_sparse_score <= 1:
+        if not 1 <= top_k <= 20 or not 1 <= evidence_top_k <= 5 or not 0 < min_sparse_score <= 1:
             raise ValueError("Invalid bounded retrieval settings.")
         self.repository = repository
         self.domain = domain
         self.vector = vector_retriever
         self.sparse = sparse_retriever or LocalBm25Retriever()
         self.top_k = top_k
+        self.evidence_top_k = evidence_top_k
+        self.reranker = reranker
         self.min_sparse_score = min_sparse_score
-        self.merger = SharedHybridRetriever(max_candidates=max_candidates)
+        self.merger = SharedHybridRetriever(max_candidates=max_candidates, rrf_k=rrf_k)
 
     async def answer(
         self,
@@ -372,12 +377,17 @@ class DomainResourceQueryService:
         elif exact:
             selected = exact
         else:
-            sparse_hits = self.sparse.search(
-                question,
-                records,
-                top_k=self.top_k,
-                min_score=self.min_sparse_score,
-            )
+            sparse_status = "ok"
+            try:
+                sparse_hits = self.sparse.search(
+                    question,
+                    records,
+                    top_k=self.top_k,
+                    min_score=self.min_sparse_score,
+                )
+            except Exception:
+                sparse_hits = ()
+                sparse_status = "failed"
             by_id = {record.record_id: record for record in records}
             sparse = [
                 (by_id[hit.record_id], hit.score)
@@ -390,6 +400,7 @@ class DomainResourceQueryService:
                 )
             ]
             semantic = []
+            dense_status = "disabled"
             if self.vector is not None:
                 try:
                     vector_hits = self.vector.search(
@@ -405,12 +416,22 @@ class DomainResourceQueryService:
                         and math.isfinite(hit.score)
                         and 0 < hit.score <= 1
                     ]
+                    dense_status = "ok"
                 except Exception:
                     semantic = []
+                    dense_status = "failed"
             selected = tuple(
                 candidate.record
-                for candidate in self.merger.merge(sparse=sparse, semantic=semantic)
-            )[: self.top_k]
+                for candidate in self.merger.select(
+                    query=question,
+                    sparse=sparse,
+                    semantic=semantic,
+                    reranker=self.reranker,
+                    top_n=self.evidence_top_k,
+                    sparse_status=sparse_status,
+                    dense_status=dense_status,
+                ).candidates
+            )
         if not selected:
             if records and _is_broad_resource_request(question, self.domain):
                 return _resource_clarification(records, request_id, self.domain)

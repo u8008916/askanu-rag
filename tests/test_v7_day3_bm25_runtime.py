@@ -82,7 +82,7 @@ def test_selected_runtime_bm25_ties_are_stable_by_record_id():
     ]
 
 
-def test_all_runtime_discovery_services_default_to_selected_bm25_at_k_five():
+def test_all_runtime_discovery_services_use_bm25_as_sparse_top_twenty():
     repository = object()
 
     courses = HybridQueryService(repository)
@@ -95,14 +95,14 @@ def test_all_runtime_discovery_services_default_to_selected_bm25_at_k_five():
     )
     scholarships = ScholarshipQueryService(repository)  # type: ignore[arg-type]
 
-    assert Settings().semantic_top_k == 5
+    assert Settings().semantic_top_k == 20
     assert isinstance(courses.semantic, LocalBm25Retriever)
-    assert courses.top_k == 5
+    assert courses.top_k == 20
     assert isinstance(jobs._sparse, LocalBm25Retriever)
-    assert jobs._top_k == 5
+    assert jobs._top_k == 20
     assert isinstance(accommodation.sparse, LocalBm25Retriever)
-    assert accommodation.top_k == 5
+    assert accommodation.top_k == 20
     assert isinstance(support.sparse, LocalBm25Retriever)
-    assert support.top_k == 5
+    assert support.top_k == 20
     assert isinstance(scholarships._sparse, LocalBm25Retriever)
-    assert scholarships._top_k == 5
+    assert scholarships._top_k == 20

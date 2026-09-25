@@ -32,21 +32,30 @@ from askanu_rag.retrieval.postgres import (
 from askanu_rag.retrieval.embeddings import (
     DeterministicFakeEmbedder,
     EmbeddingProvider,
+    GeminiEmbeddingProvider,
 )
 from askanu_rag.retrieval.hybrid import (
     CandidateTier,
     RankedCandidate,
     SharedHybridRetriever,
 )
+from askanu_rag.retrieval.reranking import (
+    CohereReranker,
+    Reranker,
+    RerankerError,
+    RerankerUnavailableError,
+)
 from askanu_rag.retrieval.semantic import LocalBm25Retriever
 from askanu_rag.retrieval.units import RetrievalUnit, RetrievalUnitBuilder
 from askanu_rag.retrieval.vector import (
     EmbeddingIndexService,
+    BackfillReport,
     InMemoryVectorRepository,
     PersistedSemanticRetriever,
     PostgresVectorRepository,
     VectorHit,
     VectorRepository,
+    VectorReadiness,
 )
 
 __all__ = [
@@ -56,7 +65,9 @@ __all__ = [
     "CoursesEntityType",
     "CandidateTier",
     "DeterministicFakeEmbedder",
+    "GeminiEmbeddingProvider",
     "EmbeddingIndexService",
+    "BackfillReport",
     "EmbeddingProvider",
     "EventReader",
     "JobLookupResult",
@@ -71,11 +82,16 @@ __all__ = [
     "ResourceReader",
     "ScholarshipReader",
     "SharedHybridRetriever",
+    "CohereReranker",
+    "Reranker",
+    "RerankerError",
+    "RerankerUnavailableError",
     "UnavailableCourseProgramRepository",
     "RetrievalUnit",
     "RetrievalUnitBuilder",
     "VectorHit",
     "VectorRepository",
+    "VectorReadiness",
     "create_default_course_program_repository",
     "load_common_record_file",
     "load_common_records",
