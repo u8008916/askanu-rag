@@ -190,8 +190,9 @@ material. The change is bounded, reversible and retains the current interface.
 
 BM25 improved recall over the original TF-IDF baseline but still missed the
 financial-hardship query with no lexical overlap and admitted much more noise.
-Adopting this local implementation would add commodity ranking code without
-beating the smaller Support-specific correction, so it remains evaluation-only.
+On the development set it did not beat the smaller Support-specific correction.
+The independent holdout below materially changes the confidence in that tuned
+comparison, but does not by itself approve BM25 for production.
 
 ## Auditable local candidate-retrieval latency
 
@@ -265,6 +266,82 @@ dependency, not a result that this local fixture can support.
 These calculations are emitted from the same frozen labels and candidate lists
 used for Recall@K, so their numerators and denominators are directly auditable.
 
+## Frozen unseen holdout — generalization check
+
+`benchmarks/v7_day3/holdout.json` was prelabelled and committed before any
+retriever was run against it. Freeze commit:
+`25d3145d8d7d8ab3ebb0125c6dc72164e80b72d4`; artifact SHA-256:
+`13b061af57a6c2730dc7434f325996f0e2ce536ceddf00281545a89f58bf65b6`.
+The labels and queries were not changed after evaluation, and no retrieval rule
+was modified in response to the results.
+
+The holdout has 24 non-duplicate queries, four per domain, with 6 easy, 12
+medium and 6 difficult cases. It reuses unchanged records from the development
+corpus but has zero exact query-text overlap with the 36-query development set.
+Its three natural Support problems deliberately avoid every currently encoded
+Support expansion phrase.
+
+Each pipeline used the same records, eligible populations, labels, K values and
+evaluation function. Latency uses 200 local in-process repetitions per query
+and K.
+
+| Holdout metric | Original baseline | Final Day 3 | BM25 experiment |
+|---|---:|---:|---:|
+| Recall@1 | 67.36% | 67.36% | 79.86% |
+| Recall@3 | 75.00% | 75.00% | 95.83% |
+| Recall@5 | 75.00% | 75.00% | 95.83% |
+| Recall@10 | 75.00% | 75.00% | 95.83% |
+| Recall@20 | 75.00% | 75.00% | 95.83% |
+| Selected-evidence completeness@5 | 18/24 (75.00%) | 18/24 (75.00%) | 23/24 (95.83%) |
+| Precision proxy | 23/23 (100%) | 23/23 (100%) | 28/43 (65.12%) |
+| Provenance preservation | 100% | 100% | 100% |
+| Hard-constraint preservation | 100% | 100% | 100% |
+| Local candidate p50 / p95 | 0.0002 / 0.0743 ms | 0.0004 / 0.0825 ms | 0.0002 / 0.0396 ms |
+| Failure counts | DATA 4, NONE 14, RETRIEVAL 6 | DATA 4, NONE 14, RETRIEVAL 6 | DATA 4, NONE 19, RETRIEVAL 1 |
+
+The four DATA cases were retrieved correctly by every pipeline: Scholarship
+personal eligibility, Accommodation current vacancy, incomplete Job
+requirements and missing Rubric organiser. They remain DATA rather than being
+misclassified as retrieval misses.
+
+The final pipeline's six RETRIEVAL failures are:
+
+- Scholarship equity discovery using “money is tight” wording;
+- Accommodation music-space preference phrased as “practise music”;
+- Jobs discovery phrased as backend Python services; and
+- all three unseen Support problems: disagreeing with an assignment result,
+  inability to make ends meet, and difficulty adjusting after arriving from
+  abroad.
+
+Final per-domain Recall@5 is Courses 100%, Events 100%, Accommodation 75%, Jobs
+75%, Scholarships 75% and Support 25%. The original baseline has the identical
+distribution: the tuned Support expansion and Jobs fallback do not materially
+outperform it on these unseen queries.
+
+BM25 reaches 100% Recall@5 in every domain except Support at 75%. It retrieves
+the unseen assessment, overseas-settling, Jobs, Scholarship and Accommodation
+cases, but misses the financial paraphrase and adds 15 irrelevant selected
+candidates, reducing the precision proxy to 65.12%.
+
+Generalization decision:
+
+1. The final Day 3 pipeline does **not** materially outperform the original
+   baseline on this unseen holdout.
+2. BM25 materially outperforms both on unseen Recall@5, 95.83% versus 75%, but
+   its candidate noise is materially worse, 65.12% versus 100% precision proxy.
+3. The current Support mappings are tuned phrase corrections, not demonstrated
+   semantic generalization. The Jobs sparse fallback exists, but the current
+   TF-IDF threshold/ranking does not generalize to this unseen Jobs wording.
+4. The development-set improvement remains valid for those labelled queries,
+   but it is not sufficient evidence to freeze the retrieval architecture.
+5. A separately designed hybrid current+BM25 candidate/selection experiment is
+   justified. This sealed holdout must not be used to tune or then prove that
+   experiment; it needs a new development set and a later untouched validation
+   set.
+6. No production migration is justified yet. BM25 remains evaluation-only and
+   the retrieval architecture decision is HOLD pending further PM-directed
+   evaluation.
+
 ### PostgreSQL FTS, dense pgvector, hybrid and reranking
 
 - PostgreSQL FTS would require a database-backed benchmark and likely an index
@@ -273,8 +350,9 @@ used for Recall@K, so their numerators and denominators are directly auditable.
 - The dense/pgvector path exists but is inactive in configured runtime. No real
   embedding provider/model or production vector population was enabled, so
   fabricating dense/hybrid quality numbers would be misleading.
-- Reranking is not justified while the bounded correction reaches 100% Recall@5
-  and 100% precision proxy on the frozen set.
+- The holdout now justifies evaluating a bounded current+BM25 candidate union
+  with an explicit evidence-selection/noise control. It does not justify
+  implementing or tuning that experiment on this sealed holdout.
 - LangChain/LlamaIndex would add dependencies and framework objects without
   replacing a measured maintenance burden. No framework or hosted service was
   adopted and no new data/trust boundary was introduced.
@@ -293,6 +371,10 @@ used for Recall@K, so their numerators and denominators are directly auditable.
 - Exact identifiers, hard filters and retained ordinals remain vector-independent.
 
 ## Proposed Day 7 numeric gates — for Qasim review, not frozen
+
+The unseen final pipeline fails the proposed Recall@5 and evidence-completeness
+gates. These values therefore remain proposals only and are not ready for Qasim
+to freeze until the generalization gap is addressed on separate data.
 
 | Metric | Measured baseline | Measured final | Proposed gate | Rationale / scope |
 |---|---:|---:|---:|---|
@@ -324,23 +406,27 @@ python -m askanu_rag.retrieval.benchmark_cli --pipeline current --latency-repeti
 python -m askanu_rag.retrieval.benchmark_cli --pipeline support-expansion --latency-repetitions 200
 python -m askanu_rag.retrieval.benchmark_cli --pipeline day3-improvement --latency-repetitions 200
 python -m askanu_rag.retrieval.benchmark_cli --pipeline bm25 --latency-repetitions 200
+python -m askanu_rag.retrieval.benchmark_cli --benchmark benchmarks/v7_day3/holdout.json --pipeline current --latency-repetitions 200
+python -m askanu_rag.retrieval.benchmark_cli --benchmark benchmarks/v7_day3/holdout.json --pipeline day3-improvement --latency-repetitions 200
+python -m askanu_rag.retrieval.benchmark_cli --benchmark benchmarks/v7_day3/holdout.json --pipeline bm25 --latency-repetitions 200
 ```
 
 Focused behavioural coverage is in
-`tests/test_v7_day3_retrieval_reasoning.py`. Full verification totals belong in
-the final author handoff after the complete suite is run.
+`tests/test_v7_day3_retrieval_reasoning.py`; frozen holdout invariants and
+observed comparison results are covered in `tests/test_v7_day3_holdout.py`.
+Full verification totals belong in the final author handoff after the complete
+suite is run.
 
 ## Local verification
 
+- Frozen unseen holdout: 8 passed.
 - Day 3 focused: 20 passed.
 - Day 2 understanding regression: 27 passed.
 - Day 1 state/wire regression: 36 passed.
 - Transport contract: 12 passed.
 - Six-domain behavioural selection: 355 passed.
-- Explicit 10-turn and both 20-turn journeys: 3 passed.
-- Full suite: 916 passed, 89 skipped, 3 dependency deprecation warnings. The
-  restricted review sandbox also emitted one non-test `PytestCacheWarning`
-  because the repository cache directory was read-only.
+- Explicit 10-turn and three 20-turn journeys: 4 passed.
+- Full suite: 924 passed, 89 skipped, 3 dependency deprecation warnings.
 - PostgreSQL integration: 88 skipped because
   `ASKANU_TEST_DATABASE_URL` is not configured; no PostgreSQL claim is made.
 - `pip check`: no broken requirements.
@@ -350,6 +436,8 @@ the final author handoff after the complete suite is run.
 
 ## Deferred work
 
+- PM decision on a new, separately developed current+BM25 hybrid experiment;
+  the sealed holdout cannot become its tuning set.
 - PM/Qasim freeze of Day 7 numeric gates.
 - Database-backed PostgreSQL FTS and pgvector comparison only after a bounded,
   representative approved-data benchmark and explicit migration/index decision.
