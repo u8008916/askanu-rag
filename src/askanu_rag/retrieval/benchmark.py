@@ -295,6 +295,12 @@ class QueryResult(BenchmarkModel):
     observed_failure_class: str
 
 
+class LatencySummary(BenchmarkModel):
+    p50_ms: float
+    p95_ms: float
+    samples: int
+
+
 class BenchmarkReport(BenchmarkModel):
     benchmark_id: str
     pipeline: str
@@ -306,6 +312,10 @@ class BenchmarkReport(BenchmarkModel):
     retrieval_latency_p50_ms: float
     retrieval_latency_p95_ms: float
     domain_latency_p50_ms: dict[str, float]
+    retrieval_latency_by_k_ms: dict[int, LatencySummary]
+    route_latency_ms: dict[str, LatencySummary]
+    interaction_latency_ms: dict[str, LatencySummary]
+    domain_latency_ms: dict[str, LatencySummary]
     domain_recall_at_5: dict[str, float]
     provenance_pass_rate: float
     hard_constraint_pass_rate: float
@@ -332,6 +342,11 @@ def evaluate_benchmark(
     by_id = {record.record_id: record for record in suite.records}
     recalls: dict[int, list[float]] = {value: [] for value in BENCHMARK_K_VALUES}
     domain_recalls: dict[str, list[float]] = {}
+    latency_by_k: dict[int, list[float]] = {
+        value: [] for value in BENCHMARK_K_VALUES
+    }
+    route_latencies: dict[str, list[float]] = {}
+    interaction_latencies: dict[str, list[float]] = {}
     domain_latencies: dict[str, list[float]] = {}
     latencies: list[float] = []
     results: list[QueryResult] = []
@@ -391,12 +406,21 @@ def evaluate_benchmark(
             )
         )
 
-        for _ in range(latency_repetitions):
-            started = perf_counter_ns()
-            retriever.retrieve(case, population, top_k=max(BENCHMARK_K_VALUES))
-            elapsed_ms = (perf_counter_ns() - started) / 1_000_000
-            latencies.append(elapsed_ms)
-            domain_latencies.setdefault(case.domain.value, []).append(elapsed_ms)
+        for value in BENCHMARK_K_VALUES:
+            for _ in range(latency_repetitions):
+                started = perf_counter_ns()
+                retriever.retrieve(case, population, top_k=value)
+                elapsed_ms = (perf_counter_ns() - started) / 1_000_000
+                latency_by_k[value].append(elapsed_ms)
+                if value == max(BENCHMARK_K_VALUES):
+                    latencies.append(elapsed_ms)
+                    route_latencies.setdefault(case.route, []).append(elapsed_ms)
+                    interaction_latencies.setdefault(
+                        _interaction_class(case), []
+                    ).append(elapsed_ms)
+                    domain_latencies.setdefault(case.domain.value, []).append(
+                        elapsed_ms
+                    )
 
     measured = sum(bool(query.expected_relevant_record_ids) for query in suite.queries)
     return BenchmarkReport(
@@ -415,6 +439,22 @@ def evaluate_benchmark(
             domain: _percentile(values, 0.50)
             for domain, values in sorted(domain_latencies.items())
         },
+        retrieval_latency_by_k_ms={
+            value: _latency_summary(latency_by_k[value])
+            for value in BENCHMARK_K_VALUES
+        },
+        route_latency_ms={
+            route: _latency_summary(values)
+            for route, values in sorted(route_latencies.items())
+        },
+        interaction_latency_ms={
+            interaction: _latency_summary(values)
+            for interaction, values in sorted(interaction_latencies.items())
+        },
+        domain_latency_ms={
+            domain: _latency_summary(values)
+            for domain, values in sorted(domain_latencies.items())
+        },
         domain_recall_at_5={
             domain: _mean(values) for domain, values in sorted(domain_recalls.items())
         },
@@ -431,6 +471,27 @@ def report_json(report: BenchmarkReport) -> str:
 
 def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _latency_summary(values: Sequence[float]) -> LatencySummary:
+    return LatencySummary(
+        p50_ms=_percentile(values, 0.50),
+        p95_ms=_percentile(values, 0.95),
+        samples=len(values),
+    )
+
+
+def _interaction_class(query: BenchmarkQuery) -> str:
+    if query.query_type in {
+        "resolved_follow_up",
+        "resolved_time_refinement",
+        "retained_resultset_ordinal",
+        "continue_resultset",
+    }:
+        return "follow_up"
+    if query.route == "exact":
+        return "lookup"
+    return "discovery"
 
 
 def _percentile(values: Sequence[float], quantile: float) -> float:

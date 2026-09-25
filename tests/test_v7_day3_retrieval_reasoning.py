@@ -171,6 +171,34 @@ def test_current_baseline_reports_all_required_k_values_and_stage_metrics(baseli
     assert baseline.recall_at_k[20] == pytest.approx(0.8857142857)
     assert baseline.selected_evidence_complete_rate == pytest.approx(31 / 35)
     assert baseline.selected_evidence_precision == 1.0
+    assert tuple(baseline.retrieval_latency_by_k_ms) == BENCHMARK_K_VALUES
+    assert all(
+        summary.samples == baseline.query_count
+        for summary in baseline.retrieval_latency_by_k_ms.values()
+    )
+    assert set(baseline.route_latency_ms) == {"discovery", "exact", "structured"}
+    assert set(baseline.interaction_latency_ms) == {
+        "discovery",
+        "follow_up",
+        "lookup",
+    }
+    assert set(baseline.domain_latency_ms) == {
+        "accommodation",
+        "courses",
+        "events",
+        "jobs",
+        "scholarships",
+        "support",
+    }
+    assert all(
+        summary.p95_ms >= summary.p50_ms >= 0
+        for summary in (
+            *baseline.retrieval_latency_by_k_ms.values(),
+            *baseline.route_latency_ms.values(),
+            *baseline.interaction_latency_ms.values(),
+            *baseline.domain_latency_ms.values(),
+        )
+    )
 
 
 def test_baseline_preserves_hard_filters_and_source_authority(baseline):

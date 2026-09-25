@@ -118,16 +118,15 @@ EMPTY case is excluded from recall.
 | Selected-evidence completeness at K=5 | 88.57% |
 | Selected-evidence precision proxy | 100% |
 | Local retrieval p50 | 0.0002 ms |
-| Local retrieval p95 | 0.0651 ms |
+| Local retrieval p95 | 0.0628 ms |
 | Provenance checks | 100% |
 | Hard-constraint checks | 100% |
 
 Domain Recall@5 was 100% for Courses, Scholarships, Accommodation and Events,
-80% for Jobs, and 50% for Support. The latency outlier was Support because it is the
-only domain in this balanced fixture with three multi-record sparse-discovery
-queries: Support p50 was 0.00965 ms; the other domain p50 values were 0.0002 ms.
-These are local algorithm/fixture timings, not network, PostgreSQL or full-answer
-latency.
+80% for Jobs, and 50% for Support. The latency outlier was Support because it is
+the only domain in this balanced fixture with three multi-record sparse-discovery
+queries: Support p50/p95 was 0.01055/0.0663 ms. These are local
+algorithm/fixture timings, not network, PostgreSQL or full-answer latency.
 
 Baseline failure classification:
 
@@ -167,13 +166,13 @@ longer removes the safe local sparse candidate path.
 | Selected-evidence completeness at K=5 | 100% |
 | Selected-evidence precision proxy | 100% |
 | Local retrieval p50 | 0.0004 ms |
-| Local retrieval p95 | 0.0717 ms |
+| Local retrieval p95 | 0.0737 ms |
 | Every domain Recall@5 | 100% |
 | Provenance / hard constraints | 100% / 100% |
 
 The Support-only intermediate reached 97.14% Recall@5 and left only the Jobs
 gap. The combined implementation closes both measured gaps. The remaining five
-classified cases are DATA, not retrieval defects. The final p95 delta is 0.0066
+classified cases are DATA, not retrieval defects. The final p95 delta is 0.0109
 ms on a synthetic in-process fixture and is not operationally
 material. The change is bounded, reversible and retains the current interface.
 
@@ -186,13 +185,85 @@ material. The change is bounded, reversible and retains the current interface.
 | Recall@5 / @10 / @20 | 97.14% |
 | Selected-evidence completeness at K=5 | 97.14% |
 | Selected-evidence precision proxy | 77.19% |
-| Local retrieval p50 / p95 | 0.0002 / 0.0323 ms |
+| Local retrieval p50 / p95 | 0.0002 / 0.0321 ms |
 | Provenance / hard constraints | 100% / 100% |
 
 BM25 improved recall over the original TF-IDF baseline but still missed the
 financial-hardship query with no lexical overlap and admitted much more noise.
 Adopting this local implementation would add commodity ranking code without
 beating the smaller Support-specific correction, so it remains evaluation-only.
+
+## Auditable local candidate-retrieval latency
+
+All values below are local, in-process candidate-retrieval timings over the
+frozen 36-query fixture, with 200 repetitions per query and K. Each K row
+therefore contains 7,200 samples. They exclude HTTP transport, PostgreSQL,
+embedding calls, evidence rendering and answer generation.
+
+| K | Baseline p50 / p95 (ms) | Final p50 / p95 (ms) | BM25 p50 / p95 (ms) |
+|---:|---:|---:|---:|
+| 1 | 0.0001 / 0.0634 | 0.0004 / 0.0737 | 0.0002 / 0.0320 |
+| 3 | 0.0001 / 0.0631 | 0.0004 / 0.0738 | 0.0002 / 0.0319 |
+| 5 | 0.0001 / 0.0625 | 0.0004 / 0.0725 | 0.0002 / 0.0317 |
+| 10 | 0.0001 / 0.0622 | 0.0004 / 0.0730 | 0.0002 / 0.0318 |
+| 20 | 0.0002 / 0.0628 | 0.0004 / 0.0737 | 0.0002 / 0.0321 |
+
+There is no material K-growth trend in this bounded fixture: exact and
+structured routes slice an already-filtered tuple, while sparse discovery ranks
+the same small eligible population before applying K. The observed p95 ranges
+are timer-noise scale, not evidence of an operational K penalty.
+
+At K=20, interaction classes are mutually exclusive. `follow_up` means one of
+`resolved_follow_up`, `resolved_time_refinement`, `retained_resultset_ordinal`
+or `continue_resultset`; other exact routes are `lookup`; all remaining
+structured/discovery routes are `discovery`.
+
+| Interaction | Baseline p50 / p95 (ms) | Final p50 / p95 (ms) | BM25 p50 / p95 (ms) |
+|---|---:|---:|---:|
+| Lookup | 0.0001 / 0.0002 | 0.0004 / 0.0005 | 0.0001 / 0.0002 |
+| Discovery | 0.0002 / 0.0653 | 0.0005 / 0.0775 | 0.0002 / 0.0349 |
+| Follow-up/refinement | 0.0001 / 0.0002 | 0.0004 / 0.0005 | 0.0001 / 0.0002 |
+
+The final domain distribution at K=20 was:
+
+| Domain | p50 (ms) | p95 (ms) |
+|---|---:|---:|
+| Accommodation | 0.0004 | 0.0653 |
+| Courses | 0.0004 | 0.0506 |
+| Events | 0.0004 | 0.0004 |
+| Jobs | 0.0004 | 0.0568 |
+| Scholarships | 0.0004 | 0.0007 |
+| Support | 0.01275 | 0.0808 |
+
+Support is the only material domain outlier because three queries rank a
+five-record sparse population and apply bounded query expansion. Jobs gains a
+sparse discovery call in the final pipeline, which explains its p95 movement
+from 0.0002 ms at baseline to 0.0568 ms. Both remain far below the proposed
+local absolute gate.
+
+No end-to-end `/api/v1/ask` latency was measured. The latest explicit-PM-GO Day
+3 contract requires retrieval p50/p95, K behaviour and domain outliers, and says
+end-to-end latency must be reported separately *if measured*. It therefore does
+not require another end-to-end run before PR review. A production-like
+PostgreSQL and end-to-end answer distribution remains a Day 7 gate-setting
+dependency, not a result that this local fixture can support.
+
+## Evidence metric definitions and denominators
+
+- **Selected-evidence completeness at K=5** is the macro fraction of labelled,
+  non-empty queries for which every prelabelled expected record ID appears in
+  the first five selected candidate IDs. The true EMPTY case is excluded from
+  the denominator. Baseline is 31/35 (88.57%), final is 35/35 (100%), and BM25
+  is 34/35 (97.14%).
+- **Selected-evidence precision proxy** is micro-averaged
+  `sum(relevant selected IDs) / sum(all selected IDs)` over the first five
+  selected candidates for all 36 queries. A zero-candidate query adds zero to
+  both numerator and denominator. Baseline is 41/41 (100%), final is 45/45
+  (100%), and BM25 is 44/57 (77.19%). It is a labelled-fixture noise proxy, not
+  a claim about generated-answer precision.
+
+These calculations are emitted from the same frozen labels and candidate lists
+used for Recall@K, so their numerators and denominators are directly auditable.
 
 ### PostgreSQL FTS, dense pgvector, hybrid and reranking
 
@@ -223,17 +294,24 @@ beating the smaller Support-specific correction, so it remains evaluation-only.
 
 ## Proposed Day 7 numeric gates — for Qasim review, not frozen
 
-These proposals follow the measured distribution:
+| Metric | Measured baseline | Measured final | Proposed gate | Rationale / scope |
+|---|---:|---:|---:|---|
+| Macro Recall@5 | 88.57% | 100% | at least 98% | Allows at most a small aggregate regression while preserving the measured improvement. |
+| Per-domain Recall@5 | 50%–100% | 100% each | at least 95% each | Prevents a strong macro score from hiding one weak domain. |
+| Macro Recall@20 | 88.57% | 100% | at least 99% | Required evidence should almost always enter the candidate set by K=20. |
+| Exact/structured identity correctness | 100% | 100% | exactly 100% | Deterministic identity and filters must not depend on ranking. |
+| Selected-evidence completeness@5 | 31/35 (88.57%) | 35/35 (100%) | at least 98% | Reliable labelled-fixture evidence-selection measure. |
+| Selected-evidence precision proxy | 41/41 (100%) | 45/45 (100%) | at least 95% | Allows limited candidate noise without hiding a material selection regression. |
+| Provenance / hard-constraint preservation | 100% / 100% | 100% / 100% | exactly 100% / 100% | These are safety invariants, not tunable quality metrics. |
+| UNKNOWN→FALSE / INCOMPLETE→EMPTY regressions | 0 / 0 | 0 / 0 | exactly 0 / 0 | Missing evidence must never become negative truth. |
+| Local candidate retrieval p95 at K=20 | 0.0628 ms | 0.0737 ms | at most 1 ms | Wide absolute margin for the frozen local fixture while still catching algorithmic blow-ups. |
+| Same-host local p95 regression | reference | +17.36% (+0.0109 ms) | at most 20% when both measurements exceed timer noise | A relative release-candidate guard; sub-resolution changes are judged by the absolute gate. |
 
-1. Frozen benchmark macro Recall@5 at least 98%, with every domain at least 95%.
-2. Recall@20 at least 99%; exact/structured identity cases must remain 100%.
-3. Selected-evidence completeness at K=5 at least 98% and precision proxy at
-   least 95%.
-4. Provenance preservation and hard-constraint preservation exactly 100%.
-5. Zero UNKNOWN→FALSE and INCOMPLETE→EMPTY safety regressions.
-6. Frozen local candidate benchmark p95 at most 1 ms on the Day 7 runner and no
-   more than 20% slower than its same-host RC baseline when both values exceed
-   timer noise.
+No generated-answer reasoning-quality percentage is proposed: this fixture has
+reliable record-level evidence labels and semantic safety assertions, but no
+independently scored answer corpus. The proposed measurable reasoning controls
+are therefore selected-evidence completeness/precision plus the exact safety
+invariants above, rather than a fabricated answer-quality number.
 
 A production-like PostgreSQL candidate latency gate and end-to-end answer gate
 remain HOLD until Day 7 measures those paths; this local fixture cannot justify
@@ -260,7 +338,9 @@ the final author handoff after the complete suite is run.
 - Transport contract: 12 passed.
 - Six-domain behavioural selection: 355 passed.
 - Explicit 10-turn and both 20-turn journeys: 3 passed.
-- Full suite: 916 passed, 89 skipped, 3 dependency deprecation warnings.
+- Full suite: 916 passed, 89 skipped, 3 dependency deprecation warnings. The
+  restricted review sandbox also emitted one non-test `PytestCacheWarning`
+  because the repository cache directory was read-only.
 - PostgreSQL integration: 88 skipped because
   `ASKANU_TEST_DATABASE_URL` is not configured; no PostgreSQL claim is made.
 - `pip check`: no broken requirements.
