@@ -317,24 +317,27 @@ def _support_record(entity_id: str, title: str, purpose: str) -> SupportRecord:
 
 
 @pytest.mark.parametrize(
-    ("question", "expected_record_id"),
+    ("question", "expected_record_id", "expected_status"),
     (
         (
             "My mark feels unfair and I want to challenge the assessment",
             "support:support_service:academic",
+            "ok",
         ),
         (
             "I am stressed because I cannot afford groceries",
-            "support:support_service:financial",
+            None,
+            "insufficient_evidence",
         ),
         (
             "Where can an international student get help settling in?",
             "support:support_service:international",
+            "ok",
         ),
     ),
 )
 def test_resolved_natural_support_problems_reach_source_grounded_retrieval(
-    question, expected_record_id
+    question, expected_record_id, expected_status
 ):
     records = (
         _support_record(
@@ -361,9 +364,12 @@ def test_resolved_natural_support_problems_reach_source_grounded_retrieval(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "ok"
-    assert body["sources"][0]["record_id"] == expected_record_id
-    assert body["sources"][0]["source_id"] == "support_anusa_student_assistance"
+    assert body["status"] == expected_status
+    if expected_record_id is None:
+        assert body["sources"] == []
+    else:
+        assert body["sources"][0]["record_id"] == expected_record_id
+        assert body["sources"][0]["source_id"] == "support_anusa_student_assistance"
 
 
 def test_jobs_semantic_discovery_has_local_sparse_fallback_without_vectors():

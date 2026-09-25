@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections import Counter
 from pathlib import Path
 from statistics import median
@@ -21,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from askanu_rag.models import AnswerState, Domain, ResultSetStatus
 from askanu_rag.retrieval.query_expansion import expand_support_problem_query
-from askanu_rag.retrieval.semantic import LocalTfidfRetriever
+from askanu_rag.retrieval.semantic import LocalBm25Retriever, LocalTfidfRetriever
 
 BENCHMARK_K_VALUES = (1, 3, 5, 10, 20)
 
@@ -210,7 +209,7 @@ class SupportExpansionExperiment(CurrentSparseBaseline):
 
 
 class Day3BoundedImprovement(SupportExpansionExperiment):
-    """Implemented Support expansion plus local sparse Jobs fallback."""
+    """Historical tuned Support expansion plus TF-IDF Jobs fallback."""
 
     name = "day3-bounded-support-expansion-and-jobs-sparse-fallback"
 
@@ -226,19 +225,13 @@ class Day3BoundedImprovement(SupportExpansionExperiment):
         return super().retrieve(query, records, top_k=top_k)
 
 
-_BM25_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-
-
 class LocalBm25Experiment:
-    """Evaluation-only BM25 candidate; never used by the production request path."""
+    """Frozen benchmark adapter around the selected runtime BM25 retriever."""
 
-    name = "evaluation-only-local-bm25"
+    name = "selected-local-bm25"
 
     def __init__(self, *, k1: float = 1.2, b: float = 0.75) -> None:
-        if k1 <= 0 or not 0 <= b <= 1:
-            raise ValueError("invalid BM25 parameters")
-        self._k1 = k1
-        self._b = b
+        self._retriever = LocalBm25Retriever(k1=k1, b=b)
 
     def retrieve(
         self,
@@ -249,39 +242,18 @@ class LocalBm25Experiment:
     ) -> tuple[BenchmarkRecord, ...]:
         if query.route in {"exact", "structured"}:
             return records[:top_k]
-        documents = [self._tokens(f"{record.title}\n{record.content}") for record in records]
-        query_tokens = tuple(self._tokens(query.query))
-        if not query_tokens:
-            return ()
-        document_frequency = Counter(
-            token for document in documents for token in set(document)
+        hits = self._retriever.search(
+            query.query,
+            records,  # type: ignore[arg-type] -- projection has title/content/ID
+            top_k=top_k,
+            min_score=0.0,
         )
-        average_length = sum(len(document) for document in documents) / len(documents)
-        scored: list[tuple[float, str, BenchmarkRecord]] = []
-        for record, document in zip(records, documents):
-            score = 0.0
-            length_normalizer = 1 - self._b + self._b * (
-                len(document) / average_length if average_length else 0
-            )
-            for token in query_tokens:
-                frequency = document[token]
-                if frequency == 0:
-                    continue
-                frequency_docs = document_frequency[token]
-                inverse_frequency = math.log(
-                    1 + (len(documents) - frequency_docs + 0.5) / (frequency_docs + 0.5)
-                )
-                score += inverse_frequency * (
-                    frequency * (self._k1 + 1)
-                ) / (frequency + self._k1 * length_normalizer)
-            if score > 0:
-                scored.append((score, record.record_id, record))
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        return tuple(item[2] for item in scored[:top_k])
-
-    @staticmethod
-    def _tokens(value: str) -> Counter[str]:
-        return Counter(_BM25_TOKEN_PATTERN.findall(value.casefold()))
+        by_id = {record.record_id: record for record in records}
+        return tuple(
+            by_id[hit.record_id]
+            for hit in hits
+            if hit.record_id in by_id
+        )
 
 
 class QueryResult(BenchmarkModel):

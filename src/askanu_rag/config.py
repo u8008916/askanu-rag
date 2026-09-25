@@ -27,7 +27,7 @@ class Settings(BaseModel):
     timeout_seconds: float = Field(default=30, gt=0, le=30)
     max_output_tokens: int = Field(default=800, gt=0, le=800)
     course_records_path: Path | None = None
-    semantic_top_k: int = Field(default=3, ge=1, le=3)
+    semantic_top_k: int = Field(default=5, ge=1, le=5)
     semantic_min_score: float = Field(default=0.2, gt=0, le=1)
     vector_top_k: int = Field(default=5, ge=1, le=20)
     vector_min_score: float = Field(default=0.35, gt=0, le=1)
@@ -70,7 +70,7 @@ class Settings(BaseModel):
             timeout_seconds=values.get("REQUEST_TIMEOUT_SECONDS") or 30,
             max_output_tokens=values.get("MAX_OUTPUT_TOKENS") or 800,
             course_records_path=values.get("COURSE_RECORDS_PATH") or None,
-            semantic_top_k=values.get("SEMANTIC_TOP_K") or 3,
+            semantic_top_k=values.get("SEMANTIC_TOP_K") or 5,
             semantic_min_score=values.get("SEMANTIC_MIN_SCORE") or 0.2,
             vector_top_k=values.get("VECTOR_TOP_K") or 5,
             vector_min_score=values.get("VECTOR_MIN_SCORE") or 0.35,

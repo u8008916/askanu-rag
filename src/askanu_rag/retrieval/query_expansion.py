@@ -1,4 +1,4 @@
-"""Small, auditable query expansions justified by the frozen Day 3 benchmark."""
+"""Historical tuned-query expansion retained only for benchmark comparison."""
 
 from __future__ import annotations
 

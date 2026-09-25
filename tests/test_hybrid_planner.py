@@ -251,7 +251,7 @@ def test_day5_uses_day4_strict_output_boundary(repo, output):
     assert response.json()["sources"] == []
 
 
-@pytest.mark.parametrize("settings", [{"semantic_top_k":0},{"semantic_top_k":4},{"semantic_min_score":0},{"semantic_min_score":1.1}])
+@pytest.mark.parametrize("settings", [{"semantic_top_k":0},{"semantic_top_k":6},{"semantic_min_score":0},{"semantic_min_score":1.1}])
 def test_semantic_settings_are_bounded(settings):
     with pytest.raises(ValidationError):
         Settings(**settings)

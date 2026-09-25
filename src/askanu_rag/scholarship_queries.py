@@ -18,6 +18,10 @@ from askanu_rag.models import (
 )
 from askanu_rag.retrieval import ScholarshipReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
+from askanu_rag.retrieval.semantic import (
+    LocalBm25Retriever,
+    sparse_score_is_usable,
+)
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
 
 SCHOLARSHIP_PATTERN = re.compile(r"\bscholarships?\b", re.IGNORECASE)
@@ -314,10 +318,18 @@ class ScholarshipQueryService:
         repository: ScholarshipReader,
         vector_retriever=None,
         *,
+        sparse_retriever=None,
+        top_k: int = 5,
+        min_score: float = 0.2,
         max_candidates: int = 10,
     ) -> None:
+        if not 1 <= top_k <= 5 or not 0 < min_score <= 1:
+            raise ValueError("Invalid bounded retrieval settings.")
         self._repository = repository
         self._vector = vector_retriever
+        self._sparse = sparse_retriever or LocalBm25Retriever()
+        self._top_k = top_k
+        self._min_score = min_score
         self._merger = SharedHybridRetriever(max_candidates=max_candidates)
 
     async def answer(
@@ -368,7 +380,7 @@ class ScholarshipQueryService:
         elif len(identities) == 1:
             selected = identities
         else:
-            if not filters and not (semantic_intent and self._vector is not None):
+            if not filters and not semantic_intent:
                 return _clarification(
                     records,
                     request_id,
@@ -377,32 +389,54 @@ class ScholarshipQueryService:
             matches = tuple(
                 record for record in records if _matches_filters(record, filters)
             )
-            if semantic_intent and self._vector is not None:
-                try:
-                    vector_hits = self._vector.search(
-                        question,
-                        domain="scholarships",
-                        allowed_records=matches,
-                    )
-                except Exception:
-                    vector_hits = ()
+            if semantic_intent:
                 by_id = {record.record_id: record for record in matches}
+                sparse_hits = self._sparse.search(
+                    question,
+                    matches,
+                    top_k=self._top_k,
+                    min_score=self._min_score,
+                )
+                sparse = (
+                    (by_id[hit.record_id], hit.score)
+                    for hit in sparse_hits
+                    if hit.record_id in by_id
+                    and sparse_score_is_usable(
+                        self._sparse,
+                        hit.score,
+                        min_score=self._min_score,
+                    )
+                )
+                semantic = ()
+                if self._vector is not None:
+                    try:
+                        vector_hits = self._vector.search(
+                            question,
+                            domain="scholarships",
+                            allowed_records=matches,
+                            top_k=self._top_k,
+                            min_score=self._min_score,
+                        )
+                    except Exception:
+                        vector_hits = ()
+                    semantic = (
+                        (
+                            by_id[hit.record.record_id],
+                            hit.score,
+                            hit.retrieval_unit_ids,
+                        )
+                        for hit in vector_hits
+                        if hit.record.record_id in by_id
+                        and math.isfinite(hit.score)
+                        and self._min_score <= hit.score <= 1
+                    )
                 selected = tuple(
                     candidate.record
                     for candidate in self._merger.merge(
-                        semantic=(
-                            (
-                                by_id[hit.record.record_id],
-                                hit.score,
-                                hit.retrieval_unit_ids,
-                            )
-                            for hit in vector_hits
-                            if hit.record.record_id in by_id
-                            and math.isfinite(hit.score)
-                            and 0 < hit.score <= 1
-                        )
+                        sparse=sparse,
+                        semantic=semantic,
                     )
-                )
+                )[: self._top_k]
                 if not selected:
                     return InsufficientEvidenceResponse(
                         answer=(

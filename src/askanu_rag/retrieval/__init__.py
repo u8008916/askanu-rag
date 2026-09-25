@@ -38,6 +38,7 @@ from askanu_rag.retrieval.hybrid import (
     RankedCandidate,
     SharedHybridRetriever,
 )
+from askanu_rag.retrieval.semantic import LocalBm25Retriever
 from askanu_rag.retrieval.units import RetrievalUnit, RetrievalUnitBuilder
 from askanu_rag.retrieval.vector import (
     EmbeddingIndexService,
@@ -62,6 +63,7 @@ __all__ = [
     "JobReader",
     "InMemoryVectorRepository",
     "LookupResult",
+    "LocalBm25Retriever",
     "PostgresCourseProgramRepository",
     "PostgresVectorRepository",
     "PersistedSemanticRetriever",

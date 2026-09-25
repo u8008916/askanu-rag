@@ -1,409 +1,249 @@
 # AskANU V7 Day 3 — Retrieval and Reasoning Handoff
 
-Status: ready for PM review; no release threshold is self-frozen here.
+Status: BM25 candidate retrieval implemented from the PM-frozen decision; ready
+for PM review. Day 4 remains on HOLD. No release gate is self-frozen here.
 
 ## Git and scope
 
 - Branch: `carmen/v7-day3-retrieval-reasoning`
 - Base: `52e84ac084433b8eb55741c3d3a55fbe2a39ae4f`
+- Previous reviewed branch head before this correction:
+  `71e545fe769714247438310dd1641e01fc0c4322`
 - Base includes merged RAG PRs #35 and #36.
-- Alembic head: `20260921_0010`
-- No migration, source, public API, conversation-state schema, deployment, live
-  Rubric call, production index or production database write is part of Day 3.
-- The implementation head must be taken from Git after Carmen commits; this
-  handoff does not invent a future SHA.
+- Alembic head: `20260921_0010`.
+- No migration, source contract, public API, conversation-state schema,
+  deployment, live Rubric call, production index or production database write is
+  part of Day 3.
+- The final implementation head is reported from Git after the commit; this
+  document does not invent a future SHA.
 
-## Frozen benchmark
+## PM-frozen architecture decision
 
-The labelled, rerunnable artifact is
-`benchmarks/v7_day3/benchmark.json`. Labels were written before evaluating any
-pipeline. The runner is
-`python -m askanu_rag.retrieval.benchmark_cli`.
+The selected V7 candidate retriever is the exact repository-owned BM25
+implementation measured below. The tuned bounded TF-IDF correction is retained
+only as historical benchmark evidence and is not the selected architecture.
+There is no current+BM25 hybrid experiment and the sealed holdout is not used for
+post-hoc tuning.
 
-The fixture is an approved-record projection used only for local ranking and
-provenance checks. It is not production evidence and is never loaded by the
-request path.
+Exact selected configuration:
 
-Coverage:
+- local, ephemeral Python implementation; no external retrieval dependency;
+- `k1=1.2`, `b=0.75`;
+- Unicode `casefold()` followed by `[a-z0-9]+` tokenization;
+- title, newline and canonical content concatenation;
+- no stop-word removal, stemming or field weighting;
+- every finite score greater than zero is eligible;
+- score descending, then canonical `record_id` ascending for deterministic ties;
+- candidate Top-K 5 on the request path;
+- raw BM25 score is an internal ordering signal, not normalized confidence or
+  factual authority.
 
-| Dimension | Distribution |
-|---|---|
-| Queries | 36 |
-| Domains | 6 each for Courses, Scholarships, Accommodation, Jobs, Events, Support |
-| Difficulty | 12 easy, 17 medium, 7 difficult |
-| Route | 21 exact, 8 structured, 7 discovery |
-| Answer labels | 29 CONFIRMED, 2 DERIVED, 2 PARTIAL, 3 UNKNOWN |
-| ResultSet labels | 34 RESULTS, 1 EMPTY, 1 INCOMPLETE |
+The same `LocalBm25Retriever` implementation is called by the benchmark adapter
+and the configured runtime. Courses, Scholarships, Jobs, Accommodation and
+Support use it for discovery. Events remains deterministic. Each domain applies
+its existing currentness, identity and hard-constraint filters before ranking;
+returned IDs are rehydrated only from that eligible stored-source snapshot.
+Exact and structured routes retain precedence. An injected vector retriever
+remains compatible but is not configured or enabled by this change.
 
-Every query predeclares its domain, text, query type, difficulty, route,
-supported population, expected relevant record IDs, allowed source IDs, hard
-constraints, AnswerState, ResultSet status, population completeness, failure
-class and notes. The set covers explicit identity, natural name, facts,
-prerequisites, deadlines, requirements, natural-problem wording, structured
-filters, currentness, missing evidence and resolved follow-ups/ordinals.
+Deferred, not selected: hybrid retrieval, learned or heuristic reranking, real
+embeddings, PostgreSQL FTS, retrieval frameworks and production vector
+enablement.
 
-## Current retrieval baseline configuration
+## Frozen benchmark artifacts
 
-The implementation was inventoried from source before optimisation.
+The labelled development artifact is
+`benchmarks/v7_day3/benchmark.json`. It contains 36 queries: six per domain,
+12 easy / 17 medium / 7 difficult, 21 exact / 8 structured / 7 discovery, and
+29 CONFIRMED / 2 DERIVED / 2 PARTIAL / 3 UNKNOWN labels. The one true EMPTY
+case is excluded from recall.
 
-### Request-path retrieval
+The unseen artifact is `benchmarks/v7_day3/holdout.json`. It was labelled and
+committed before any retriever was run against it:
 
-- Exact Courses-family lookup uses canonical type/code/year over fresh
-  repository records. Exact identities do not depend on vector similarity.
-- Scholarship exact identity/title and metadata filters are deterministic.
-- Jobs exact numeric identity/title, current status, closing-date and supported
-  employment filters are deterministic.
-- Accommodation and Support exact title and fact projection are deterministic.
-- Event time-window selection is deterministic in `Australia/Canberra` and
-  preserves official ANU Events versus approved Rubric source identity.
-- Hard filters create the eligible population before discovery ranking. There
-  is no fallback that silently drops an explicit hard constraint.
+- freeze commit: `25d3145d8d7d8ab3ebb0125c6dc72164e80b72d4`;
+- SHA-256: `13b061af57a6c2730dc7434f325996f0e2ce536ceddf00281545a89f58bf65b6`;
+- 24 non-duplicate queries, four per domain, 6 easy / 12 medium / 6 difficult;
+- zero exact query-text overlap with the development set;
+- unchanged records, labels, eligibility rules and evaluation function;
+- no query, label, retrieval rule or BM25 setting was changed after evaluation.
 
-### Sparse discovery
+Both artifacts are approved-record projections for local ranking, provenance
+and safety checks. Neither is loaded by the request path or treated as production
+evidence.
 
-- `LocalTfidfRetriever` is an ephemeral, local, title-plus-content cosine
-  TF-IDF implementation.
-- Tokens are lowercase alphabetic terms with a small fixed stop-word list.
-- The default minimum score is `0.2`.
-- Courses use default candidate Top-K `3`; Accommodation/Support use `5`.
-- Before the measured Day 3 correction, the configured service did not run
-  sparse Jobs discovery; semantic Jobs discovery required an injected vector
-  retriever. Scholarship matching-style filters remain deterministic.
+## Quality results
 
-### Dense and hybrid capability
+### Development set
 
-- A provider-neutral `EmbeddingProvider`, deterministic retrieval-unit builder,
-  persisted vector repository and pgvector exact-cosine search exist.
-- Retrieval units use canonical content, paragraph grouping, 2,000 characters
-  per unit and at most 20 units per record by default.
-- Stored-vector defaults are Top-K `5`, minimum cosine `0.35` and at most three
-  units per record.
-- `SharedHybridRetriever` preserves exact/structured/discovery precedence and
-  uses reciprocal-rank fusion with constant `60` inside the discovery tier.
-- Maximum merged candidates default to `10`.
-- `create_configured_app()` does not construct or inject an embedding provider
-  or vector retriever. Therefore dense and hybrid discovery are not active in
-  the current configured runtime. `embedding_model` and `embedding_version`
-  default to null. `DeterministicFakeEmbedder` is test-only.
+| Metric | Original TF-IDF baseline | Historical bounded correction | Selected BM25 |
+|---|---:|---:|---:|
+| Recall@1 | 78.33% | 89.76% | 86.90% |
+| Recall@3 | 87.86% | 99.29% | 96.43% |
+| Recall@5 / @10 / @20 | 88.57% | 100% | 97.14% |
+| Selected-evidence completeness@5 | 31/35 (88.57%) | 35/35 (100%) | 34/35 (97.14%) |
+| Candidate precision proxy | 41/41 (100%) | 45/45 (100%) | 44/57 (77.19%) |
+| Provenance preservation | 100% | 100% | 100% |
+| Hard-constraint preservation | 100% | 100% | 100% |
+| Failure counts | DATA 5 / NONE 27 / RETRIEVAL 4 | DATA 5 / NONE 31 | DATA 5 / NONE 30 / RETRIEVAL 1 |
 
-### State, candidates, evidence and reasoning
+Selected BM25 Recall@5 is 100% for Courses, Scholarships, Accommodation,
+Jobs and Events, and 83.33% for Support. It misses the financial-hardship query
+that has no lexical overlap. The bounded correction reaches 100% here because it
+contains three development-specific Support vocabulary mappings; the untouched
+holdout shows those mappings do not generalize.
 
-- Day 2 creates a typed `QueryInterpretation`; Day 3 retrieval planning now
-  keeps exact and structured steps ahead of an explicitly chosen deterministic,
-  semantic-vector or hybrid discovery step.
-- Candidate ranking remains separate from bounded evidence selection.
-- Shared policy now derives ResultSet status only from ordered results and
-  population completeness: results → RESULTS; zero results with a complete
-  population → EMPTY; zero results with an incomplete population → INCOMPLETE.
-- AnswerState is independently derived from approved selected evidence and
-  explicit missing evidence: CONFIRMED, DERIVED, PARTIAL or UNKNOWN. State is
-  never used as factual evidence.
-- Retained ResultSet ordinals continue to resolve stored identity/order without
-  rerunning discovery.
+### Frozen unseen holdout
 
-## Baseline results — unchanged current pipeline
+| Metric | Original TF-IDF baseline | Historical bounded correction | Selected BM25 |
+|---|---:|---:|---:|
+| Recall@1 | 67.36% | 67.36% | 79.86% |
+| Recall@3 / @5 / @10 / @20 | 75.00% | 75.00% | 95.83% |
+| Selected-evidence completeness@5 | 18/24 (75.00%) | 18/24 (75.00%) | 23/24 (95.83%) |
+| Candidate precision proxy | 23/23 (100%) | 23/23 (100%) | 28/43 (65.12%) |
+| Provenance preservation | 100% | 100% | 100% |
+| Hard-constraint preservation | 100% | 100% | 100% |
+| Failure counts | DATA 4 / NONE 14 / RETRIEVAL 6 | DATA 4 / NONE 14 / RETRIEVAL 6 | DATA 4 / NONE 19 / RETRIEVAL 1 |
 
-The baseline was captured before implementing the bounded Support improvement.
-It uses 200 in-process repetitions per query for latency. Recall is macro
-average over the 35 queries with prelabelled relevant evidence; the one true
-EMPTY case is excluded from recall.
+Selected BM25 Recall@5 is 100% for Courses, Scholarships, Accommodation,
+Jobs and Events, and 75% for Support. It retrieves the unseen assessment,
+overseas-settling, Jobs, Scholarship and Accommodation cases and misses the
+financial paraphrase. The original and bounded pipelines have the same 75%
+holdout Recall@5; BM25 reaches 95.83% without holdout tuning.
 
-| Metric | Current baseline |
-|---|---:|
-| Recall@1 | 78.33% |
-| Recall@3 | 87.86% |
-| Recall@5 | 88.57% |
-| Recall@10 | 88.57% |
-| Recall@20 | 88.57% |
-| Selected-evidence completeness at K=5 | 88.57% |
-| Selected-evidence precision proxy | 100% |
-| Local retrieval p50 | 0.0002 ms |
-| Local retrieval p95 | 0.0628 ms |
-| Provenance checks | 100% |
-| Hard-constraint checks | 100% |
+The 65.12% holdout candidate precision proxy is a material noise warning. The
+benchmark recorded no EVIDENCE_SELECTION failure because expected evidence was
+present in the selected IDs, but it does not independently score final generated
+answer correctness or prove that extra candidates are harmless. Candidate IDs
+and ordering are benchmarked; current downstream evidence selection is bounded
+Top-K rehydration plus domain-specific source-backed fact projection, not a
+learned reranker. Noise remains an explicit monitoring and later evaluation item.
 
-Domain Recall@5 was 100% for Courses, Scholarships, Accommodation and Events,
-80% for Jobs, and 50% for Support. The latency outlier was Support because it is
-the only domain in this balanced fixture with three multi-record sparse-discovery
-queries: Support p50/p95 was 0.01055/0.0663 ms. These are local
-algorithm/fixture timings, not network, PostgreSQL or full-answer latency.
+### Metric definitions
 
-Baseline failure classification:
-
-- 27 cases: no failure;
-- 5 DATA cases: personal Scholarship eligibility, Accommodation vacancy,
-  incomplete Job requirements, missing Rubric organiser and missing Support
-  hours; and
-- 4 RETRIEVAL cases: natural Support problems for unfair assessment, financial
-  hardship and international settling-in, plus Jobs topic discovery while the
-  configured vector retriever was absent.
-
-There were no evidence-selection/ranking failures once relevant evidence entered
-the candidate set. The DATA cases correctly retrieved their record and remained
-UNKNOWN/PARTIAL rather than being recast as no match.
-
-## Candidate experiments
-
-### Bounded Support expansion and local sparse Jobs fallback — implemented
-
-Change 1: three auditable Support-only mappings append retrieval vocabulary for
-unfair assessment/grade appeal, inability to afford food/rent, and international
-student settling-in. Day 2's replaceable problem-domain resolver recognizes the
-same bounded problems. The main orchestrator may route a non-ambiguous resolved
-Support domain into the existing Support service. The expansion does not create
-facts, modify source text, relax constraints or alter source authority.
-
-Change 2: Jobs topic discovery now runs the same local sparse candidate path
-inside the deterministically current/hard-filtered Jobs population and merges it
-with vectors when a vector retriever is injected. Dense failure or absence no
-longer removes the safe local sparse candidate path.
-
-| Metric | Result |
-|---|---:|
-| Recall@1 | 89.76% |
-| Recall@3 | 99.29% |
-| Recall@5 / @10 / @20 | 100% |
-| Selected-evidence completeness at K=5 | 100% |
-| Selected-evidence precision proxy | 100% |
-| Local retrieval p50 | 0.0004 ms |
-| Local retrieval p95 | 0.0737 ms |
-| Every domain Recall@5 | 100% |
-| Provenance / hard constraints | 100% / 100% |
-
-The Support-only intermediate reached 97.14% Recall@5 and left only the Jobs
-gap. The combined implementation closes both measured gaps. The remaining five
-classified cases are DATA, not retrieval defects. The final p95 delta is 0.0109
-ms on a synthetic in-process fixture and is not operationally
-material. The change is bounded, reversible and retains the current interface.
-
-### Evaluation-only local BM25 — not adopted
-
-| Metric | Result |
-|---|---:|
-| Recall@1 | 86.90% |
-| Recall@3 | 96.43% |
-| Recall@5 / @10 / @20 | 97.14% |
-| Selected-evidence completeness at K=5 | 97.14% |
-| Selected-evidence precision proxy | 77.19% |
-| Local retrieval p50 / p95 | 0.0002 / 0.0321 ms |
-| Provenance / hard constraints | 100% / 100% |
-
-BM25 improved recall over the original TF-IDF baseline but still missed the
-financial-hardship query with no lexical overlap and admitted much more noise.
-On the development set it did not beat the smaller Support-specific correction.
-The independent holdout below materially changes the confidence in that tuned
-comparison, but does not by itself approve BM25 for production.
+- **Recall@K** is macro recall over queries with at least one labelled relevant
+  record: for each query, relevant IDs retrieved in the first K divided by all
+  relevant IDs, then averaged. The true EMPTY query is excluded.
+- **Selected-evidence completeness@5** is the fraction of labelled non-empty
+  queries for which every expected relevant record ID occurs in the first five
+  candidate IDs.
+- **Candidate precision proxy** is micro-averaged
+  `sum(relevant selected IDs) / sum(all selected IDs)` over the first five
+  candidate IDs for every query. It measures labelled candidate noise, not
+  generated-answer precision.
+- **Failure class** distinguishes missing source data (DATA), candidate miss
+  (RETRIEVAL), evidence/selection failure and final reasoning failure. The
+  current artifacts provide reliable candidate labels and safety assertions,
+  but not an independently scored answer corpus.
 
 ## Auditable local candidate-retrieval latency
 
-All values below are local, in-process candidate-retrieval timings over the
-frozen 36-query fixture, with 200 repetitions per query and K. Each K row
-therefore contains 7,200 samples. They exclude HTTP transport, PostgreSQL,
-embedding calls, evidence rendering and answer generation.
+These values use 200 in-process repetitions per query and K. They include local
+candidate selection over the fixture only. They exclude HTTP transport,
+PostgreSQL, embeddings, evidence rendering and answer generation. They must not
+be described as `/api/v1/ask` end-to-end latency.
 
-| K | Baseline p50 / p95 (ms) | Final p50 / p95 (ms) | BM25 p50 / p95 (ms) |
-|---:|---:|---:|---:|
-| 1 | 0.0001 / 0.0634 | 0.0004 / 0.0737 | 0.0002 / 0.0320 |
-| 3 | 0.0001 / 0.0631 | 0.0004 / 0.0738 | 0.0002 / 0.0319 |
-| 5 | 0.0001 / 0.0625 | 0.0004 / 0.0725 | 0.0002 / 0.0317 |
-| 10 | 0.0001 / 0.0622 | 0.0004 / 0.0730 | 0.0002 / 0.0318 |
-| 20 | 0.0002 / 0.0628 | 0.0004 / 0.0737 | 0.0002 / 0.0321 |
+### Development set
 
-There is no material K-growth trend in this bounded fixture: exact and
-structured routes slice an already-filtered tuple, while sparse discovery ranks
-the same small eligible population before applying K. The observed p95 ranges
-are timer-noise scale, not evidence of an operational K penalty.
+| K | Baseline p50 / p95 (ms) | Selected BM25 p50 / p95 (ms) |
+|---:|---:|---:|
+| 1 | 0.0002 / 0.0709 | 0.0002 / 0.0388 |
+| 3 | 0.0002 / 0.0773 | 0.0002 / 0.0383 |
+| 5 | 0.0002 / 0.0813 | 0.0002 / 0.0398 |
+| 10 | 0.0002 / 0.0763 | 0.0002 / 0.0390 |
+| 20 | 0.0002 / 0.0739 | 0.0002 / 0.0402 |
 
-At K=20, interaction classes are mutually exclusive. `follow_up` means one of
-`resolved_follow_up`, `resolved_time_refinement`, `retained_resultset_ordinal`
-or `continue_resultset`; other exact routes are `lookup`; all remaining
-structured/discovery routes are `discovery`.
+At K=20, selected BM25 interaction p50/p95 is lookup 0.0002/0.0002 ms,
+discovery 0.0002/0.0454 ms and follow-up/refinement 0.0002/0.0003 ms.
 
-| Interaction | Baseline p50 / p95 (ms) | Final p50 / p95 (ms) | BM25 p50 / p95 (ms) |
-|---|---:|---:|---:|
-| Lookup | 0.0001 / 0.0002 | 0.0004 / 0.0005 | 0.0001 / 0.0002 |
-| Discovery | 0.0002 / 0.0653 | 0.0005 / 0.0775 | 0.0002 / 0.0349 |
-| Follow-up/refinement | 0.0001 / 0.0002 | 0.0004 / 0.0005 | 0.0001 / 0.0002 |
+Selected BM25 domain p50/p95 at K=20:
 
-The final domain distribution at K=20 was:
+| Domain | p50 / p95 (ms) |
+|---|---:|
+| Accommodation | 0.0002 / 0.0391 |
+| Courses | 0.0002 / 0.0403 |
+| Events | 0.0002 / 0.0003 |
+| Jobs | 0.0002 / 0.0370 |
+| Scholarships | 0.0002 / 0.0002 |
+| Support | 0.00625 / 0.0458 |
 
-| Domain | p50 (ms) | p95 (ms) |
-|---|---:|---:|
-| Accommodation | 0.0004 | 0.0653 |
-| Courses | 0.0004 | 0.0506 |
-| Events | 0.0004 | 0.0004 |
-| Jobs | 0.0004 | 0.0568 |
-| Scholarships | 0.0004 | 0.0007 |
-| Support | 0.01275 | 0.0808 |
+### Frozen unseen holdout
 
-Support is the only material domain outlier because three queries rank a
-five-record sparse population and apply bounded query expansion. Jobs gains a
-sparse discovery call in the final pipeline, which explains its p95 movement
-from 0.0002 ms at baseline to 0.0568 ms. Both remain far below the proposed
-local absolute gate.
+| K | Baseline p50 / p95 (ms) | Selected BM25 p50 / p95 (ms) |
+|---:|---:|---:|
+| 1 | 0.0002 / 0.1030 | 0.0002 / 0.0445 |
+| 3 | 0.0002 / 0.1065 | 0.0002 / 0.0448 |
+| 5 | 0.0002 / 0.1049 | 0.0002 / 0.0492 |
+| 10 | 0.0002 / 0.1052 | 0.0002 / 0.0493 |
+| 20 | 0.0002 / 0.1055 | 0.0002 / 0.0459 |
 
-No end-to-end `/api/v1/ask` latency was measured. The latest explicit-PM-GO Day
-3 contract requires retrieval p50/p95, K behaviour and domain outliers, and says
-end-to-end latency must be reported separately *if measured*. It therefore does
-not require another end-to-end run before PR review. A production-like
-PostgreSQL and end-to-end answer distribution remains a Day 7 gate-setting
-dependency, not a result that this local fixture can support.
+At K=20, selected BM25 interaction p50/p95 is lookup 0.0002/0.0003 ms,
+discovery 0.0389/0.0545 ms and follow-up/refinement 0.0002/0.0003 ms.
 
-## Evidence metric definitions and denominators
+Selected BM25 domain p50/p95 at K=20:
 
-- **Selected-evidence completeness at K=5** is the macro fraction of labelled,
-  non-empty queries for which every prelabelled expected record ID appears in
-  the first five selected candidate IDs. The true EMPTY case is excluded from
-  the denominator. Baseline is 31/35 (88.57%), final is 35/35 (100%), and BM25
-  is 34/35 (97.14%).
-- **Selected-evidence precision proxy** is micro-averaged
-  `sum(relevant selected IDs) / sum(all selected IDs)` over the first five
-  selected candidates for all 36 queries. A zero-candidate query adds zero to
-  both numerator and denominator. Baseline is 41/41 (100%), final is 45/45
-  (100%), and BM25 is 44/57 (77.19%). It is a labelled-fixture noise proxy, not
-  a claim about generated-answer precision.
+| Domain | p50 / p95 (ms) |
+|---|---:|
+| Accommodation | 0.0002 / 0.0446 |
+| Courses | 0.0002 / 0.0422 |
+| Events | 0.0002 / 0.0003 |
+| Jobs | 0.0002 / 0.0358 |
+| Scholarships | 0.0003 / 0.0423 |
+| Support | 0.0425 / 0.0567 |
 
-These calculations are emitted from the same frozen labels and candidate lists
-used for Recall@K, so their numerators and denominators are directly auditable.
+There is no material K-growth trend in these small bounded populations. Support
+has the visible p50 outlier because each discovery case ranks its five-record
+population; its 0.0567 ms holdout p95 is also the maximum selected-BM25 domain
+p95 but remains timer-noise-scale local evidence. At K=20, BM25 p95 is 45.6%
+lower than baseline on development (0.0402 versus 0.0739 ms) and 56.5% lower on
+holdout (0.0459 versus 0.1055 ms).
 
-## Frozen unseen holdout — generalization check
-
-`benchmarks/v7_day3/holdout.json` was prelabelled and committed before any
-retriever was run against it. Freeze commit:
-`25d3145d8d7d8ab3ebb0125c6dc72164e80b72d4`; artifact SHA-256:
-`13b061af57a6c2730dc7434f325996f0e2ce536ceddf00281545a89f58bf65b6`.
-The labels and queries were not changed after evaluation, and no retrieval rule
-was modified in response to the results.
-
-The holdout has 24 non-duplicate queries, four per domain, with 6 easy, 12
-medium and 6 difficult cases. It reuses unchanged records from the development
-corpus but has zero exact query-text overlap with the 36-query development set.
-Its three natural Support problems deliberately avoid every currently encoded
-Support expansion phrase.
-
-Each pipeline used the same records, eligible populations, labels, K values and
-evaluation function. Latency uses 200 local in-process repetitions per query
-and K.
-
-| Holdout metric | Original baseline | Final Day 3 | BM25 experiment |
-|---|---:|---:|---:|
-| Recall@1 | 67.36% | 67.36% | 79.86% |
-| Recall@3 | 75.00% | 75.00% | 95.83% |
-| Recall@5 | 75.00% | 75.00% | 95.83% |
-| Recall@10 | 75.00% | 75.00% | 95.83% |
-| Recall@20 | 75.00% | 75.00% | 95.83% |
-| Selected-evidence completeness@5 | 18/24 (75.00%) | 18/24 (75.00%) | 23/24 (95.83%) |
-| Precision proxy | 23/23 (100%) | 23/23 (100%) | 28/43 (65.12%) |
-| Provenance preservation | 100% | 100% | 100% |
-| Hard-constraint preservation | 100% | 100% | 100% |
-| Local candidate p50 / p95 | 0.0002 / 0.0743 ms | 0.0004 / 0.0825 ms | 0.0002 / 0.0396 ms |
-| Failure counts | DATA 4, NONE 14, RETRIEVAL 6 | DATA 4, NONE 14, RETRIEVAL 6 | DATA 4, NONE 19, RETRIEVAL 1 |
-
-The four DATA cases were retrieved correctly by every pipeline: Scholarship
-personal eligibility, Accommodation current vacancy, incomplete Job
-requirements and missing Rubric organiser. They remain DATA rather than being
-misclassified as retrieval misses.
-
-The final pipeline's six RETRIEVAL failures are:
-
-- Scholarship equity discovery using “money is tight” wording;
-- Accommodation music-space preference phrased as “practise music”;
-- Jobs discovery phrased as backend Python services; and
-- all three unseen Support problems: disagreeing with an assignment result,
-  inability to make ends meet, and difficulty adjusting after arriving from
-  abroad.
-
-Final per-domain Recall@5 is Courses 100%, Events 100%, Accommodation 75%, Jobs
-75%, Scholarships 75% and Support 25%. The original baseline has the identical
-distribution: the tuned Support expansion and Jobs fallback do not materially
-outperform it on these unseen queries.
-
-BM25 reaches 100% Recall@5 in every domain except Support at 75%. It retrieves
-the unseen assessment, overseas-settling, Jobs, Scholarship and Accommodation
-cases, but misses the financial paraphrase and adds 15 irrelevant selected
-candidates, reducing the precision proxy to 65.12%.
-
-Generalization decision:
-
-1. The final Day 3 pipeline does **not** materially outperform the original
-   baseline on this unseen holdout.
-2. BM25 materially outperforms both on unseen Recall@5, 95.83% versus 75%, but
-   its candidate noise is materially worse, 65.12% versus 100% precision proxy.
-3. The current Support mappings are tuned phrase corrections, not demonstrated
-   semantic generalization. The Jobs sparse fallback exists, but the current
-   TF-IDF threshold/ranking does not generalize to this unseen Jobs wording.
-4. The development-set improvement remains valid for those labelled queries,
-   but it is not sufficient evidence to freeze the retrieval architecture.
-5. A separately designed hybrid current+BM25 candidate/selection experiment is
-   justified. This sealed holdout must not be used to tune or then prove that
-   experiment; it needs a new development set and a later untouched validation
-   set.
-6. No production migration is justified yet. BM25 remains evaluation-only and
-   the retrieval architecture decision is HOLD pending further PM-directed
-   evaluation.
-
-### PostgreSQL FTS, dense pgvector, hybrid and reranking
-
-- PostgreSQL FTS would require a database-backed benchmark and likely an index
-  or migration decision; Day 3 made no migration and therefore did not claim
-  comparative numbers.
-- The dense/pgvector path exists but is inactive in configured runtime. No real
-  embedding provider/model or production vector population was enabled, so
-  fabricating dense/hybrid quality numbers would be misleading.
-- The holdout now justifies evaluating a bounded current+BM25 candidate union
-  with an explicit evidence-selection/noise control. It does not justify
-  implementing or tuning that experiment on this sealed holdout.
-- LangChain/LlamaIndex would add dependencies and framework objects without
-  replacing a measured maintenance burden. No framework or hosted service was
-  adopted and no new data/trust boundary was introduced.
+No end-to-end `/api/v1/ask` latency was measured. The Day 3 contract requires
+candidate p50/p95, K behaviour and domain outliers and requires end-to-end values
+to be labelled separately if measured. A production-like PostgreSQL candidate
+distribution and end-to-end answer distribution remain Day 7 gate-setting work;
+the local fixture cannot justify those thresholds.
 
 ## Reasoning and negative-evidence safety
 
-- Candidate retrieval and evidence selection are measured separately.
-- Five missing-field cases retrieve the correct source record but retain DATA
-  classification and UNKNOWN/PARTIAL semantics.
-- The Jobs incomplete-source case is INCOMPLETE, not EMPTY/no jobs.
-- A null Accommodation vacancy field cannot become “no rooms”.
-- The one EMPTY case has an explicitly complete supported population and zero
-  current matches.
-- Official ANU Events and Rubric keep distinct source IDs. Similarity/rank never
-  changes authority and there is no live Rubric call.
-- Exact identifiers, hard filters and retained ordinals remain vector-independent.
+- Candidate rank never changes source authority or creates facts.
+- Five development DATA cases and four holdout DATA cases retrieve their source
+  evidence and remain UNKNOWN/PARTIAL as labelled.
+- Incomplete Jobs evidence remains INCOMPLETE, not EMPTY/no jobs.
+- Null Accommodation vacancy cannot become “no rooms”.
+- EMPTY requires a successfully evaluated complete supported population with
+  zero matches.
+- Official ANU Events and Rubric retain distinct source IDs; there is no live
+  Rubric call.
+- Exact identifiers, hard filters and retained ResultSet ordinals remain
+  independent of BM25.
+- An unresolved explicitly named Support service fails closed instead of being
+  replaced by a generic lexical service match.
 
-## Proposed Day 7 numeric gates — for Qasim review, not frozen
+## Proposed Day 7 numeric gates — for Qasim review, not self-frozen
 
-The unseen final pipeline fails the proposed Recall@5 and evidence-completeness
-gates. These values therefore remain proposals only and are not ready for Qasim
-to freeze until the generalization gap is addressed on separate data.
+| Metric | Measured selected BM25 | Proposed gate | Rationale / scope |
+|---|---:|---:|---|
+| Macro Recall@5 | development 97.14%; holdout 95.83% | at least 95% on each frozen suite | Preserves measured generalization without pretending the missed lexical paraphrase is solved. |
+| Exact/structured identity correctness | 100% | exactly 100% | Identity and filters must never depend on ranking. |
+| Provenance preservation | 100% on both suites | exactly 100% | Safety invariant. |
+| Hard-constraint preservation | 100% on both suites | exactly 100% | Safety invariant. |
+| UNKNOWN→FALSE / INCOMPLETE→EMPTY regressions | 0 / 0 | exactly 0 / 0 | Missing evidence must not become negative truth. |
+| Candidate precision proxy | development 77.19%; holdout 65.12% | at least 60% on each suite and no more than 5 percentage-point regression from the frozen selected-BM25 reference on the same suite | Monitoring floor for candidate noise; not answer precision. |
+| Selected-evidence completeness@5 | development 97.14%; holdout 95.83% | monitor at least 95% on each suite | Candidate label coverage; not a mature answer-quality score. |
+| Local candidate p95 at K=5 | development 0.0398 ms; holdout 0.0492 ms | at most 1 ms | Wide absolute guard against local algorithmic blow-ups. |
+| Same-host local p95 regression | BM25 is below baseline on both suites | at most 20% when both values exceed timer noise | Relative guard; use the absolute gate for sub-resolution changes. |
 
-| Metric | Measured baseline | Measured final | Proposed gate | Rationale / scope |
-|---|---:|---:|---:|---|
-| Macro Recall@5 | 88.57% | 100% | at least 98% | Allows at most a small aggregate regression while preserving the measured improvement. |
-| Per-domain Recall@5 | 50%–100% | 100% each | at least 95% each | Prevents a strong macro score from hiding one weak domain. |
-| Macro Recall@20 | 88.57% | 100% | at least 99% | Required evidence should almost always enter the candidate set by K=20. |
-| Exact/structured identity correctness | 100% | 100% | exactly 100% | Deterministic identity and filters must not depend on ranking. |
-| Selected-evidence completeness@5 | 31/35 (88.57%) | 35/35 (100%) | at least 98% | Reliable labelled-fixture evidence-selection measure. |
-| Selected-evidence precision proxy | 41/41 (100%) | 45/45 (100%) | at least 95% | Allows limited candidate noise without hiding a material selection regression. |
-| Provenance / hard-constraint preservation | 100% / 100% | 100% / 100% | exactly 100% / 100% | These are safety invariants, not tunable quality metrics. |
-| UNKNOWN→FALSE / INCOMPLETE→EMPTY regressions | 0 / 0 | 0 / 0 | exactly 0 / 0 | Missing evidence must never become negative truth. |
-| Local candidate retrieval p95 at K=20 | 0.0628 ms | 0.0737 ms | at most 1 ms | Wide absolute margin for the frozen local fixture while still catching algorithmic blow-ups. |
-| Same-host local p95 regression | reference | +17.36% (+0.0109 ms) | at most 20% when both measurements exceed timer noise | A relative release-candidate guard; sub-resolution changes are judged by the absolute gate. |
-
-No generated-answer reasoning-quality percentage is proposed: this fixture has
-reliable record-level evidence labels and semantic safety assertions, but no
-independently scored answer corpus. The proposed measurable reasoning controls
-are therefore selected-evidence completeness/precision plus the exact safety
-invariants above, rather than a fabricated answer-quality number.
-
-A production-like PostgreSQL candidate latency gate and end-to-end answer gate
-remain HOLD until Day 7 measures those paths; this local fixture cannot justify
-a network/database threshold.
+No independent evidence-selection/reasoning-quality threshold is proposed or
+frozen. The benchmark can audit candidate completeness, candidate noise,
+provenance and negative-evidence semantics, but it does not provide a separately
+scored final-answer corpus. Inventing an answer-quality percentage would overstate
+the evidence. Qasim owns any final gate freeze.
 
 ## Reproduction
 
 ```powershell
 python -m askanu_rag.retrieval.benchmark_cli --pipeline current --latency-repetitions 200
-python -m askanu_rag.retrieval.benchmark_cli --pipeline support-expansion --latency-repetitions 200
 python -m askanu_rag.retrieval.benchmark_cli --pipeline day3-improvement --latency-repetitions 200
 python -m askanu_rag.retrieval.benchmark_cli --pipeline bm25 --latency-repetitions 200
 python -m askanu_rag.retrieval.benchmark_cli --benchmark benchmarks/v7_day3/holdout.json --pipeline current --latency-repetitions 200
@@ -411,24 +251,25 @@ python -m askanu_rag.retrieval.benchmark_cli --benchmark benchmarks/v7_day3/hold
 python -m askanu_rag.retrieval.benchmark_cli --benchmark benchmarks/v7_day3/holdout.json --pipeline bm25 --latency-repetitions 200
 ```
 
-Focused behavioural coverage is in
-`tests/test_v7_day3_retrieval_reasoning.py`; frozen holdout invariants and
-observed comparison results are covered in `tests/test_v7_day3_holdout.py`.
-Full verification totals belong in the final author handoff after the complete
-suite is run.
+Focused runtime equivalence is in `tests/test_v7_day3_bm25_runtime.py`.
+Development metrics and safety semantics are covered by
+`tests/test_v7_day3_retrieval_reasoning.py`; sealed holdout invariants and exact
+observed comparisons are covered by `tests/test_v7_day3_holdout.py`.
 
 ## Local verification
 
-- Frozen unseen holdout: 8 passed.
-- Day 3 focused: 20 passed.
-- Day 2 understanding regression: 27 passed.
-- Day 1 state/wire regression: 36 passed.
+- Focused BM25 runtime, Day 3 and frozen holdout: 32 passed.
+- Day 2 context/understanding: 27 passed.
+- Day 1 state and wire contract: 36 passed.
 - Transport contract: 12 passed.
-- Six-domain behavioural selection: 355 passed.
+- Six-domain runtime behaviour: 232 passed.
 - Explicit 10-turn and three 20-turn journeys: 4 passed.
-- Full suite: 924 passed, 89 skipped, 3 dependency deprecation warnings.
-- PostgreSQL integration: 88 skipped because
-  `ASKANU_TEST_DATABASE_URL` is not configured; no PostgreSQL claim is made.
+- Focused hard constraints, provenance/source authority and
+  UNKNOWN/EMPTY/INCOMPLETE selection: 58 passed.
+- Full suite: 928 passed, 89 skipped, 3 dependency deprecation warnings. The
+  skips include 88 PostgreSQL integration cases because
+  `ASKANU_TEST_DATABASE_URL` is not configured; they are not counted as passes
+  and no PostgreSQL runtime claim is made.
 - `pip check`: no broken requirements.
 - `compileall`: passed for `src`, `tests` and `migrations`.
 - Alembic: one head, `20260921_0010`.
@@ -436,10 +277,10 @@ suite is run.
 
 ## Deferred work
 
-- PM decision on a new, separately developed current+BM25 hybrid experiment;
-  the sealed holdout cannot become its tuning set.
-- PM/Qasim freeze of Day 7 numeric gates.
-- Database-backed PostgreSQL FTS and pgvector comparison only after a bounded,
-  representative approved-data benchmark and explicit migration/index decision.
-- Production-like retrieval and end-to-end latency measurement.
-- Day 4 work remains on hold pending Day 3 GO.
+- Qasim review/freeze of proposed Day 7 numeric gates.
+- Independent downstream evidence-selection/final-answer evaluation, using new
+  data rather than tuning the sealed holdout.
+- Hybrid retrieval, reranking, real embeddings, PostgreSQL FTS and retrieval
+  frameworks unless a later reviewed benchmark demonstrates need.
+- Production-like PostgreSQL candidate and `/api/v1/ask` end-to-end latency.
+- Day 4 remains on HOLD pending Day 3 review.

@@ -19,9 +19,11 @@ from askanu_rag.models import (
 )
 from askanu_rag.retrieval import ResourceReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
-from askanu_rag.retrieval.query_expansion import expand_support_problem_query
 from askanu_rag.retrieval.repository import ResourceRecord, normalize_job_title
-from askanu_rag.retrieval.semantic import LocalTfidfRetriever
+from askanu_rag.retrieval.semantic import (
+    LocalBm25Retriever,
+    sparse_score_is_usable,
+)
 from askanu_rag.synthesis import SynthesisError
 
 ACCOMMODATION_PATTERN = re.compile(
@@ -38,6 +40,10 @@ ACCOMMODATION_INTENT_PATTERN = re.compile(
 NAMED_RESIDENCE_PATTERN = re.compile(
     r"\b([A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*)*\s+"
     r"(?:Hall|Lodge|College|House|Residence))\b"
+)
+NAMED_SUPPORT_PATTERN = re.compile(
+    r"\b([A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*)*\s+"
+    r"(?:Support|Service))(?:\s+service)?\b"
 )
 SUPPORT_PATTERN = re.compile(
     r"\b(?:support|assistance|advocacy|advocate|landlord|rent(?:al)?|"
@@ -270,10 +276,12 @@ class DomainResourceQueryService:
         min_sparse_score: float = 0.2,
         max_candidates: int = 10,
     ) -> None:
+        if not 1 <= top_k <= 5 or not 0 < min_sparse_score <= 1:
+            raise ValueError("Invalid bounded retrieval settings.")
         self.repository = repository
         self.domain = domain
         self.vector = vector_retriever
-        self.sparse = sparse_retriever or LocalTfidfRetriever()
+        self.sparse = sparse_retriever or LocalBm25Retriever()
         self.top_k = top_k
         self.min_sparse_score = min_sparse_score
         self.merger = SharedHybridRetriever(max_candidates=max_candidates)
@@ -332,6 +340,15 @@ class DomainResourceQueryService:
                         answer="I could not find approved stored accommodation evidence.",
                         request_id=request_id,
                     )
+        if (
+            self.domain == "support"
+            and not exact
+            and NAMED_SUPPORT_PATTERN.search(question)
+        ):
+            return InsufficientEvidenceResponse(
+                answer="I could not find approved stored support evidence.",
+                request_id=request_id,
+            )
         pending_active = (
             pending is not None and pending.type == f"{self.domain}_selection"
         )
@@ -355,13 +372,8 @@ class DomainResourceQueryService:
         elif exact:
             selected = exact
         else:
-            ranking_query = (
-                expand_support_problem_query(question)
-                if self.domain == "support"
-                else question
-            )
             sparse_hits = self.sparse.search(
-                ranking_query,
+                question,
                 records,
                 top_k=self.top_k,
                 min_score=self.min_sparse_score,
@@ -371,6 +383,11 @@ class DomainResourceQueryService:
                 (by_id[hit.record_id], hit.score)
                 for hit in sparse_hits
                 if hit.record_id in by_id
+                and sparse_score_is_usable(
+                    self.sparse,
+                    hit.score,
+                    min_score=self.min_sparse_score,
+                )
             ]
             semantic = []
             if self.vector is not None:
@@ -393,7 +410,7 @@ class DomainResourceQueryService:
             selected = tuple(
                 candidate.record
                 for candidate in self.merger.merge(sparse=sparse, semantic=semantic)
-            )
+            )[: self.top_k]
         if not selected:
             if records and _is_broad_resource_request(question, self.domain):
                 return _resource_clarification(records, request_id, self.domain)

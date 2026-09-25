@@ -10,7 +10,10 @@ from askanu_rag.index_lifecycle import index_is_stale
 from askanu_rag.models import Clarification, ClarificationOption, InsufficientEvidenceResponse, NeedsClarificationResponse, OkResponse
 from askanu_rag.query_planner import QueryPlan, plan_query
 from askanu_rag.retrieval.catalog import filter_records, normalize_title, record_code
-from askanu_rag.retrieval.semantic import LocalTfidfRetriever
+from askanu_rag.retrieval.semantic import (
+    LocalBm25Retriever,
+    sparse_score_is_usable,
+)
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
 from askanu_rag.synthesis import RecordSynthesisContext, SynthesisError, UNSAFE_EVIDENCE, validate_synthesis
 
@@ -40,13 +43,17 @@ def _display_identity(record):
 
 class HybridQueryService:
     def __init__(self, repository, synthesis_client=None, semantic_retriever=None,
-                 *, vector_retriever=None, timeout_seconds=30, top_k=3,
+                 *, vector_retriever=None, timeout_seconds=30, top_k=5,
                  min_score=0.2, max_candidates=10):
-        if not 1 <= top_k <= 3 or not 0 < min_score <= 1:
+        if not 1 <= top_k <= 5 or not 0 < min_score <= 1:
             raise ValueError("Invalid bounded retrieval settings.")
         self.repository = repository
         self.synthesis_client = synthesis_client
-        self.semantic = semantic_retriever if semantic_retriever is not None else LocalTfidfRetriever()
+        self.semantic = (
+            semantic_retriever
+            if semantic_retriever is not None
+            else LocalBm25Retriever()
+        )
         self.vector = vector_retriever
         self.merger = SharedHybridRetriever(max_candidates=max_candidates)
         self.timeout_seconds = timeout_seconds
@@ -128,8 +135,9 @@ class HybridQueryService:
             (by_id[hit.record_id], hit.score)
             for hit in sparse_hits
             if hit.record_id in by_id
-            and math.isfinite(hit.score)
-            and self.min_score <= hit.score <= 1
+            and sparse_score_is_usable(
+                self.semantic, hit.score, min_score=self.min_score
+            )
         ]
         dense = []
         if self.vector is not None:

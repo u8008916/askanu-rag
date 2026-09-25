@@ -315,23 +315,27 @@ with its official HTTPS host. Returned IDs are rehydrated exclusively from that
 prefiltered snapshot; foreign IDs, wrong-year/type results and invalid/low scores
 cannot supply facts or URLs.
 
-The default `LocalTfidfRetriever` uses in-memory sparse TF-IDF vectors and cosine
-similarity over stored title + normalized content. It is a **lexical vector
-baseline**, not a pretrained semantic embedding model: synonyms/paraphrases with
-no lexical overlap can yield insufficient evidence. It performs no network calls,
-does not index history or model answers, and does not persist/change source hashes
-or index status. The small interface permits a future provider-backed replacement
-without changing identity/filter ownership. It is not a production pgvector deployment.
+The default `LocalBm25Retriever` is the PM-selected V7 candidate retriever. It
+runs ephemeral BM25 over the prefiltered stored title + normalized content using
+`k1=1.2`, `b=0.75`, Unicode case-folding and `[a-z0-9]+` tokens, with no stemming,
+stop-word removal or field weighting. Every positive score is eligible; raw BM25
+scores are internal ranking signals, not normalized confidence or product truth.
+Ties are resolved by canonical record ID. It performs no network calls, does not
+index history or model answers, and does not persist/change source hashes or index
+status. It is not a production pgvector deployment. `LocalTfidfRetriever` remains
+only for explicit historical benchmark comparison and injected compatibility tests.
 
 Optional environment settings, using the existing configuration path:
 
 ```dotenv
-SEMANTIC_TOP_K=3
+SEMANTIC_TOP_K=5
 SEMANTIC_MIN_SCORE=0.2
 ```
 
-Top-k is bounded to 1–3; score threshold is greater than 0 and at most 1. These
-are local operational defaults, not public contract/confidence guarantees.
+Top-k is bounded to 1–5. `SEMANTIC_MIN_SCORE` still applies to normalized injected
+sparse retrievers; the selected BM25 configuration deliberately accepts every
+positive raw score because its scores are not normalized confidence. These are
+local operational defaults, not public contract/confidence guarantees.
 No eligible candidate means no vector/provider call; no usable evidence means
 no Gemini call. Broader-catalog tests use the explicit synthetic Day 5 fixture:
 

@@ -20,7 +20,10 @@ from askanu_rag.models import (
 )
 from askanu_rag.retrieval import JobReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
-from askanu_rag.retrieval.semantic import LocalTfidfRetriever
+from askanu_rag.retrieval.semantic import (
+    LocalBm25Retriever,
+    sparse_score_is_usable,
+)
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
 
 CANBERRA = ZoneInfo("Australia/Canberra")
@@ -429,16 +432,18 @@ class JobQueryService:
         vector_retriever=None,
         *,
         sparse_retriever=None,
+        top_k: int = 5,
         max_candidates: int = 10,
         min_score: float = 0.2,
     ) -> None:
-        if not 0 < min_score <= 1:
+        if not 1 <= top_k <= 5 or not 0 < min_score <= 1:
             raise ValueError("min_score must be in (0, 1]")
         self._repository = repository
         self._today_provider = today_provider
         self._vector = vector_retriever
-        self._sparse = sparse_retriever or LocalTfidfRetriever()
+        self._sparse = sparse_retriever or LocalBm25Retriever()
         self._merger = SharedHybridRetriever(max_candidates=max_candidates)
+        self._top_k = top_k
         self._min_score = min_score
 
     async def answer(
@@ -547,15 +552,16 @@ class JobQueryService:
                 sparse_hits = self._sparse.search(
                     question,
                     records,
-                    top_k=self._merger.max_candidates,
+                    top_k=self._top_k,
                     min_score=self._min_score,
                 )
                 sparse = [
                     (by_id[hit.record_id], hit.score)
                     for hit in sparse_hits
                     if hit.record_id in by_id
-                    and math.isfinite(hit.score)
-                    and self._min_score <= hit.score <= 1
+                    and sparse_score_is_usable(
+                        self._sparse, hit.score, min_score=self._min_score
+                    )
                 ]
                 semantic = []
                 if self._vector is not None:
@@ -564,7 +570,7 @@ class JobQueryService:
                             question,
                             domain="jobs",
                             allowed_records=records,
-                            top_k=self._merger.max_candidates,
+                            top_k=self._top_k,
                             min_score=self._min_score,
                         )
                     except Exception:
@@ -586,7 +592,7 @@ class JobQueryService:
                         sparse=sparse,
                         semantic=semantic,
                     )
-                )
+                )[: self._top_k]
             else:
                 records = records[:20]
             if not records:

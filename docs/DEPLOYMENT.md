@@ -203,7 +203,7 @@ DB_USER=askanu_backend
 GEMINI_MODEL=gemini-3.5-flash-lite
 MAX_OUTPUT_TOKENS=800
 REQUEST_TIMEOUT_SECONDS=30
-SEMANTIC_TOP_K=3
+SEMANTIC_TOP_K=5
 SEMANTIC_MIN_SCORE=0.2
 ```
 
@@ -243,7 +243,7 @@ does not load a local `.env`. Local development retains the existing explicit
 
 Production now selects `PostgresCourseProgramRepository` through the same
 `CatalogReader` boundary used by the fixture implementation. Exact code/year,
-program, normalized-name/metadata and bounded TF-IDF planner paths therefore keep
+program, normalized-name/metadata and bounded local BM25 planner paths therefore keep
 the existing ordering and logic. Every row is read fresh with parameterised SQL
 and validated back through `CourseProgramRecord`; `canonical_url`, `content_hash`,
 JSON nulls and all 16 schema-v1 fields come from storage unchanged.
@@ -297,7 +297,12 @@ source ID, timezone-aware start/completion timestamps, bounded run status,
 non-negative persisted record counts and an optional error. It does not auto-run
 at web startup and does not silently destroy data.
 
-Current Day 5 retrieval is local sparse TF-IDF/cosine, not dense embeddings.
+Current V7 retrieval is local ephemeral BM25 over prefiltered source snapshots,
+not dense embeddings. The selected configuration is `k1=1.2`, `b=0.75`,
+case-folded `[a-z0-9]+` tokens, title plus content, no stop-word removal or
+stemming, positive scores eligible, deterministic record-ID tie breaking and
+candidate Top-K 5. Hard filters run before ranking and returned IDs are
+rehydrated only from the filtered snapshot.
 Accordingly this migration does **not** enable pgvector and the runtime does not
 use pgvector. Future embedding/indexing work requires a reviewed migration and
 must not be claimed as operational here.

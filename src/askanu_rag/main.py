@@ -47,6 +47,7 @@ from askanu_rag.resource_queries import (
     is_plausible_resource_question,
 )
 from askanu_rag.retrieval.catalog import CatalogReader
+from askanu_rag.retrieval.semantic import LocalBm25Retriever
 from askanu_rag.synthesis import SynthesisClient, SynthesisError
 from askanu_rag.models import (
     AskRequest,
@@ -191,7 +192,7 @@ def create_app(
     timeout_seconds: float = 30,
     semantic_retriever=None,
     vector_retriever=None,
-    semantic_top_k: int = 3,
+    semantic_top_k: int = 5,
     semantic_min_score: float = 0.2,
     jobs_today_provider: Callable[[], date] | None = None,
     events_now_provider: Callable[[], datetime] | None = None,
@@ -203,8 +204,9 @@ def create_app(
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
     repository = repository if repository is not None else create_default_course_program_repository()
+    candidate_retriever = semantic_retriever or LocalBm25Retriever()
     if isinstance(repository, CatalogReader):
-        course_queries = HybridQueryService(repository, synthesis_client, semantic_retriever,
+        course_queries = HybridQueryService(repository, synthesis_client, candidate_retriever,
             vector_retriever=vector_retriever, timeout_seconds=timeout_seconds,
             top_k=semantic_top_k, min_score=semantic_min_score,
             max_candidates=max_merged_candidates)
@@ -214,6 +216,9 @@ def create_app(
         ScholarshipQueryService(
             repository,
             vector_retriever,
+            sparse_retriever=candidate_retriever,
+            top_k=semantic_top_k,
+            min_score=semantic_min_score,
             max_candidates=max_merged_candidates,
         )
         if isinstance(repository, ScholarshipReader)
@@ -226,6 +231,8 @@ def create_app(
             repository,
             jobs_today_provider,
             vector_retriever,
+            sparse_retriever=candidate_retriever,
+            top_k=semantic_top_k,
             max_candidates=max_merged_candidates,
             min_score=semantic_min_score,
         )
@@ -237,6 +244,9 @@ def create_app(
             repository,
             "accommodation",
             vector_retriever,
+            sparse_retriever=candidate_retriever,
+            top_k=semantic_top_k,
+            min_sparse_score=semantic_min_score,
             max_candidates=max_merged_candidates,
         )
         if isinstance(repository, ResourceReader)
@@ -247,6 +257,9 @@ def create_app(
             repository,
             "support",
             vector_retriever,
+            sparse_retriever=candidate_retriever,
+            top_k=semantic_top_k,
+            min_sparse_score=semantic_min_score,
             max_candidates=max_merged_candidates,
         )
         if isinstance(repository, ResourceReader)
