@@ -50,6 +50,15 @@ ResultSet ID, canonical identity, and ordinal; RAG requires agreement with the
 retained ordering and re-resolves the identity against current approved stored
 evidence. Neither mechanism trusts client-carried identity as factual authority.
 
+The generic `result_page` input is presentation over the newest focused
+retained ResultSet. Page size is at most five, the requested start must equal
+the server-authored cursor, and every returned identity is re-resolved from the
+approved repository. The ResultSet's original one-based ordinals remain
+authoritative across pages and clicked cards. `show more`, `show me more`, and
+`what else?` use this same cursor. Paging never reruns discovery, semantic
+retrieval or ranking. Refinement creates a child ResultSet with its own cursor;
+continuation cannot fall back to the parent.
+
 History contributes only constrained entity/year/intent meaning. It is never
 copied wholesale into the Gemini prompt, never treated as a source of course
 requirements or URLs, and is not written to default request logs. Every factual
@@ -86,6 +95,7 @@ Clears:
 - bounded natural-language history
 - typed entity state and selected entity/result
 - typed ResultSets
+- typed ResultSet presentation cursor
 - scoped constraints
 - student-stated session facts
 - pending clarification

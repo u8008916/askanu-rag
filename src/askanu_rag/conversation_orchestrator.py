@@ -199,11 +199,25 @@ def orchestrate_turn(
         )
         action = ClarificationAction.STILL_PENDING
     elif interpretation.domain is not None and interpretation.entity is None and reference is None:
+        continued = next(
+            (
+                item
+                for item in updated.result_sets
+                if interpretation.intent is not None
+                and interpretation.intent.operation == "continue_results"
+                and item.result_set_id == interpretation.referenced_result_set_id
+            ),
+            None,
+        )
         updated = set_semantic_focus(
             updated,
             SemanticFocus(
                 domain=interpretation.domain,
+                entity_kind=continued.entity_kind if continued is not None else None,
                 intent_name=interpretation.intent.name if interpretation.intent else None,
+                result_set_id=(
+                    continued.result_set_id if continued is not None else None
+                ),
             ),
         )
 

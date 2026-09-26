@@ -46,6 +46,7 @@ from askanu_rag.resource_queries import (
     DomainResourceQueryService,
     is_plausible_resource_question,
 )
+from askanu_rag.result_paging import ResultPageResolutionError
 from askanu_rag.retrieval.catalog import CatalogReader
 from askanu_rag.retrieval.semantic import LocalBm25Retriever
 from askanu_rag.retrieval.embeddings import GeminiEmbeddingProvider
@@ -131,6 +132,8 @@ def controlled_error_response(
         conversation_state=safe_state,
     )
     content = payload.model_dump(mode="json")
+    if content.get("result_page") is None:
+        content.pop("result_page", None)
     if not include_conversation_state:
         content.pop("conversation_state")
     return JSONResponse(status_code=status_code, content=content)
@@ -210,6 +213,37 @@ def _state_with_verified_result_selection(
             intent_name=result_set.intent.name,
         ),
     )
+
+
+def _verify_structured_result_page(
+    payload: AskRequest,
+    repository: CourseProgramReader,
+) -> None:
+    """Re-resolve the requested slice; client state never supplies records."""
+
+    page = payload.result_page
+    if page is None:
+        return
+    result_set = next(
+        item
+        for item in payload.conversation_state.result_sets
+        if item.result_set_id == page.result_set_id
+    )
+    if (
+        result_set.domain != Domain.ACCOMMODATION
+        or not isinstance(repository, ResourceReader)
+    ):
+        raise StarletteHTTPException(status_code=400)
+    start = page.start_ordinal - 1
+    requested_ids = result_set.ordered_canonical_ids[
+        start : start + page.limit
+    ]
+    current_ids = {
+        record.entity_id
+        for record in repository.all_domain_records(result_set.domain.value)
+    }
+    if any(canonical_id not in current_ids for canonical_id in requested_ids):
+        raise StarletteHTTPException(status_code=400)
 
 
 def _mark_response(request: Request, response: AskResponse) -> AskResponse:
@@ -498,6 +532,7 @@ def create_app(
         # RAG validates it and returns the authoritative next state; no server
         # session or factual evidence is created from it.
         request_state = _state_with_verified_result_selection(payload, repository)
+        _verify_structured_result_page(payload, repository)
         clarification_option_ids = (
             tuple(payload.clarification_selection.option_ids)
             if payload.clarification_selection is not None
@@ -578,7 +613,15 @@ def create_app(
             if scholarship_response is not None:
                 return _mark_response(request, scholarship_response)
 
-        accommodation_domain_resolved = (
+        structured_accommodation_page = bool(
+            payload.result_page is not None
+            and any(
+                item.result_set_id == payload.result_page.result_set_id
+                and item.domain == Domain.ACCOMMODATION
+                for item in conversation_turn.state.result_sets
+            )
+        )
+        accommodation_domain_resolved = structured_accommodation_page or (
             conversation_turn.interpretation.domain == Domain.ACCOMMODATION
             and not conversation_turn.interpretation.requires_clarification
             and (
@@ -592,23 +635,28 @@ def create_app(
                 resolved_question, "accommodation", pending, payload.history
             )
         ):
-            accommodation_response = await accommodation_queries.answer(
-                resolved_question,
-                request_id,
-                request_state.pending_clarification,
-                payload.history,
-                resolved_domain=accommodation_domain_resolved,
-                interpretation=conversation_turn.interpretation,
-                selected_canonical_ids=conversation_turn.selected_canonical_ids,
-                conversation_state=conversation_turn.state,
-                clarification_option_ids=clarification_option_ids,
-            )
+            try:
+                accommodation_response = await accommodation_queries.answer(
+                    resolved_question,
+                    request_id,
+                    request_state.pending_clarification,
+                    payload.history,
+                    resolved_domain=accommodation_domain_resolved,
+                    interpretation=conversation_turn.interpretation,
+                    selected_canonical_ids=conversation_turn.selected_canonical_ids,
+                    conversation_state=conversation_turn.state,
+                    clarification_option_ids=clarification_option_ids,
+                    result_page=payload.result_page,
+                )
+            except ResultPageResolutionError as exc:
+                raise StarletteHTTPException(status_code=400) from exc
             if accommodation_response is not None:
                 outcome = accommodation_queries.integrate_conversation(
                     accommodation_response,
                     resolved_question,
                     conversation_turn.state,
                     conversation_turn.interpretation,
+                    payload.result_page,
                 )
                 request.state.conversation_state = outcome.state
                 request.state.resource_query_trace = outcome.trace

@@ -31,9 +31,13 @@ from askanu_rag.models import (
     PublicComparisonItem,
     PublicComparisonValue,
     PublicResultItem,
+    PublicRoomRateEvidence,
     ResponseAction,
     ResolvedEntity,
+    ResultPage,
+    ResultPageRequest,
     ResultSet,
+    ResultSetStatus,
     RetrievalPlan,
     SupportRecord,
 )
@@ -52,9 +56,15 @@ from askanu_rag.retrieval.semantic import (
 )
 from askanu_rag.synthesis import SynthesisError
 from askanu_rag.retrieval_planning import build_retrieval_plan
+from askanu_rag.result_paging import (
+    ResultPageResolutionError,
+    resolve_result_page,
+    result_page_metadata,
+)
 from askanu_rag.state_transitions import (
     refine_result_set,
     remember_entity,
+    remember_result_page,
     remember_result_set,
 )
 
@@ -68,6 +78,7 @@ ACCOMMODATION_INTENT_PATTERN = re.compile(
     r"contract|include|inclusions?|facilities|features|amenities|overview|"
     r"accessible|accessibility|apply|application|eligible|eligibility|"
     r"who can live|undergraduate|postgraduate|vacan(?:cy|cies|t)|available|"
+    r"availability|"
     r"contact|email|phone)\b",
     re.I,
 )
@@ -86,7 +97,8 @@ SUPPORT_PATTERN = re.compile(
     re.I,
 )
 LIVE_AVAILABILITY_PATTERN = re.compile(
-    r"\b(?:live availability|available (?:right )?now|rooms? available|"
+    r"\b(?:live availability|(?:is there )?availability|"
+    r"available (?:right )?now|rooms? available|"
     r"any (?:rooms?|spaces?) (?:left|available)|space (?:right now|at the moment)|"
     r"vacan(?:cy|cies|t)|guaranteed room|get a room .* now)\b",
     re.I,
@@ -210,6 +222,38 @@ class ResourceQueryOutcome:
     response: AskResponse
     state: ConversationState
     trace: ResourceQueryTrace | None = None
+
+
+def _qualifying_rooms_for_result_set(
+    records: tuple[ResourceRecord, ...],
+    result_set: ResultSet,
+) -> tuple[QualifyingRoomEvidence, ...]:
+    price_limit: float | None = None
+    inclusive = True
+    for constraint in result_set.constraints.items:
+        if constraint.semantic_type in {
+            ConstraintSemanticType.MAX_PRICE,
+            ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+        }:
+            price_limit = float(constraint.value)
+            inclusive = constraint.semantic_type == ConstraintSemanticType.MAX_PRICE
+            break
+    if price_limit is None:
+        return ()
+    qualifying: list[QualifyingRoomEvidence] = []
+    for record in records:
+        if not isinstance(record, AccommodationRecord):
+            continue
+        qualifying.extend(
+            evidence
+            for evidence, amount in _record_price_evidence(record)
+            if (
+                amount <= price_limit
+                if inclusive
+                else amount < price_limit
+            )
+        )
+    return tuple(qualifying)
 
 
 def _room_weekly_aud_rate(
@@ -514,6 +558,7 @@ def _public_result_item(
     result_set: ResultSet | None,
     *,
     include_fields: bool = True,
+    qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = (),
 ) -> PublicResultItem:
     ordinal: int | None = None
     if result_set is not None and record.entity_id in result_set.ordered_canonical_ids:
@@ -523,6 +568,14 @@ def _public_result_item(
         for field, _ in _PUBLIC_ACCOMMODATION_FIELDS
         if (value := _public_accommodation_value(record, field)) is not None
     }
+    qualifying_room = next(
+        (
+            room
+            for room in qualifying_rooms
+            if room.record_id == record.record_id
+        ),
+        None,
+    )
     return PublicResultItem(
         record_id=record.record_id,
         source_id=record.source_id,
@@ -533,17 +586,36 @@ def _public_result_item(
         result_set_id=result_set.result_set_id if result_set is not None else None,
         ordinal=ordinal,
         fields=fields if include_fields else {},
+        qualifying_evidence=(
+            PublicRoomRateEvidence(
+                room_name=qualifying_room.name,
+                rate=qualifying_room.rate,
+                cost_period=qualifying_room.cost_period,
+                contract=qualifying_room.contract,
+                inclusions=qualifying_room.inclusions,
+                other_fees=qualifying_room.other_fees,
+            )
+            if qualifying_room is not None
+            else None
+        ),
     )
 
 
 def _public_comparison_item(
     records: tuple[AccommodationRecord, ...],
     result_set: ResultSet | None,
+    *,
+    qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = (),
 ) -> PublicComparisonItem:
     return PublicComparisonItem(
         result_set_id=result_set.result_set_id if result_set is not None else None,
         records=[
-            _public_result_item(record, result_set, include_fields=False)
+            _public_result_item(
+                record,
+                result_set,
+                include_fields=False,
+                qualifying_rooms=qualifying_rooms,
+            )
             for record in records
         ],
         fields=[
@@ -818,6 +890,7 @@ class DomainResourceQueryService:
         selected_canonical_ids: tuple[str, ...] = (),
         conversation_state: ConversationState | None = None,
         clarification_option_ids: tuple[str, ...] = (),
+        result_page: ResultPageRequest | None = None,
     ) -> AskResponse | None:
         pattern = ACCOMMODATION_PATTERN if self.domain == "accommodation" else SUPPORT_PATTERN
         has_domain_signal = bool(
@@ -826,6 +899,57 @@ class DomainResourceQueryService:
             or (self.domain == "support" and TOPIC_PATTERN.search(question))
         )
         records = self.repository.all_domain_records(self.domain)
+        resolved_page = (
+            resolve_result_page(
+                conversation_state or ConversationState(),
+                interpretation,
+                result_page,
+            )
+            if interpretation is not None
+            else None
+        )
+        is_continuation = bool(
+            result_page is not None
+            or (
+                interpretation is not None
+                and interpretation.intent is not None
+                and interpretation.intent.operation == "continue_results"
+            )
+        )
+        if is_continuation:
+            if (
+                self.domain != "accommodation"
+                or resolved_page is None
+                or resolved_page.result_set.domain != Domain.ACCOMMODATION
+            ):
+                raise ResultPageResolutionError("result page is stale or foreign")
+            start = resolved_page.start_ordinal - 1
+            canonical_ids = resolved_page.result_set.ordered_canonical_ids[
+                start : start + resolved_page.limit
+            ]
+            by_entity_id = {record.entity_id: record for record in records}
+            selected = tuple(
+                by_entity_id[canonical_id]
+                for canonical_id in canonical_ids
+                if canonical_id in by_entity_id
+            )
+            if len(selected) != len(canonical_ids):
+                raise ResultPageResolutionError(
+                    "result page identity is not current approved evidence"
+                )
+            if not selected:
+                return OkResponse(
+                    answer="There are no more results in this result set.",
+                    request_id=request_id,
+                )
+            return self._accommodation_answer(
+                "Show accommodation options",
+                selected,
+                request_id,
+                qualifying_rooms=_qualifying_rooms_for_result_set(
+                    selected, resolved_page.result_set
+                ),
+            )
         if (
             self.domain == "accommodation"
             and interpretation is not None
@@ -1081,6 +1205,7 @@ class DomainResourceQueryService:
         question: str,
         state: ConversationState,
         interpretation: QueryInterpretation,
+        result_page: ResultPageRequest | None = None,
     ) -> ResourceQueryOutcome:
         """Attach Accommodation retrieval to the shared V7 state/evidence path."""
 
@@ -1094,7 +1219,8 @@ class DomainResourceQueryService:
         )
         by_entity_id = {record.entity_id: record for record in all_records}
         by_record_id = {record.record_id: record for record in all_records}
-        parent = next(
+        resolved_page = resolve_result_page(state, interpretation, result_page)
+        parent = resolved_page.result_set if resolved_page is not None else next(
             (
                 item
                 for item in state.result_sets
@@ -1104,7 +1230,17 @@ class DomainResourceQueryService:
             None,
         )
         population = all_records
-        if (
+        if resolved_page is not None:
+            start = resolved_page.start_ordinal - 1
+            page_ids = resolved_page.result_set.ordered_canonical_ids[
+                start : start + resolved_page.limit
+            ]
+            population = tuple(
+                by_entity_id[canonical_id]
+                for canonical_id in page_ids
+                if canonical_id in by_entity_id
+            )
+        elif (
             interpretation.intent is not None
             and interpretation.intent.operation == "refine_results"
             and parent is not None
@@ -1115,13 +1251,21 @@ class DomainResourceQueryService:
                 if canonical_id in by_entity_id
             )
         discovery = _is_accommodation_discovery_request(question, interpretation)
-        filter_outcome = _filter_accommodation_population(
-            population, question, interpretation
-        )
-        matched = filter_outcome.matched_records
-        population_complete = filter_outcome.population_complete
-        unknown = filter_outcome.unknown_records
-        qualifying_rooms = filter_outcome.qualifying_rooms
+        if resolved_page is not None:
+            matched = population
+            population_complete = True
+            unknown = ()
+            qualifying_rooms = _qualifying_rooms_for_result_set(
+                population, resolved_page.result_set
+            )
+        else:
+            filter_outcome = _filter_accommodation_population(
+                population, question, interpretation
+            )
+            matched = filter_outcome.matched_records
+            population_complete = filter_outcome.population_complete
+            unknown = filter_outcome.unknown_records
+            qualifying_rooms = filter_outcome.qualifying_rooms
         price_constraint_active = any(
             item.semantic_type
             in {
@@ -1143,7 +1287,7 @@ class DomainResourceQueryService:
         )
         result_set: ResultSet | None = None
         updated = state
-        if discovery and plan is not None:
+        if discovery and resolved_page is None and plan is not None:
             result_ids = tuple(record.entity_id for record in matched[:20])
             status = classify_result_set_status(
                 result_ids, population_complete=population_complete
@@ -1174,6 +1318,30 @@ class DomainResourceQueryService:
                 )
             updated = remember_result_set(updated, result_set)
 
+        public_page: ResultPage | None = None
+        if result_set is not None and result_set.status == ResultSetStatus.RESULTS:
+            public_page, continuation_ordinal = result_page_metadata(
+                result_set,
+                start_ordinal=1,
+                returned=len(selected),
+            )
+            updated = remember_result_page(
+                updated,
+                result_set_id=result_set.result_set_id,
+                next_ordinal=continuation_ordinal,
+            )
+        elif resolved_page is not None:
+            public_page, continuation_ordinal = result_page_metadata(
+                resolved_page.result_set,
+                start_ordinal=resolved_page.start_ordinal,
+                returned=len(selected),
+            )
+            updated = remember_result_page(
+                updated,
+                result_set_id=resolved_page.result_set.result_set_id,
+                next_ordinal=continuation_ordinal,
+            )
+
         if len(selected) == 1:
             record = selected[0]
             entity = ResolvedEntity(
@@ -1191,7 +1359,9 @@ class DomainResourceQueryService:
                 focus=updated.selected_result is None and result_set is None,
             )
 
-        fields = _trace_fields(question, discovery=discovery)
+        fields = _trace_fields(
+            question, discovery=discovery or resolved_page is not None
+        )
         if price_constraint_active:
             # A numeric bound is established only by named-room rate evidence.
             # Residence-level advertised wording remains available to the answer
@@ -1273,13 +1443,19 @@ class DomainResourceQueryService:
         )
         if COMPARE_PATTERN.search(question) and public_records:
             public_items = [
-                _public_comparison_item(public_records, public_result_set).model_dump(
-                    mode="json"
+                _public_comparison_item(
+                    public_records,
+                    public_result_set,
+                    qualifying_rooms=qualifying_rooms,
                 )
             ]
         else:
             public_items = [
-                _public_result_item(record, public_result_set).model_dump(mode="json")
+                _public_result_item(
+                    record,
+                    public_result_set,
+                    qualifying_rooms=qualifying_rooms,
+                )
                 for record in public_records
             ]
         actions = (
@@ -1292,6 +1468,7 @@ class DomainResourceQueryService:
             update={
                 "items": public_items,
                 "actions": actions,
+                "result_page": public_page,
                 "answer_state": (
                     evidence_bundle.answer_state
                     if evidence_bundle is not None

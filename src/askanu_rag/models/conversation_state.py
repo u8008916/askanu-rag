@@ -363,6 +363,15 @@ class SelectedResult(StateModel):
     ordinal: Annotated[StrictInt, Field(ge=1, le=MAX_RESULT_IDENTITIES)]
 
 
+class ResultPageCursor(StateModel):
+    """Presentation cursor for one retained ResultSet; never factual evidence."""
+
+    result_set_id: Identifier
+    next_ordinal: Annotated[
+        StrictInt, Field(ge=1, le=MAX_RESULT_IDENTITIES + 1)
+    ]
+
+
 class ConversationState(StateModel):
     schema_version: Literal[STATE_SCHEMA_VERSION] = STATE_SCHEMA_VERSION
     turn_index: TurnIndex = 0
@@ -378,6 +387,7 @@ class ConversationState(StateModel):
         default_factory=tuple, max_length=MAX_RETAINED_RESULT_SETS
     )
     selected_result: SelectedResult | None = None
+    result_page: ResultPageCursor | None = None
     pending_clarification: PendingClarification | None = None
 
     @model_validator(mode="after")
@@ -441,6 +451,16 @@ class ConversationState(StateModel):
                 != self.selected_result.canonical_id
             ):
                 raise ValueError("selected result ordinal and identity must agree")
+        if self.result_page is not None:
+            result_set = result_sets.get(self.result_page.result_set_id)
+            if result_set is None:
+                raise ValueError("result page must reference a retained result set")
+            if result_set.status != ResultSetStatus.RESULTS:
+                raise ValueError("result page requires a RESULTS result set")
+            if self.result_page.next_ordinal > len(
+                result_set.ordered_canonical_ids
+            ) + 1:
+                raise ValueError("result page cursor exceeds the retained ordering")
         return self
 
 

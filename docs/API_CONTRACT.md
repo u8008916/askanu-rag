@@ -21,10 +21,12 @@ Request:
     "constraints":{"items":[]},
     "result_sets":[],
     "selected_result":null,
+    "result_page":null,
     "pending_clarification":null
   },
   "selected_result":null,
-  "clarification_selection":null
+  "clarification_selection":null,
+  "result_page":null
 }
 ```
 
@@ -49,6 +51,14 @@ and one or more `option_ids`. IDs must belong to the current pending option set;
 multiple IDs additionally require `allow_multiple: true`. Both inputs are
 untrusted context and cannot supply institutional facts, URLs, or arbitrary
 record identities.
+
+`result_page` is an optional generic presentation request containing a retained
+`result_set_id`, one-based `start_ordinal`, and `limit` from 1 through 5. The
+start ordinal must equal the server cursor in `conversation_state`, and the set
+must be the current focused `RESULTS` set. Unknown, stale, foreign, skipped or
+oversized page requests are rejected. RAG slices the immutable ResultSet order
+and re-resolves the returned identities against current approved repository
+evidence; continuation never retrieves, reranks or accepts client-created IDs.
 
 Frozen request transport limits:
 
@@ -124,6 +134,9 @@ are present for every Ask status. `answer_state` is null when the route does not
 produce a shared evidence state; otherwise it is `CONFIRMED`, `DERIVED`,
 `PARTIAL`, or `UNKNOWN`. `actions` contains only validated backend projections,
 never links parsed from generated prose, history, or user input.
+The additive `result_page` response object is emitted only for a paged result
+presentation. It contains `result_set_id`, `start_ordinal`, `returned`,
+`has_more`, and nullable `next_ordinal`.
 
 The answer may provide a safe, user-facing explanation. Never return stack traces, credentials, secrets, prompts or internal dependency diagnostics. The exact 5xx code depends on the failure; this contract does not prescribe a separate code for each dependency.
 
@@ -150,6 +163,12 @@ The answer may provide a safe, user-facing explanation. Never return stack trace
 }
 ```
 
+The Ask response `items` field is a discriminated `PublicItem` union. Its
+currently supported members are `PublicResultItem` (`type: "result"`),
+`PublicComparisonItem` (`type: "comparison"`) and the backwards-compatible
+chat Jobs shape `PublicJobItem` (`type: "job"`). Arbitrary dictionaries are not
+valid response items.
+
 Accommodation and later verticals reuse `items` for shared structured results.
 A result item has `type: "result"`, stored provenance (`record_id`, `source_id`,
 `url`, `domain`), stable `canonical_id`, title, optional ResultSet identity and
@@ -158,6 +177,58 @@ backend-authored comparison uses `type: "comparison"`, ordered record
 identities, and named fields whose per-record values explicitly state
 `published` or `not_published`. The App does not reconstruct comparisons from
 answer prose or compare cards itself.
+
+When—and only when—a named room's explicit AUD weekly rate established a
+numeric Accommodation price match, the result also contains typed
+`qualifying_evidence`:
+
+```json
+{
+  "type":"room_rate",
+  "room_name":"Standard",
+  "rate":"$380.00",
+  "cost_period":"2027 Indicative costs",
+  "contract":"44 weeks",
+  "inclusions":"Internet included",
+  "other_fees":"Refundable Deposit: $1,300"
+}
+```
+
+This object proves only that exact named room passed the active bound. It does
+not state that every room or the residence is affordable, that the room is
+cheapest or vacant, that the student can obtain it, or any derived total cost.
+Without a deterministic room-price match the field is null.
+
+Example continuation request:
+
+```json
+{
+  "question":"Show more",
+  "history":[],
+  "conversation_state":{"schema_version":1,"...":"authoritative prior state"},
+  "result_page":{"result_set_id":"rs:accommodation:1","start_ordinal":6,"limit":5}
+}
+```
+
+Example page metadata:
+
+```json
+{
+  "result_page":{
+    "result_set_id":"rs:accommodation:1",
+    "start_ordinal":6,
+    "returned":5,
+    "has_more":true,
+    "next_ordinal":11
+  }
+}
+```
+
+Initial discovery presents ordinals 1–5. Natural `show more`, `show me more`,
+and `what else?` use the same retained cursor. A refined child ResultSet gets
+its own cursor, so later continuation cannot silently page the parent. A final
+or repeated terminal page returns no duplicate identities, `has_more: false`,
+and `next_ordinal: null`.
 
 A structured action currently uses this reusable shape:
 
@@ -227,6 +298,7 @@ are:
 | `constraints.items` | typed scoped constraint array | 16 |
 | `result_sets` | typed ResultSet array | 6 |
 | `selected_result` | stable ResultSet selection or null | one |
+| `result_page` | next presentation ordinal for one retained ResultSet or null | one |
 | `pending_clarification` | resumable clarification or null | one |
 
 Each ResultSet contains at most 20 ordered canonical identities. Clarification

@@ -270,6 +270,26 @@ def _result_reference(question: str) -> str | None:
     return None
 
 
+def _is_continue_results_phrase(normalised: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:show(?: me)? more|any more|more results|what else)[?.!]*",
+            normalised,
+        )
+    )
+
+
+def _is_accommodation_result_preference(
+    normalised: str, domain: Domain | None
+) -> bool:
+    return domain == Domain.ACCOMMODATION and bool(
+        re.search(
+            r"\b(?:self[- ]catered|catered|meal plan|cook for myself)\b",
+            normalised,
+        )
+    )
+
+
 def _intent(
     question: str,
     *,
@@ -285,7 +305,7 @@ def _intent(
     if any(phrase in normalised for phrase in ("back to", "return to", "go back to")):
         family = "fact_lookup" if any(word in normalised for word in ("where", "cost", "units", "prerequisite", "catered")) else "lookup"
         return ResolvedIntent(name=family, operation="return_topic")
-    if "any more" in normalised or "more results" in normalised:
+    if _is_continue_results_phrase(normalised):
         return ResolvedIntent(name="discover", operation="continue_results")
     if "compare" in normalised:
         return ResolvedIntent(name="compare", operation="compare")
@@ -294,7 +314,14 @@ def _intent(
         return ResolvedIntent(name=family, operation="lookup")
     if refining and not explicit_entity:
         return ResolvedIntent(name="discover", operation="refine_results")
-    if any(word in normalised for word in ("prerequisite", "units", "where", "cost", "price", "rate", "catered", "catering", "meal", "apply", "application", "available", "vacancy", "close")):
+    if any(
+        word in normalised
+        for word in (
+            "prerequisite", "units", "where", "cost", "price", "rate",
+            "catered", "catering", "meal", "apply", "application",
+            "available", "availability", "vacancy", "close",
+        )
+    ):
         return ResolvedIntent(name="fact_lookup", operation="lookup")
     if has_constraints or any(word in normalised for word in ("show", "list", "find", "what events", "which")):
         return ResolvedIntent(name="discover", operation="initial_discovery")
@@ -365,7 +392,9 @@ def interpret_turn(
         token in normalised
         for token in (
             "after ", "before ", "today", "tomorrow", "any more",
-            "cost", "apply", "available", "vacancy", "prerequisite", "units",
+            "show more", "show me more", "what else",
+            "cost", "apply", "available", "availability", "vacancy",
+            "prerequisite", "units",
             "where", "when", "close", "catered", "catering", "meal", "application",
             "price", "rate", "room", "is it", "its ",
             "under ", "below ", "less than", "no more than", "up to ",
@@ -422,8 +451,9 @@ def interpret_turn(
                     basis=EntityResolutionBasis.RETAINED_STATE,
                 )
 
+    result_preference = _is_accommodation_result_preference(normalised, domain)
     refining_result_set_reference = bool(
-        _price_constraint(question)
+        (_price_constraint(question) or result_preference)
         and domain is not None
         and any(item.domain == domain for item in state.result_sets)
     )
@@ -434,6 +464,7 @@ def interpret_turn(
             word in normalised
             for word in (
                 " it", "its ", "is it", "cost", "apply", "available",
+                "availability",
                 "vacancy", "prerequisite", "units", "catered", "catering",
                 "meal", "application", "price", "rate", "room", "how much",
             )
@@ -493,7 +524,7 @@ def interpret_turn(
                 key=lambda item: item.value,
             )
         )
-    refining = bool(explicit_constraints.items) and (
+    refining = bool(explicit_constraints.items or result_preference) and (
         bool(inherited_before_override.items)
         or any(item.domain == domain for item in state.result_sets)
     )
