@@ -146,3 +146,184 @@ def test_canonical_name_state_drives_course_followup_retrieval():
         )
 
     assert_comp1110_prerequisites(second)
+
+
+def test_selected_course_year_survives_followup_after_clarification():
+    with TestClient(create_app(repository=repository())) as client:
+        first = ask(
+            client,
+            "Actually, tell me about COMP1100.",
+        )
+        first_body = first.json()
+
+        assert first_body["status"] == "needs_clarification"
+        assert [item["id"] for item in first_body["clarification"]["options"]] == [
+            "courses:course:COMP1100_2026",
+            "courses:course:COMP1100_2027",
+        ]
+
+        selected = ask(
+            client,
+            "COMP1100 (2026) — Programming as Problem Solving",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Actually, tell me about COMP1100.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+            ],
+            state=first_body["conversation_state"],
+        )
+        selected_body = selected.json()
+
+        assert selected_body["status"] == "ok"
+        retained = selected_body["conversation_state"]["recent_entities"][0]
+        assert retained["canonical_id"] == "COMP1100"
+        assert (
+            retained["source_record_id"]
+            == "courses:course:COMP1100_2026"
+        )
+
+        followup = ask(
+            client,
+            "What are its prerequisites?",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Actually, tell me about COMP1100.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+                {
+                    "turn_id": "u2",
+                    "role": "user",
+                    "content": "COMP1100 (2026) — Programming as Problem Solving",
+                },
+                {
+                    "turn_id": "a2",
+                    "role": "assistant",
+                    "content": selected_body["answer"],
+                },
+            ],
+            state=selected_body["conversation_state"],
+        )
+
+    body = followup.json()
+
+    assert followup.status_code == 200
+    assert body["status"] == "insufficient_evidence"
+    assert (
+        body["answer"]
+        == "The stored evidence for COMP1100 (2026) does not establish "
+        "its prerequisites."
+    )
+    assert body["clarification"] is None
+    assert body["sources"][0]["record_id"] == "courses:course:COMP1100_2026"
+
+
+def test_ordinal_clarification_selection_also_retains_exact_course_year():
+    with TestClient(create_app(repository=repository())) as client:
+        first = ask(client, "Tell me about COMP1100.")
+        first_body = first.json()
+
+        assert first_body["status"] == "needs_clarification"
+
+        selected = ask(
+            client,
+            "first",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+            ],
+            state=first_body["conversation_state"],
+        )
+        selected_body = selected.json()
+
+        assert selected_body["status"] == "ok"
+        retained = selected_body["conversation_state"]["recent_entities"][0]
+        assert retained["canonical_id"] == "COMP1100"
+        assert retained["source_record_id"] == "courses:course:COMP1100_2026"
+
+
+def test_explicit_new_course_request_supersedes_stale_year_clarification():
+    with TestClient(create_app(repository=repository())) as client:
+        ambiguous = ask(
+            client,
+            "Tell me about COMP1100.",
+        )
+        ambiguous_body = ambiguous.json()
+
+        assert ambiguous_body["status"] == "needs_clarification"
+
+        switched = ask(
+            client,
+            "Actually, tell me about COMP1110.",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": ambiguous_body["answer"],
+                },
+            ],
+            state=ambiguous_body["conversation_state"],
+        )
+        switched_body = switched.json()
+
+        assert switched_body["status"] == "ok"
+        assert switched_body["clarification"] is None
+        assert "COMP1110 (2026)" in switched_body["answer"]
+
+        retained = switched_body["conversation_state"]["recent_entities"][0]
+        assert retained["canonical_id"] == "COMP1110"
+
+        followup = ask(
+            client,
+            "What are its prerequisites?",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": ambiguous_body["answer"],
+                },
+                {
+                    "turn_id": "u2",
+                    "role": "user",
+                    "content": "Actually, tell me about COMP1110.",
+                },
+                {
+                    "turn_id": "a2",
+                    "role": "assistant",
+                    "content": switched_body["answer"],
+                },
+            ],
+            state=switched_body["conversation_state"],
+        )
+
+    assert_comp1110_prerequisites(followup)

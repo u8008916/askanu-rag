@@ -46,7 +46,7 @@ from askanu_rag.resource_queries import (
     DomainResourceQueryService,
     is_plausible_resource_question,
 )
-from askanu_rag.retrieval.catalog import CatalogReader
+from askanu_rag.retrieval.catalog import CatalogReader, record_code
 from askanu_rag.retrieval.semantic import LocalBm25Retriever
 from askanu_rag.retrieval.embeddings import GeminiEmbeddingProvider
 from askanu_rag.retrieval.reranking import CohereReranker
@@ -60,6 +60,7 @@ from askanu_rag.models import (
     CurrentJobsResponse,
     Domain,
     EntityKind,
+    EntityResolutionBasis,
     ErrorResponse,
     HealthResponse,
     InsufficientEvidenceResponse,
@@ -67,7 +68,7 @@ from askanu_rag.models import (
     OffTopicResponse,
     UpcomingEventsResponse,
 )
-from askanu_rag.models.conversation_state import ConversationState
+from askanu_rag.models.conversation_state import ConversationState, ResolvedEntity
 from askanu_rag.retrieval import (
     CourseProgramReader,
     CourseProgramRepository,
@@ -87,6 +88,7 @@ from askanu_rag.scholarship_queries import (
 )
 from askanu_rag.state_transitions import (
     pending_from_public_clarification,
+    remember_entity,
     set_pending_clarification,
 )
 from askanu_rag.transport_limits import (
@@ -475,11 +477,52 @@ def create_app(
                 )
                 else None
             )
+            resolved_course_record_id = (
+                resolved_entity.source_record_id
+                if resolved_course_code is not None
+                and resolved_entity is not None
+                else None
+            )
             resolution = resolve_current_session(
                 payload,
                 repository,
                 resolved_course_code=resolved_course_code,
+                resolved_course_record_id=resolved_course_record_id,
             )
+
+            # A completed entity-selection clarification may identify one exact
+            # stored Course record. Persist that source identity in semantic
+            # state so later references keep the selected academic year.
+            if resolution.selected_record_id is not None:
+                selected_record = next(
+                    (
+                        record
+                        for record in repository.all_records()
+                        if record.record_id == resolution.selected_record_id
+                        and record.metadata_json.entity_type == "course"
+                    ),
+                    None,
+                )
+                if selected_record is not None:
+                    selected_entity = ResolvedEntity(
+                        domain=Domain.COURSES,
+                        kind=EntityKind.COURSE,
+                        canonical_id=record_code(selected_record),
+                        canonical_name=selected_record.title,
+                        source_record_id=selected_record.record_id,
+                        resolution_basis=(
+                            resolved_entity.resolution_basis
+                            if resolved_entity is not None
+                            and resolved_entity.canonical_id
+                            == record_code(selected_record)
+                            else EntityResolutionBasis.RETAINED_STATE
+                        ),
+                        mentioned_turn=conversation_turn.state.turn_index,
+                    )
+                    request.state.conversation_state = remember_entity(
+                        request.state.conversation_state,
+                        selected_entity,
+                    )
             if resolution.clarification is not None:
                 return _mark_response(
                     request,
