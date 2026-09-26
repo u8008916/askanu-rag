@@ -258,6 +258,7 @@ def test_api_conversation_state_round_trips_for_20_turns_with_bounded_lifecycle(
         (semantic_type, domain)
         for domain in Domain
         for semantic_type in ConstraintSemanticType
+        if semantic_type != ConstraintSemanticType.MAX_PRICE_EXCLUSIVE
     ][:MAX_RETAINED_CONSTRAINTS]
     fact_keys = [
         (semantic_type, domain)

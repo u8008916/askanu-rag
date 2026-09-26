@@ -49,10 +49,15 @@ from askanu_rag.temporal_compatibility import (
 )
 
 _SPACE_RE = re.compile(r"\s+")
-_PRICE_RE = re.compile(
-    r"(?:under|below|less than|no more than|up to|budget(?: of)?|"
-    r"max(?:imum)?(?: of)?|<)\s*\$?\s*(\d{2,6})|"
-    r"\$?\s*(\d{2,6})\s*(?:or less|maximum|max)\b",
+_EXCLUSIVE_PRICE_RE = re.compile(
+    r"(?:\b(?:under|below|less than)\b|<)\s*(?:A?\$)?\s*(?P<amount>\d{2,6})",
+    re.IGNORECASE,
+)
+_INCLUSIVE_PRICE_RE = re.compile(
+    r"(?:\b(?:no more than|up to|budget(?: of)?|max(?:imum)?(?: of)?)\b)"
+    r"\s*(?:A?\$)?\s*(?P<prefix_amount>\d{2,6})|"
+    r"(?:A?\$)?\s*(?P<suffix_amount>\d{2,6})\s*"
+    r"(?:or less|maximum|max)\b",
     re.IGNORECASE,
 )
 _AFTER_RE = re.compile(r"\bafter\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
@@ -75,6 +80,27 @@ _TYPED_REFERENCES: tuple[tuple[tuple[str, ...], Domain, EntityKind], ...] = (
 
 def _normalise(value: str) -> str:
     return _SPACE_RE.sub(" ", value.casefold().strip())
+
+
+def _price_constraint(
+    question: str,
+) -> tuple[ConstraintSemanticType, int] | None:
+    """Preserve strict versus inclusive upper-bound wording."""
+
+    exclusive = _EXCLUSIVE_PRICE_RE.search(question)
+    inclusive = _INCLUSIVE_PRICE_RE.search(question)
+    if exclusive is None and inclusive is None:
+        return None
+    if exclusive is not None and (
+        inclusive is None or exclusive.start() <= inclusive.start()
+    ):
+        return ConstraintSemanticType.MAX_PRICE_EXCLUSIVE, int(
+            exclusive.group("amount")
+        )
+    assert inclusive is not None
+    return ConstraintSemanticType.MAX_PRICE, int(
+        inclusive.group("prefix_amount") or inclusive.group("suffix_amount")
+    )
 
 
 def _entity(
@@ -147,11 +173,11 @@ def _explicit_constraints(question: str, domain: Domain | None, turn: int) -> Co
     normalised = _normalise(question)
     found: list[ScopedConstraint] = []
 
-    price = _PRICE_RE.search(question)
+    price = _price_constraint(question)
     if price:
         found.append(ScopedConstraint(
-            semantic_type=ConstraintSemanticType.MAX_PRICE,
-            value=int(price.group(1) or price.group(2)),
+            semantic_type=price[0],
+            value=price[1],
             scope=ConstraintScope(domain=domain),
             lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
             introduced_turn=turn,
@@ -198,14 +224,29 @@ def _merge_constraints(
     tuple[ConstraintSemanticType, ...],
     tuple[ConstraintSemanticType, ...],
 ]:
+    price_types = {
+        ConstraintSemanticType.MAX_PRICE,
+        ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+    }
+
+    def family(item: ConstraintSemanticType) -> object:
+        return ConstraintSemanticType.MAX_PRICE if item in price_types else item
+
     explicit_types = {item.semantic_type for item in explicit.items}
-    survivors = tuple(item for item in inherited.items if item.semantic_type not in explicit_types)
+    explicit_families = {family(item) for item in explicit_types}
+    survivors = tuple(
+        item
+        for item in inherited.items
+        if family(item.semantic_type) not in explicit_families
+    )
     merged = ConstraintSet(items=tuple(explicit.items) + survivors)
     replaced = tuple(
         sorted(
-            explicit_types.intersection(
-                {item.semantic_type for item in inherited.items}
-            ),
+            {
+                item.semantic_type
+                for item in inherited.items
+                if family(item.semantic_type) in explicit_families
+            },
             key=lambda item: item.value,
         )
     )
@@ -386,7 +427,7 @@ def interpret_turn(
                 )
 
     refining_result_set_reference = bool(
-        _PRICE_RE.search(question)
+        _price_constraint(question)
         and domain is not None
         and any(item.domain == domain for item in state.result_sets)
     )
