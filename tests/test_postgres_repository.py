@@ -498,7 +498,8 @@ def test_db_failure_is_controlled_and_logs_no_diagnostics(caplog):
     body = response.json()
     assert response.status_code == 500
     assert set(body) == {
-        "status", "answer", "items", "sources", "clarification", "request_id",
+        "status", "answer", "items", "answer_state", "actions", "sources",
+        "clarification", "request_id",
         "conversation_state"
     }
     assert body["status"] == "error"

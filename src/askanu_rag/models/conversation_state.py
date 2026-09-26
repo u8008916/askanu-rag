@@ -153,7 +153,12 @@ class ResolvedIntent(StateModel):
 
 
 class ConstraintSemanticType(str, Enum):
+    # Inclusive upper bound (<=). Kept as the existing serialized name for
+    # backwards-compatible schema-version-1 state.
     MAX_PRICE = "max_price"
+    # Strict upper bound (<). Day 4 preserves wording such as "under" rather
+    # than collapsing it into the inclusive MAX_PRICE meaning.
+    MAX_PRICE_EXCLUSIVE = "max_price_exclusive"
     # Accepted only so existing schema-version-1 client state still validates.
     # Day 2 interpretation never emits this legacy combined dimension.
     LEGACY_TEMPORAL_WINDOW = "temporal_window"
@@ -214,9 +219,17 @@ class ConstraintSet(StateModel):
 
     @model_validator(mode="after")
     def constraint_keys_are_unique(self) -> "ConstraintSet":
+        price_types = {
+            ConstraintSemanticType.MAX_PRICE,
+            ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+        }
         keys = [
             (
-                item.semantic_type,
+                (
+                    ConstraintSemanticType.MAX_PRICE
+                    if item.semantic_type in price_types
+                    else item.semantic_type
+                ),
                 item.scope.domain,
                 item.scope.entity_kind,
                 item.scope.canonical_entity_id,
@@ -350,6 +363,15 @@ class SelectedResult(StateModel):
     ordinal: Annotated[StrictInt, Field(ge=1, le=MAX_RESULT_IDENTITIES)]
 
 
+class ResultPageCursor(StateModel):
+    """Presentation cursor for one retained ResultSet; never factual evidence."""
+
+    result_set_id: Identifier
+    next_ordinal: Annotated[
+        StrictInt, Field(ge=1, le=MAX_RESULT_IDENTITIES + 1)
+    ]
+
+
 class ConversationState(StateModel):
     schema_version: Literal[STATE_SCHEMA_VERSION] = STATE_SCHEMA_VERSION
     turn_index: TurnIndex = 0
@@ -365,6 +387,7 @@ class ConversationState(StateModel):
         default_factory=tuple, max_length=MAX_RETAINED_RESULT_SETS
     )
     selected_result: SelectedResult | None = None
+    result_page: ResultPageCursor | None = None
     pending_clarification: PendingClarification | None = None
 
     @model_validator(mode="after")
@@ -428,6 +451,16 @@ class ConversationState(StateModel):
                 != self.selected_result.canonical_id
             ):
                 raise ValueError("selected result ordinal and identity must agree")
+        if self.result_page is not None:
+            result_set = result_sets.get(self.result_page.result_set_id)
+            if result_set is None:
+                raise ValueError("result page must reference a retained result set")
+            if result_set.status != ResultSetStatus.RESULTS:
+                raise ValueError("result page requires a RESULTS result set")
+            if self.result_page.next_ordinal > len(
+                result_set.ordered_canonical_ids
+            ) + 1:
+                raise ValueError("result page cursor exceeds the retained ordering")
         return self
 
 

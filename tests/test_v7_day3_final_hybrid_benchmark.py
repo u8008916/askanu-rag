@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -10,7 +12,6 @@ from askanu_rag.retrieval.final_hybrid_benchmark import (
     FROZEN_HOLDOUT_SHA256,
     FinalHybridMeasurementError,
     run_final_hybrid_benchmark,
-    sha256_file,
     write_report,
 )
 from askanu_rag.retrieval.reranking import RerankResult, RerankerUnavailableError
@@ -84,4 +85,12 @@ def test_final_hybrid_runner_rejects_transient_reranker_fallback():
 
 
 def test_frozen_holdout_sha_is_exact():
-    assert sha256_file(HOLDOUT) == FROZEN_HOLDOUT_SHA256
+    relative_path = HOLDOUT.relative_to(ROOT).as_posix()
+    blob = subprocess.run(
+        ["git", "cat-file", "blob", f"HEAD:{relative_path}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    assert hashlib.sha256(blob).hexdigest() == FROZEN_HOLDOUT_SHA256

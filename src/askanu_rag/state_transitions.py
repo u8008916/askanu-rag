@@ -17,6 +17,7 @@ from askanu_rag.models.conversation_state import (
     MAX_RETAINED_RESULT_SETS,
     MAX_RETAINED_STUDENT_FACTS,
     ConstraintLifecycle,
+    ConstraintSemanticType,
     ConstraintSet,
     ConversationState,
     Domain,
@@ -27,6 +28,7 @@ from askanu_rag.models.conversation_state import (
     ResolvedIntent,
     ResolvedSlot,
     ResultSet,
+    ResultPageCursor,
     ResultSetStatus,
     ScalarValue,
     ScopedConstraint,
@@ -185,8 +187,17 @@ def remember_student_fact(
 
 def _constraint_key(constraint: ScopedConstraint) -> tuple[object, ...]:
     scope = constraint.scope
+    semantic_type = (
+        ConstraintSemanticType.MAX_PRICE
+        if constraint.semantic_type
+        in {
+            ConstraintSemanticType.MAX_PRICE,
+            ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+        }
+        else constraint.semantic_type
+    )
     return (
-        constraint.semantic_type,
+        semantic_type,
         scope.domain,
         scope.entity_kind,
         scope.canonical_entity_id,
@@ -279,6 +290,23 @@ def remember_result_set(
         )
         updates["selected_result"] = None
     return _replace(state, **updates)
+
+
+def remember_result_page(
+    state: ConversationState,
+    *,
+    result_set_id: str,
+    next_ordinal: int,
+) -> ConversationState:
+    """Advance presentation only; the retained ResultSet ordering is unchanged."""
+
+    return _replace(
+        state,
+        result_page=ResultPageCursor(
+            result_set_id=result_set_id,
+            next_ordinal=next_ordinal,
+        ),
+    )
 
 
 def refine_result_set(
@@ -394,7 +422,7 @@ class ResultReferenceResolution:
     clarification_required: bool
 
 
-ResultReference = Literal["first", "second", "those", "other"]
+ResultReference = Literal["first", "second", "first_two", "those", "other"]
 
 
 def resolve_result_reference(
@@ -427,6 +455,10 @@ def resolve_result_reference(
     identities = result_set.ordered_canonical_ids
     if reference == "those":
         return ResultReferenceResolution(result_set, identities, False)
+    if reference == "first_two":
+        if len(identities) < 2:
+            return ResultReferenceResolution(result_set, (), True)
+        return ResultReferenceResolution(result_set, identities[:2], False)
     if reference in {"first", "second"}:
         index = 0 if reference == "first" else 1
         if index >= len(identities):
