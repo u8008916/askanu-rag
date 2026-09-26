@@ -547,3 +547,308 @@ def test_every_frozen_course_record_roundtrips_through_conversation_state(
     )
     assert retained_after["canonical_id"] == course_code
     assert retained_after["source_record_id"] == record_id
+
+
+@pytest.mark.parametrize(
+    "refinement",
+    (
+        "What about 2027?",
+        "How about 2027?",
+        "And 2027?",
+    ),
+)
+def test_absolute_year_only_refinement_replaces_course_year(refinement):
+    with TestClient(create_app(repository=repository())) as client:
+        first = ask(
+            client,
+            "Tell me about COMP1100 in 2026.",
+        )
+        first_body = first.json()
+
+        assert first_body["status"] == "ok"
+        assert "COMP1100 (2026)" in first_body["answer"]
+
+        second = ask(
+            client,
+            refinement,
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100 in 2026.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+            ],
+            state=first_body["conversation_state"],
+        )
+        second_body = second.json()
+
+        assert second.status_code == 200
+        assert second_body["status"] == "ok"
+        assert "COMP1100 (2027)" in second_body["answer"]
+        assert second_body["clarification"] is None
+        assert (
+            second_body["sources"][0]["record_id"]
+            == "courses:course:COMP1100_2027"
+        )
+
+        retained = second_body["conversation_state"]["recent_entities"][0]
+        assert retained["canonical_id"] == "COMP1100"
+        assert (
+            retained["source_record_id"]
+            == "courses:course:COMP1100_2027"
+        )
+
+        followup = ask(
+            client,
+            "What are its prerequisites?",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100 in 2026.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+                {
+                    "turn_id": "u2",
+                    "role": "user",
+                    "content": refinement,
+                },
+                {
+                    "turn_id": "a2",
+                    "role": "assistant",
+                    "content": second_body["answer"],
+                },
+            ],
+            state=second_body["conversation_state"],
+        )
+
+    followup_body = followup.json()
+
+    assert followup.status_code == 200
+    assert followup_body["status"] == "insufficient_evidence"
+    assert "COMP1100 (2027)" in followup_body["answer"]
+    assert (
+        followup_body["sources"][0]["record_id"]
+        == "courses:course:COMP1100_2027"
+    )
+
+
+def test_absolute_year_only_correction_can_move_back_to_2026():
+    with TestClient(create_app(repository=repository())) as client:
+        first = ask(
+            client,
+            "Tell me about COMP1100 in 2027.",
+        )
+        first_body = first.json()
+
+        second = ask(
+            client,
+            "Actually, 2026.",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100 in 2027.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+            ],
+            state=first_body["conversation_state"],
+        )
+
+    body = second.json()
+
+    assert second.status_code == 200
+    assert body["status"] == "ok"
+    assert "COMP1100 (2026)" in body["answer"]
+    assert (
+        body["sources"][0]["record_id"]
+        == "courses:course:COMP1100_2026"
+    )
+
+    retained = body["conversation_state"]["recent_entities"][0]
+    assert retained["canonical_id"] == "COMP1100"
+    assert (
+        retained["source_record_id"]
+        == "courses:course:COMP1100_2026"
+    )
+
+
+def test_relative_year_is_not_silently_interpreted_as_absolute_year():
+    with TestClient(create_app(repository=repository())) as client:
+        first = ask(
+            client,
+            "Tell me about COMP1100 in 2026.",
+        )
+        first_body = first.json()
+
+        relative = ask(
+            client,
+            "What about next year?",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100 in 2026.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+            ],
+            state=first_body["conversation_state"],
+        )
+        relative_body = relative.json()
+
+        assert relative.status_code == 200
+        assert relative_body["status"] != "ok"
+        assert not relative_body["sources"]
+
+        retained = relative_body["conversation_state"]["recent_entities"][0]
+        assert retained["canonical_id"] == "COMP1100"
+        assert (
+            retained["source_record_id"]
+            == "courses:course:COMP1100_2026"
+        )
+
+        followup = ask(
+            client,
+            "What are its prerequisites?",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1100 in 2026.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+                {
+                    "turn_id": "u2",
+                    "role": "user",
+                    "content": "What about next year?",
+                },
+                {
+                    "turn_id": "a2",
+                    "role": "assistant",
+                    "content": relative_body["answer"],
+                },
+            ],
+            state=relative_body["conversation_state"],
+        )
+
+    body = followup.json()
+
+    assert body["status"] == "insufficient_evidence"
+    assert "COMP1100 (2026)" in body["answer"]
+    assert (
+        body["sources"][0]["record_id"]
+        == "courses:course:COMP1100_2026"
+    )
+
+
+def test_explicit_course_lecturer_request_is_not_downgraded_to_overview():
+    with TestClient(create_app(repository=repository())) as client:
+        response = ask(
+            client,
+            "Tell me about COMP1110. Who is the lecturer?",
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "insufficient_evidence"
+    assert (
+        body["answer"]
+        == "The stored evidence does not establish the requested information."
+    )
+    assert len(body["sources"]) == 1
+    assert (
+        body["sources"][0]["record_id"]
+        == "courses:course:COMP1110_2026"
+    )
+    assert "Stored excerpt:" not in body["answer"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "Who is the lecturer?",
+        "Who is the convenor?",
+        "Who is the instructor?",
+        "Who teaches it?",
+    ),
+)
+def test_teaching_staff_followup_keeps_course_but_abstains(question):
+    with TestClient(create_app(repository=repository())) as client:
+        first = ask(
+            client,
+            "Tell me about COMP1110.",
+        )
+        first_body = first.json()
+
+        response = ask(
+            client,
+            question,
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP1110.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+            ],
+            state=first_body["conversation_state"],
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "insufficient_evidence"
+    assert (
+        body["answer"]
+        == "The stored evidence does not establish the requested information."
+    )
+    assert len(body["sources"]) == 1
+    assert (
+        body["sources"][0]["record_id"]
+        == "courses:course:COMP1110_2026"
+    )
+
+
+def test_descriptive_course_teaches_query_is_not_mistaken_for_staff_lookup():
+    with TestClient(create_app(repository=repository())) as client:
+        response = ask(
+            client,
+            "Which course teaches structured programming "
+            "and programming fundamentals in 2026?",
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "ok"
+    assert "COMP1110 (2026)" in body["answer"]
+    assert any(
+        source["record_id"] == "courses:course:COMP1110_2026"
+        for source in body["sources"]
+    )

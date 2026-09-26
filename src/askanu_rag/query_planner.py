@@ -109,7 +109,13 @@ def plan_query(question: str, catalog: CatalogReader) -> QueryPlan:
         fact = "incompatibilities"
     elif re.search(r"\bassumed knowledge\b", question, re.I):
         fact = "assumed_knowledge"
-    elif re.search(r"\b(?:fees?|deadlines?|eligibility|guarantee)\b", question, re.I):
+    elif re.search(
+        r"\b(?:fees?|deadlines?|eligibility|guarantee|"
+        r"lecturers?|convenors?|instructors?|teachers?|"
+        r"teaching staff)\b|\bwho\s+teaches?\b",
+        question,
+        re.I,
+    ):
         fact = "unsupported"
     plural_discovery = bool(
         re.search(

@@ -8,7 +8,13 @@ from askanu_rag.course_queries import (
     COURSE_CODE_CANDIDATE_PATTERN,
     PREREQUISITES_INTENT_PATTERN,
 )
-from askanu_rag.models import AskRequest, Clarification, ClarificationOption
+from askanu_rag.models import (
+    AskRequest,
+    Clarification,
+    ClarificationOption,
+    Domain,
+    EntityKind,
+)
 from askanu_rag.retrieval.catalog import CatalogReader, record_code
 from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 
@@ -25,7 +31,16 @@ REFERENCE_PATTERN = re.compile(
 )
 COURSE_FOLLOW_UP_PATTERN = re.compile(
     r"\b(?:pre[-\s]?(?:requisites?|reqs?)|requisites?|offerings?|offered|sessions?|"
-    r"semesters?|incompatibilit(?:y|ies)|assumed knowledge)\b",
+    r"semesters?|incompatibilit(?:y|ies)|assumed knowledge|"
+    r"lecturers?|convenors?|instructors?|teachers?|teaching staff|"
+    r"who\s+teaches?)\b",
+    re.IGNORECASE,
+)
+
+YEAR_ONLY_REFINEMENT_PATTERN = re.compile(
+    r"^\s*(?:(?:what|how)\s+about|and|(?:no\s*,?\s*)?actually)"
+    r"\s*,?\s*(?P<year>(?:19|20)\d{2})\s*[?.!]?\s*$"
+    r"|^\s*(?P<bare_year>(?:19|20)\d{2})\s*[?.!]?\s*$",
     re.IGNORECASE,
 )
 OTHER_DOMAIN_PATTERN = re.compile(
@@ -93,6 +108,13 @@ def _intent(texts: tuple[str, ...]) -> str:
             return "incompatibilities"
         if re.search(r"\bassumed knowledge\b", text, re.I):
             return "assumed knowledge"
+        if re.search(
+            r"\b(?:lecturers?|convenors?|instructors?|teachers?|"
+            r"teaching staff|who\s+teaches?)\b",
+            text,
+            re.I,
+        ):
+            return "teaching staff"
     return "overview"
 
 
@@ -103,6 +125,8 @@ def _question_for(records, intent: str) -> str:
     )
     if intent == "overview":
         return f"Tell me about {identities}"
+    if intent == "teaching staff":
+        return f"Who teaches {identities}?"
     return f"What are the {intent} for {identities}?"
 
 
@@ -287,6 +311,31 @@ def _resolve_pending(payload: AskRequest, catalog: CatalogReader):
     )
 
 
+def _focused_course_code(payload: AskRequest) -> str | None:
+    """Return the exact focused Course identity retained in semantic state."""
+
+    state = payload.conversation_state
+    focus = state.focus
+
+    if (
+        focus is None
+        or focus.domain != Domain.COURSES
+        or focus.entity_kind != EntityKind.COURSE
+        or focus.canonical_entity_id is None
+    ):
+        return None
+
+    for entity in state.recent_entities:
+        if (
+            entity.domain == Domain.COURSES
+            and entity.kind == EntityKind.COURSE
+            and entity.canonical_id == focus.canonical_entity_id
+        ):
+            return entity.canonical_id
+
+    return None
+
+
 def resolve_current_session(
     payload: AskRequest,
     catalog: CatalogReader,
@@ -337,6 +386,64 @@ def resolve_current_session(
     pending = _resolve_pending(payload, catalog)
     if pending is not None:
         return pending
+
+    year_refinement = YEAR_ONLY_REFINEMENT_PATTERN.fullmatch(question)
+    if year_refinement is not None and len(current_years) == 1:
+        retained_code = (
+            resolved_course_code
+            or _focused_course_code(payload)
+        )
+
+        if retained_code is not None:
+            target_year = current_years[0]
+            records = _records_for_codes(
+                catalog,
+                (retained_code,),
+                (target_year,),
+            )
+
+            clarification = _clarification(
+                records,
+                allow_multiple=False,
+            )
+            if clarification is not None:
+                return ConversationResolution(
+                    question,
+                    clarification,
+                    "Which matching course record do you mean?",
+                )
+
+            history_text = tuple(
+                turn.content
+                for turn in reversed(payload.history)
+                if turn.role == "user"
+            )
+            intent = _intent((question,) + history_text)
+
+            if len(records) == 1:
+                return ConversationResolution(
+                    _question_for(records, intent),
+                    selected_record_id=records[0].record_id,
+                )
+
+            # Preserve the explicit Course/year scope even when no matching
+            # record exists, so retrieval can return grounded insufficiency
+            # instead of dropping the refinement as off-topic.
+            if intent == "overview":
+                rewritten = (
+                    f"Tell me about {retained_code} in {target_year}"
+                )
+            elif intent == "teaching staff":
+                rewritten = (
+                    f"Who teaches {retained_code} in {target_year}?"
+                )
+            else:
+                rewritten = (
+                    f"What are the {intent} for "
+                    f"{retained_code} in {target_year}?"
+                )
+
+            return ConversationResolution(rewritten)
 
     # A previously clarified exact source record outranks expansion of the
     # bare course code back to every academic year. State supplies identity
