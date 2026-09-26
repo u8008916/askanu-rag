@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, PREREQUISITES_INTENT_PATTERN
+from askanu_rag.course_queries import prerequisite_target_course_codes
 from askanu_rag.retrieval.catalog import CatalogReader, normalize_title, record_code
 from askanu_rag.retrieval.identifiers import (
     normalize_course_code_reference,
@@ -44,6 +45,18 @@ def plan_query(question: str, catalog: CatalogReader) -> QueryPlan:
         for match in courses
     ]
     spans = [match.span() for match in courses]
+
+    # Course-looking identifiers elsewhere in the question may be user claims
+    # rather than lookup targets. A bounded "prerequisites for X" clause gives
+    # us an explicit target without treating the user's assertion as evidence.
+    targeted_course_codes = prerequisite_target_course_codes(question)
+    if len(targeted_course_codes) == 1:
+        target_code = targeted_course_codes[0]
+        identities = [
+            identity
+            for identity in identities
+            if identity[0] != "course" or identity[1] == target_code
+        ]
     # Known stored non-course identities are matched without inventing code grammars.
     known_non_courses = {
         (r.metadata_json.entity_type, record_code(r))

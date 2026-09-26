@@ -39,6 +39,46 @@ ACADEMIC_YEAR_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 
 
+def prerequisite_target_course_codes(question: str) -> tuple[str, ...]:
+    """Return Course codes explicitly targeted by the final 'prerequisites for' clause.
+
+    Course codes elsewhere in the user's text can be claims, examples or
+    competing information and must not automatically become lookup targets.
+
+    If the actual target clause names multiple Courses, all remain visible so
+    ambiguity/comparison behavior is preserved rather than silently selecting one.
+    """
+
+    last_targets: tuple[str, ...] = ()
+
+    for intent_match in PREREQUISITES_INTENT_PATTERN.finditer(question):
+        suffix = question[intent_match.end():]
+
+        for_match = re.match(r"\s+for\b", suffix, re.IGNORECASE)
+        if for_match is None:
+            continue
+
+        clause = suffix[for_match.end():]
+        clause = re.split(r"[?.!]", clause, maxsplit=1)[0]
+
+        codes = tuple(
+            dict.fromkeys(
+                code
+                for match in COURSE_CODE_CANDIDATE_PATTERN.finditer(clause)
+                if (
+                    code := normalize_course_code_reference(
+                        match.group(1)
+                    )
+                ) is not None
+            )
+        )
+
+        if codes:
+            last_targets = codes
+
+    return last_targets
+
+
 @dataclass(frozen=True)
 class CoursePrerequisitesQuery:
     """A supported standalone prerequisite request after normalization."""
@@ -61,6 +101,11 @@ def classify_course_prerequisites_query(
         for match in candidate_matches
         if (code := normalize_course_code_reference(match.group(1))) is not None
     }
+    targeted_codes = prerequisite_target_course_codes(question)
+    if targeted_codes:
+        targeted_set = set(targeted_codes)
+        normalized_codes = normalized_codes.intersection(targeted_set)
+
     if len(normalized_codes) != 1:
         return None
 

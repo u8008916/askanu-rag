@@ -16,6 +16,7 @@ from askanu_rag.models import (
     EntityResolutionBasis,
     ResolvedEntity,
 )
+from askanu_rag.course_queries import prerequisite_target_course_codes
 from askanu_rag.models.conversation_state import ENTITY_DOMAIN
 from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 
@@ -152,6 +153,25 @@ def resolve_explicit_entity(
             ) is not None
         )
     )
+    targeted_course_codes = prerequisite_target_course_codes(
+        question
+    )
+    if len(targeted_course_codes) == 1:
+        target_code = targeted_course_codes[0]
+
+        identifiers = [
+            entity
+            for entity in identifiers
+            if (
+                entity.kind != EntityKind.COURSE
+                or entity.canonical_id.casefold()
+                == target_code.casefold()
+            )
+        ]
+
+        if target_code in course_codes:
+            course_codes = (target_code,)
+
     if identifiers or course_codes:
         matches = list(identifiers)
         matches.extend(
