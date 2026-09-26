@@ -17,6 +17,7 @@ from askanu_rag.models.conversation_state import (
     MAX_RETAINED_RESULT_SETS,
     MAX_RETAINED_STUDENT_FACTS,
     ConstraintLifecycle,
+    ConstraintSemanticType,
     ConstraintSet,
     ConversationState,
     Domain,
@@ -185,8 +186,17 @@ def remember_student_fact(
 
 def _constraint_key(constraint: ScopedConstraint) -> tuple[object, ...]:
     scope = constraint.scope
+    semantic_type = (
+        ConstraintSemanticType.MAX_PRICE
+        if constraint.semantic_type
+        in {
+            ConstraintSemanticType.MAX_PRICE,
+            ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+        }
+        else constraint.semantic_type
+    )
     return (
-        constraint.semantic_type,
+        semantic_type,
         scope.domain,
         scope.entity_kind,
         scope.canonical_entity_id,

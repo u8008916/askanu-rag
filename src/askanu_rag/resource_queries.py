@@ -11,6 +11,7 @@ from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, _source_fro
 from askanu_rag.models import (
     AnswerState,
     AccommodationRecord,
+    AccommodationRoom,
     AskResponse,
     Clarification,
     ClarificationOption,
@@ -86,8 +87,8 @@ LIVE_AVAILABILITY_PATTERN = re.compile(
     re.I,
 )
 COST_PATTERN = re.compile(
-    r"\b(?:cost|price|rate|rent|fees?|how much|budget|under|below|maximum|"
-    r"no more than|up to)\b",
+    r"\b(?:cost|price|rate|rent|fees?|how much|budget|under|below|less than|"
+    r"max(?:imum)?|no more than|up to)\b",
     re.I,
 )
 FACILITIES_PATTERN = re.compile(r"\b(?:facilit(?:y|ies)|feature|amenit(?:y|ies))\b", re.I)
@@ -158,7 +159,29 @@ RESOURCE_REFERENCE_PATTERN = re.compile(
     re.I,
 )
 
-_PUBLISHED_AMOUNT_PATTERN = re.compile(r"\$\s*([0-9][0-9,]*(?:\.\d{1,2})?)")
+_ROOM_WEEKLY_AUD_RATE_PATTERN = re.compile(
+    r"^\s*(?:A\$\s*|AUD\s+)([0-9][0-9,]*(?:\.\d{1,2})?)"
+    r"\s*(?:/\s*week|per\s+week)\s*$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class QualifyingRoomEvidence:
+    record_id: str
+    name: str
+    rate: str
+    contract: str | None
+    inclusions: str | None
+    other_fees: str | None
+
+
+@dataclass(frozen=True)
+class AccommodationFilterOutcome:
+    matched_records: tuple[ResourceRecord, ...]
+    population_complete: bool
+    unknown_records: tuple[ResourceRecord, ...]
+    qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,6 +196,7 @@ class ResourceQueryTrace:
     evidence_bundle: EvidenceBundle | None
     selected_canonical_ids: tuple[str, ...]
     canonical_sources: tuple[str, ...]
+    qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -182,25 +206,41 @@ class ResourceQueryOutcome:
     trace: ResourceQueryTrace | None = None
 
 
-def _published_amounts(value: str | None) -> tuple[float, ...]:
-    if value is None:
-        return ()
-    return tuple(
-        float(match.group(1).replace(",", ""))
-        for match in _PUBLISHED_AMOUNT_PATTERN.finditer(value)
-    )
+def _room_weekly_aud_rate(room: AccommodationRoom) -> float | None:
+    """Return one unambiguous explicit AUD weekly rate, never a proxy."""
+
+    if room.rate is None:
+        return None
+    match = _ROOM_WEEKLY_AUD_RATE_PATTERN.fullmatch(room.rate)
+    if match is None:
+        return None
+    return float(match.group(1).replace(",", ""))
 
 
-def _record_price_evidence(record: AccommodationRecord) -> tuple[float, ...]:
-    metadata = record.metadata_json
-    advertised = _published_amounts(metadata.advertised_rate)
-    if advertised:
-        return advertised
-    return tuple(
-        amount
-        for room in metadata.rooms
-        for amount in _published_amounts(room.rate)
-    )
+def _record_price_evidence(
+    record: AccommodationRecord,
+) -> tuple[tuple[QualifyingRoomEvidence, float], ...]:
+    """Project only named-room AUD weekly evidence; advertised_rate is excluded."""
+
+    evidence: list[tuple[QualifyingRoomEvidence, float]] = []
+    for room in record.metadata_json.rooms:
+        amount = _room_weekly_aud_rate(room)
+        if amount is None:
+            continue
+        evidence.append(
+            (
+                QualifyingRoomEvidence(
+                    record_id=record.record_id,
+                    name=room.name,
+                    rate=room.rate,
+                    contract=room.contract,
+                    inclusions=room.inclusions,
+                    other_fees=room.other_fees,
+                ),
+                amount,
+            )
+        )
+    return tuple(evidence)
 
 
 def _requested_catering_preference(question: str) -> str | None:
@@ -216,7 +256,7 @@ def _filter_accommodation_population(
     records: tuple[ResourceRecord, ...],
     question: str,
     interpretation: QueryInterpretation | None,
-) -> tuple[tuple[ResourceRecord, ...], bool, tuple[ResourceRecord, ...]]:
+) -> AccommodationFilterOutcome:
     """Apply only hard, source-backed Accommodation filters.
 
     The returned completeness flag is false when at least one record cannot be
@@ -227,23 +267,45 @@ def _filter_accommodation_population(
         record for record in records if isinstance(record, AccommodationRecord)
     )
     unknown: dict[str, ResourceRecord] = {}
+    qualifying_rooms: list[QualifyingRoomEvidence] = []
     price_limit: float | None = None
+    price_inclusive = True
     if interpretation is not None:
         for constraint in interpretation.constraints.items:
             if (
                 constraint.scope.domain == Domain.ACCOMMODATION
-                and constraint.semantic_type == ConstraintSemanticType.MAX_PRICE
+                and constraint.semantic_type
+                in {
+                    ConstraintSemanticType.MAX_PRICE,
+                    ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+                }
             ):
                 price_limit = float(constraint.value)
+                price_inclusive = (
+                    constraint.semantic_type == ConstraintSemanticType.MAX_PRICE
+                )
                 break
     if price_limit is not None:
         matched: list[ResourceRecord] = []
         for record in candidates:
-            amounts = _record_price_evidence(record)
-            if not amounts:
-                unknown[record.record_id] = record
-            elif any(amount <= price_limit for amount in amounts):
+            room_evidence = _record_price_evidence(record)
+            rooms_are_complete = bool(record.metadata_json.rooms) and len(
+                room_evidence
+            ) == len(record.metadata_json.rooms)
+            qualifying = tuple(
+                evidence
+                for evidence, amount in room_evidence
+                if (
+                    amount <= price_limit
+                    if price_inclusive
+                    else amount < price_limit
+                )
+            )
+            if qualifying:
                 matched.append(record)
+                qualifying_rooms.extend(qualifying)
+            elif not rooms_are_complete:
+                unknown[record.record_id] = record
         candidates = tuple(matched)
 
     catering = _requested_catering_preference(question)
@@ -268,7 +330,17 @@ def _filter_accommodation_population(
                 matched.append(record)
         candidates = tuple(matched)
 
-    return candidates, not unknown, tuple(unknown.values())
+    retained_record_ids = {record.record_id for record in candidates}
+    qualifying_rooms = [
+        room for room in qualifying_rooms if room.record_id in retained_record_ids
+    ]
+
+    return AccommodationFilterOutcome(
+        matched_records=candidates,
+        population_complete=not unknown,
+        unknown_records=tuple(unknown.values()),
+        qualifying_rooms=tuple(qualifying_rooms),
+    )
 
 
 def _accommodation_field_value(
@@ -298,13 +370,24 @@ def _accommodation_field_value(
     if field == "vacancy_status":
         return metadata.vacancy_status
     if field == "rooms":
-        values = [
-            f"{room.name}: {room.rate}"
-            for room in metadata.rooms
-            if room.rate is not None
-        ]
+        values = [_room_context_text(room) for room in metadata.rooms]
         return "; ".join(values) or None
     return None
+
+
+def _room_context_text(room: AccommodationRoom | QualifyingRoomEvidence) -> str:
+    """Keep one named room's rate qualifiers and related cost context together."""
+
+    values = [f"Room {room.name}"]
+    for label, value in (
+        ("published rate", room.rate),
+        ("contract", room.contract),
+        ("inclusions", room.inclusions),
+        ("other fees", room.other_fees),
+    ):
+        if value is not None:
+            values.append(f"{label}: {value}")
+    return "; ".join(values)
 
 
 def _trace_fields(question: str, *, discovery: bool) -> tuple[str, ...]:
@@ -324,6 +407,7 @@ def _trace_fields(question: str, *, discovery: bool) -> tuple[str, ...]:
     for pattern, field in (
         (COST_PATTERN, "advertised_rate"),
         (COST_PATTERN, "cost_period"),
+        (COST_PATTERN, "rooms"),
         (ROOM_PATTERN, "rooms"),
         (CATERING_PATTERN, "catering_options"),
         (APPLICATION_PATTERN, "application_text"),
@@ -342,15 +426,25 @@ def _trace_fields(question: str, *, discovery: bool) -> tuple[str, ...]:
 
 
 def _evidence_item(
-    record: AccommodationRecord, fields: tuple[str, ...]
+    record: AccommodationRecord,
+    fields: tuple[str, ...],
+    *,
+    qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = (),
 ) -> EvidenceItem:
-    selected = tuple(
-        field for field in fields if _accommodation_field_value(record, field) is not None
+    room_evidence = tuple(
+        room for room in qualifying_rooms if room.record_id == record.record_id
     )
-    evidence_text = "; ".join(
-        f"{field}: {_accommodation_field_value(record, field)}"
-        for field in selected
-    ) or record.content
+    values: list[tuple[str, str]] = []
+    for field in fields:
+        value = (
+            "; ".join(_room_context_text(room) for room in room_evidence)
+            if field == "rooms" and room_evidence
+            else _accommodation_field_value(record, field)
+        )
+        if value is not None:
+            values.append((field, value))
+    selected = tuple(field for field, _ in values)
+    evidence_text = "; ".join(f"{field}: {value}" for field, value in values) or record.content
     return EvidenceItem(
         record_id=record.record_id,
         source_id=record.source_id,
@@ -604,6 +698,7 @@ class DomainResourceQueryService:
                 )
         population_complete = True
         unevaluated: tuple[ResourceRecord, ...] = ()
+        qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = ()
         discovery_request = bool(
             self.domain == "accommodation"
             and _is_accommodation_discovery_request(question, interpretation)
@@ -613,14 +708,22 @@ class DomainResourceQueryService:
             or (
                 interpretation is not None
                 and any(
-                    item.semantic_type.value == "max_price"
+                    item.semantic_type
+                    in {
+                        ConstraintSemanticType.MAX_PRICE,
+                        ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+                    }
                     for item in interpretation.constraints.items
                 )
             )
         ):
-            records, population_complete, unevaluated = _filter_accommodation_population(
+            filter_outcome = _filter_accommodation_population(
                 records, question, interpretation
             )
+            records = filter_outcome.matched_records
+            population_complete = filter_outcome.population_complete
+            unevaluated = filter_outcome.unknown_records
+            qualifying_rooms = filter_outcome.qualifying_rooms
         pending_matches = _pending_resource_selection(
             question, pending, records, self.domain
         )
@@ -811,7 +914,10 @@ class DomainResourceQueryService:
                 )
         if self.domain == "accommodation":
             return self._accommodation_answer(
-                question, selected[: self.evidence_top_k], request_id
+                question,
+                selected[: self.evidence_top_k],
+                request_id,
+                qualifying_rooms=qualifying_rooms,
             )
         return self._support_answer(question, selected, request_id)
 
@@ -855,8 +961,20 @@ class DomainResourceQueryService:
                 if canonical_id in by_entity_id
             )
         discovery = _is_accommodation_discovery_request(question, interpretation)
-        matched, population_complete, unknown = _filter_accommodation_population(
+        filter_outcome = _filter_accommodation_population(
             population, question, interpretation
+        )
+        matched = filter_outcome.matched_records
+        population_complete = filter_outcome.population_complete
+        unknown = filter_outcome.unknown_records
+        qualifying_rooms = filter_outcome.qualifying_rooms
+        price_constraint_active = any(
+            item.semantic_type
+            in {
+                ConstraintSemanticType.MAX_PRICE,
+                ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+            }
+            for item in interpretation.constraints.items
         )
         response_record_ids = [source.record_id for source in response.sources]
         selected = tuple(
@@ -920,6 +1038,15 @@ class DomainResourceQueryService:
             )
 
         fields = _trace_fields(question, discovery=discovery)
+        if price_constraint_active:
+            # A numeric bound is established only by named-room rate evidence.
+            # Residence-level advertised wording remains available to the answer
+            # for display/comparison, but cannot enter the derivation bundle.
+            fields = tuple(
+                field
+                for field in fields
+                if field not in {"advertised_rate", "cost_period"}
+            )
         evidence_records = selected
         if discovery and not matched:
             evidence_records = tuple(
@@ -927,7 +1054,14 @@ class DomainResourceQueryService:
                     item.record_id for item in unknown
                 }
             )[:20]
-        evidence = tuple(_evidence_item(record, fields) for record in evidence_records)
+        evidence = tuple(
+            _evidence_item(
+                record,
+                fields,
+                qualifying_rooms=qualifying_rooms,
+            )
+            for record in evidence_records
+        )
         if LIVE_AVAILABILITY_PATTERN.search(question):
             evidence = tuple(item for item in evidence if item.selected_fields)
         missing: list[MissingEvidence] = []
@@ -974,6 +1108,7 @@ class DomainResourceQueryService:
             evidence_bundle=evidence_bundle,
             selected_canonical_ids=tuple(record.entity_id for record in selected),
             canonical_sources=tuple(str(record.canonical_url) for record in trace_records),
+            qualifying_rooms=qualifying_rooms,
         )
         return ResourceQueryOutcome(response=response, state=updated, trace=trace)
 
@@ -991,6 +1126,8 @@ class DomainResourceQueryService:
         question: str,
         records: tuple[ResourceRecord, ...],
         request_id: str,
+        *,
+        qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = (),
     ) -> AskResponse:
         accommodations = tuple(
             record for record in records if isinstance(record, AccommodationRecord)
@@ -1069,9 +1206,9 @@ class DomainResourceQueryService:
             metadata = record.metadata_json
             facts: list[str] = []
             if COST_PATTERN.search(question):
-                if metadata.advertised_rate is None:
+                if metadata.advertised_rate is None and not qualifying_rooms:
                     missing_fact = True
-                else:
+                elif metadata.advertised_rate is not None:
                     facts.append(
                         f"Published advertised rate wording: {metadata.advertised_rate}"
                     )
@@ -1084,14 +1221,25 @@ class DomainResourceQueryService:
                 or INCLUSIONS_PATTERN.search(question)
                 or OTHER_FEES_PATTERN.search(question)
             ):
+                filtered_rooms = tuple(
+                    room
+                    for room in qualifying_rooms
+                    if room.record_id == record.record_id
+                )
                 matching_rooms = [
                     room for room in metadata.rooms
                     if normalize_job_title(room.name) in normalize_job_title(question)
                 ]
-                rooms = matching_rooms or metadata.rooms
+                rooms = filtered_rooms or tuple(matching_rooms) or metadata.rooms
                 if not rooms:
                     missing_fact = True
                 for room in rooms:
+                    if filtered_rooms:
+                        # The qualifying room is the numeric evidence. Keep all
+                        # related published context paired to that room even if
+                        # the user only stated the price constraint.
+                        facts.append(_room_context_text(room))
+                        continue
                     room_facts = [f"Room {room.name}"]
                     requested_room_fact_found = False
                     for requested, label, value in (

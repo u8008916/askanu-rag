@@ -7,11 +7,13 @@ and "return to accommodation" rather than one repeated trigger sentence.
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from askanu_rag.main import create_app
 from askanu_rag.models import (
     AnswerState,
+    AccommodationRoom,
     ConstraintSemanticType,
     Domain,
     EntityKind,
@@ -50,19 +52,19 @@ def _residence(
 
 
 ALPHA = _residence(
-    "alpha-hall", "Alpha Hall", rate="$300 per week", catering=["Self-catered"]
+    "alpha-hall", "Alpha Hall", rate="A$300/week", catering=["Self-catered"]
 )
 BRAVO = _residence(
     "bravo-hall",
     "Bravo Hall",
-    rate="$450 per week",
+    rate="A$450/week",
     catering=["Catered meal plan"],
     location=None,
 )
 CHARLIE = _residence(
     "charlie-lodge",
     "Charlie Lodge",
-    rate="$550 per week",
+    rate="A$550/week",
     catering=["Self-catered"],
 )
 MYSTERY = _residence(
@@ -179,6 +181,156 @@ def test_max_price_refinement_creates_child_and_preserves_parent() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("phrase", "semantic_type", "matches"),
+    (
+        ("under $450", ConstraintSemanticType.MAX_PRICE_EXCLUSIVE, False),
+        ("below $450", ConstraintSemanticType.MAX_PRICE_EXCLUSIVE, False),
+        ("less than $450", ConstraintSemanticType.MAX_PRICE_EXCLUSIVE, False),
+        ("up to $450", ConstraintSemanticType.MAX_PRICE, True),
+        ("maximum $450", ConstraintSemanticType.MAX_PRICE, True),
+        ("max $450", ConstraintSemanticType.MAX_PRICE, True),
+        ("no more than $450", ConstraintSemanticType.MAX_PRICE, True),
+    ),
+)
+def test_price_bound_wording_preserves_strictness_at_exact_boundary(
+    phrase: str,
+    semantic_type: ConstraintSemanticType,
+    matches: bool,
+) -> None:
+    conversation = Conversation((BRAVO,))
+
+    body = conversation.ask(f"Find accommodation {phrase}")
+
+    result = _latest_result(body)
+    assert result["ordered_canonical_ids"] == (["bravo-hall"] if matches else [])
+    assert result["status"] == ("RESULTS" if matches else "EMPTY")
+    constraint = result["constraints"]["items"][0]
+    assert constraint["semantic_type"] == semantic_type.value
+    assert constraint["value"] == 450
+    assert constraint["scope"]["domain"] == "accommodation"
+
+
+def test_advertised_rate_never_substitutes_for_named_room_rate() -> None:
+    record = _residence(
+        "advertised-low",
+        "Advertised Low Hall",
+        rate="A$470/week",
+        catering=["Self-catered"],
+    )
+    metadata = record.metadata_json.model_copy(
+        update={"advertised_rate": "Rates from A$380/week"}
+    )
+    record = record.model_copy(update={"metadata_json": metadata})
+    conversation = Conversation((record,))
+
+    body = conversation.ask("Find accommodation under $450")
+
+    assert _latest_result(body)["status"] == "EMPTY"
+    assert body["sources"] == []
+    assert conversation.traces[-1].qualifying_rooms == ()
+
+
+def test_qualifying_room_preserves_its_complete_paired_context() -> None:
+    record = _residence(
+        "paired-context",
+        "Paired Context Hall",
+        rate="A$420/week",
+        catering=["Self-catered"],
+    )
+    metadata = record.metadata_json.model_copy(
+        update={
+            "advertised_rate": "Rates from A$999/week",
+            "rooms": [
+                AccommodationRoom(
+                    name="Budget single",
+                    rate="A$420/week",
+                    contract="44-week agreement",
+                    inclusions="Utilities and internet",
+                    other_fees="A$250 refundable deposit",
+                ),
+                AccommodationRoom(
+                    name="Premium studio",
+                    rate="A$500/week",
+                    contract="52-week agreement",
+                    inclusions="Utilities only",
+                    other_fees="A$500 deposit",
+                ),
+            ],
+        }
+    )
+    record = record.model_copy(update={"metadata_json": metadata})
+    conversation = Conversation((record,))
+
+    body = conversation.ask("Find accommodation under $450")
+
+    assert body["status"] == "ok"
+    assert "Rates from A$999/week" in body["answer"]  # display only
+    assert "Room Budget single" in body["answer"]
+    assert "A$420/week" in body["answer"]
+    assert "44-week agreement" in body["answer"]
+    assert "Utilities and internet" in body["answer"]
+    assert "A$250 refundable deposit" in body["answer"]
+    assert "Premium studio" not in body["answer"]
+    assert "52-week agreement" not in body["answer"]
+    assert "total" not in body["answer"].casefold()
+    trace = conversation.traces[-1]
+    assert len(trace.qualifying_rooms) == 1
+    assert trace.qualifying_rooms[0].name == "Budget single"
+    assert "Rates from A$999/week" not in trace.evidence_bundle.selected_evidence[0].evidence_text
+
+
+@pytest.mark.parametrize(
+    "room_rate",
+    ("From A$380/week", "A$380/month", "$380/week", None),
+)
+def test_ambiguous_nonweekly_nonaud_or_missing_room_rate_is_incomplete(
+    room_rate: str | None,
+) -> None:
+    record = _residence(
+        "unknown-price",
+        "Unknown Price Hall",
+        rate=room_rate,
+        catering=["Self-catered"],
+    )
+    metadata = record.metadata_json.model_copy(
+        update={"advertised_rate": "Rates from A$300/week"}
+    )
+    record = record.model_copy(update={"metadata_json": metadata})
+    conversation = Conversation((record,))
+
+    body = conversation.ask("Find accommodation under $450")
+
+    assert body["status"] == "insufficient_evidence"
+    assert _latest_result(body)["status"] == "INCOMPLETE"
+    assert conversation.traces[-1].evidence_bundle.answer_state == AnswerState.UNKNOWN
+    assert conversation.traces[-1].qualifying_rooms == ()
+
+
+def test_price_filter_preserves_source_order_without_cheapest_ranking() -> None:
+    first = _residence(
+        "first-published",
+        "First Published Hall",
+        rate="A$430/week",
+        catering=["Self-catered"],
+    )
+    second = _residence(
+        "second-published",
+        "Second Published Hall",
+        rate="A$400/week",
+        catering=["Self-catered"],
+    )
+    conversation = Conversation((first, second))
+
+    body = conversation.ask("Find accommodation under $450")
+
+    assert _latest_result(body)["ordered_canonical_ids"] == [
+        "first-published",
+        "second-published",
+    ]
+    assert "cheapest" not in body["answer"].casefold()
+
+
 def test_truthful_empty_requires_complete_evaluation() -> None:
     conversation = Conversation((ALPHA, BRAVO, CHARLIE))
 
@@ -244,7 +396,7 @@ def test_second_result_stays_stable_and_drives_fact_followups() -> None:
         selected = body["conversation_state"]["recent_entities"][0]
         assert selected["kind"] == "residence"
         assert selected["canonical_id"] == "bravo-hall"
-    assert "$450 per week" in cost["answer"]
+    assert "A$450/week" in cost["answer"]
     assert "Catered meal plan" in catering["answer"]
     assert "starrezhousing.com" in application["answer"]
     assert "standalone course prerequisite" not in application["answer"]

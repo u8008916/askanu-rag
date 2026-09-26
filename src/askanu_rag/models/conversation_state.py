@@ -153,7 +153,12 @@ class ResolvedIntent(StateModel):
 
 
 class ConstraintSemanticType(str, Enum):
+    # Inclusive upper bound (<=). Kept as the existing serialized name for
+    # backwards-compatible schema-version-1 state.
     MAX_PRICE = "max_price"
+    # Strict upper bound (<). Day 4 preserves wording such as "under" rather
+    # than collapsing it into the inclusive MAX_PRICE meaning.
+    MAX_PRICE_EXCLUSIVE = "max_price_exclusive"
     # Accepted only so existing schema-version-1 client state still validates.
     # Day 2 interpretation never emits this legacy combined dimension.
     LEGACY_TEMPORAL_WINDOW = "temporal_window"
@@ -214,9 +219,17 @@ class ConstraintSet(StateModel):
 
     @model_validator(mode="after")
     def constraint_keys_are_unique(self) -> "ConstraintSet":
+        price_types = {
+            ConstraintSemanticType.MAX_PRICE,
+            ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+        }
         keys = [
             (
-                item.semantic_type,
+                (
+                    ConstraintSemanticType.MAX_PRICE
+                    if item.semantic_type in price_types
+                    else item.semantic_type
+                ),
                 item.scope.domain,
                 item.scope.entity_kind,
                 item.scope.canonical_entity_id,
