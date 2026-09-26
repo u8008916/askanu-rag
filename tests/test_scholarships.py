@@ -124,6 +124,8 @@ def ask(repo, question, *, history=(), pending=None, vector=None, dense=None):
         "status",
         "answer",
         "items",
+        "answer_state",
+        "actions",
         "sources",
         "clarification",
         "request_id",

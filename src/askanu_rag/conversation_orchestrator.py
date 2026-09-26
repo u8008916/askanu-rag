@@ -80,6 +80,7 @@ def orchestrate_turn(
     entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
     entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
     problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    clarification_option_ids: Sequence[str] = (),
 ) -> ConversationTurn:
     """Validate, interpret and deterministically update one conversational turn."""
 
@@ -113,7 +114,31 @@ def orchestrate_turn(
     action = ClarificationAction.NO_PENDING
 
     if updated.pending_clarification is not None:
-        if interpretation.intent and interpretation.intent.name == "clarification_response":
+        if clarification_option_ids:
+            resolution = resolve_pending_clarification(
+                updated,
+                supplied_slots={
+                    "selection": ",".join(clarification_option_ids),
+                },
+            )
+            updated = resolution.state
+            action = resolution.action
+            if resolution.action == ClarificationAction.RESUMED:
+                interpretation = interpretation.model_copy(
+                    update={
+                        "intent": resolution.intent,
+                        "entity": (
+                            resolution.entities[0]
+                            if resolution.entities
+                            else None
+                        ),
+                        "entity_origin": (
+                            "retained_state" if resolution.entities else "none"
+                        ),
+                        "reference_origin": "pending_clarification",
+                    }
+                )
+        elif interpretation.intent and interpretation.intent.name == "clarification_response":
             normalised = question.casefold().strip()
             supplied: dict[str, object] = {}
             if normalised in {"yes", "first", "second", "both"}:
@@ -139,7 +164,16 @@ def orchestrate_turn(
             action = resolution.action
 
     if interpretation.entity is not None:
-        updated = remember_entity(updated, interpretation.entity)
+        selected_result = updated.selected_result
+        preserve_selected = bool(
+            selected_result is not None
+            and selected_result.canonical_id == interpretation.entity.canonical_id
+        )
+        updated = remember_entity(
+            updated,
+            interpretation.entity,
+            focus=not preserve_selected,
+        )
 
     selected: tuple[str, ...] = ()
     reference = result_reference_for(question)

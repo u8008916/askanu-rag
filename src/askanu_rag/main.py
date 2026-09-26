@@ -59,11 +59,14 @@ from askanu_rag.models import (
     ClarificationOption,
     CurrentJobsResponse,
     Domain,
+    EntityResolutionBasis,
     ErrorResponse,
     HealthResponse,
     InsufficientEvidenceResponse,
     NeedsClarificationResponse,
     OffTopicResponse,
+    ResolvedEntity,
+    SemanticFocus,
     UpcomingEventsResponse,
 )
 from askanu_rag.models.conversation_state import ConversationState
@@ -85,7 +88,11 @@ from askanu_rag.scholarship_queries import (
     is_plausible_scholarship_question,
 )
 from askanu_rag.state_transitions import (
+    ResultReferenceResolution,
     pending_from_public_clarification,
+    remember_entity,
+    select_result,
+    set_semantic_focus,
     set_pending_clarification,
 )
 from askanu_rag.transport_limits import (
@@ -142,6 +149,67 @@ def _validated_upstream_request_id(request: Request) -> str:
     if UPSTREAM_REQUEST_ID_PATTERN.fullmatch(value):
         return value
     return "invalid"
+
+
+def _state_with_verified_result_selection(
+    payload: AskRequest,
+    repository: CourseProgramReader,
+) -> ConversationState:
+    """Re-resolve untrusted clicked-result context against approved records."""
+
+    selection = payload.selected_result
+    state = payload.conversation_state
+    if selection is None:
+        return state
+    result_set = next(
+        item
+        for item in state.result_sets
+        if item.result_set_id == selection.result_set_id
+    )
+    if (
+        result_set.domain not in {Domain.ACCOMMODATION, Domain.SUPPORT}
+        or not isinstance(repository, ResourceReader)
+    ):
+        raise StarletteHTTPException(status_code=400)
+    records = repository.all_domain_records(result_set.domain.value)
+    record = next(
+        (
+            item
+            for item in records
+            if item.entity_id == selection.canonical_id
+        ),
+        None,
+    )
+    if record is None:
+        raise StarletteHTTPException(status_code=400)
+    entity = ResolvedEntity(
+        domain=result_set.domain,
+        kind=result_set.entity_kind,
+        canonical_id=record.entity_id,
+        canonical_name=record.title,
+        source_record_id=record.record_id,
+        resolution_basis=EntityResolutionBasis.RETAINED_STATE,
+        mentioned_turn=state.turn_index,
+    )
+    state = remember_entity(state, entity, focus=False)
+    state = select_result(
+        state,
+        ResultReferenceResolution(
+            result_set=result_set,
+            canonical_ids=(record.entity_id,),
+            clarification_required=False,
+        ),
+    )
+    return set_semantic_focus(
+        state,
+        SemanticFocus(
+            domain=result_set.domain,
+            entity_kind=result_set.entity_kind,
+            canonical_entity_id=record.entity_id,
+            result_set_id=result_set.result_set_id,
+            intent_name=result_set.intent.name,
+        ),
+    )
 
 
 def _mark_response(request: Request, response: AskResponse) -> AskResponse:
@@ -429,13 +497,20 @@ def create_app(
         # The client carries this bounded, untrusted structure between turns.
         # RAG validates it and returns the authoritative next state; no server
         # session or factual evidence is created from it.
+        request_state = _state_with_verified_result_selection(payload, repository)
+        clarification_option_ids = (
+            tuple(payload.clarification_selection.option_ids)
+            if payload.clarification_selection is not None
+            else ()
+        )
         conversation_turn = orchestrate_turn(
             payload.question,
             payload.history,
-            payload.conversation_state,
+            request_state,
             entity_catalogue=entity_catalogue,
             entity_aliases=entity_aliases,
             problem_domain_resolver=problem_domain_resolver,
+            clarification_option_ids=clarification_option_ids,
         )
         request.state.conversation_state = conversation_turn.state
         request.state.query_interpretation = conversation_turn.interpretation
@@ -479,14 +554,14 @@ def create_app(
         else:
             resolved_question = payload.question
 
-        pending = payload.conversation_state.pending_clarification
+        pending = request_state.pending_clarification
         if job_queries is not None and is_plausible_job_question(
             resolved_question, pending
         ):
             job_response = await job_queries.answer(
                 resolved_question,
                 request_id,
-                payload.conversation_state.pending_clarification,
+                request_state.pending_clarification,
                 payload.history,
             )
             if job_response is not None:
@@ -498,7 +573,7 @@ def create_app(
             scholarship_response = await scholarship_queries.answer(
                 resolved_question,
                 request_id,
-                payload.conversation_state.pending_clarification,
+                request_state.pending_clarification,
             )
             if scholarship_response is not None:
                 return _mark_response(request, scholarship_response)
@@ -520,12 +595,13 @@ def create_app(
             accommodation_response = await accommodation_queries.answer(
                 resolved_question,
                 request_id,
-                payload.conversation_state.pending_clarification,
+                request_state.pending_clarification,
                 payload.history,
                 resolved_domain=accommodation_domain_resolved,
                 interpretation=conversation_turn.interpretation,
                 selected_canonical_ids=conversation_turn.selected_canonical_ids,
                 conversation_state=conversation_turn.state,
+                clarification_option_ids=clarification_option_ids,
             )
             if accommodation_response is not None:
                 outcome = accommodation_queries.integrate_conversation(
@@ -553,9 +629,10 @@ def create_app(
             support_response = await support_queries.answer(
                 resolved_question,
                 request_id,
-                payload.conversation_state.pending_clarification,
+                request_state.pending_clarification,
                 payload.history,
                 resolved_domain=support_domain_resolved,
+                clarification_option_ids=clarification_option_ids,
             )
             if support_response is not None:
                 return _mark_response(request, support_response)
@@ -583,7 +660,7 @@ def create_app(
                 payload.question,
                 re.IGNORECASE,
             )
-            or payload.conversation_state.pending_clarification is not None
+            or request_state.pending_clarification is not None
         ):
             return _mark_response(
                 request,

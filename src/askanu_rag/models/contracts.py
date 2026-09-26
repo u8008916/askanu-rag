@@ -2,9 +2,21 @@
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 
-from askanu_rag.models.conversation_state import ConversationState
+from askanu_rag.models.conversation_state import (
+    MAX_CLARIFICATION_OPTIONS,
+    MAX_RESULT_IDENTITIES,
+    AnswerState,
+    ConversationState,
+)
 from askanu_rag.transport_limits import (
     HISTORY_MAX_BYTES,
     HISTORY_TURN_CONTENT_MAX_CHARS,
@@ -43,10 +55,37 @@ class Clarification(ContractModel):
     allow_multiple: bool
 
 
+class ClarificationSelection(ContractModel):
+    """Reusable client selection for the current pending clarification only."""
+
+    clarification_id: str = Field(min_length=1, max_length=200)
+    option_ids: list[str] = Field(
+        min_length=1,
+        max_length=MAX_CLARIFICATION_OPTIONS,
+    )
+
+    @field_validator("option_ids")
+    @classmethod
+    def option_ids_are_unique(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("clarification option IDs must be unique")
+        return value
+
+
+class ResultSelection(ContractModel):
+    """Untrusted clicked-result context, revalidated by RAG before use."""
+
+    result_set_id: str = Field(min_length=1, max_length=200)
+    canonical_id: str = Field(min_length=1, max_length=200)
+    ordinal: int = Field(strict=True, ge=1, le=MAX_RESULT_IDENTITIES)
+
+
 class AskRequest(ContractModel):
     question: str = Field(max_length=MAX_QUESTION_CHARS)
     history: list[HistoryTurn] = Field(max_length=MAX_HISTORY_TURNS)
     conversation_state: ConversationState = Field(default_factory=ConversationState)
+    selected_result: ResultSelection | None = None
+    clarification_selection: ClarificationSelection | None = None
 
     @field_validator("question")
     @classmethod
@@ -83,6 +122,39 @@ class AskRequest(ContractModel):
             value, STATE_MAX_BYTES, "conversation_state"
         )
 
+    @model_validator(mode="after")
+    def selections_reference_current_state(self) -> "AskRequest":
+        if self.selected_result is not None:
+            selection = self.selected_result
+            result_set = next(
+                (
+                    item
+                    for item in self.conversation_state.result_sets
+                    if item.result_set_id == selection.result_set_id
+                ),
+                None,
+            )
+            if result_set is None:
+                raise ValueError("selected result set is not retained")
+            index = selection.ordinal - 1
+            if (
+                index >= len(result_set.ordered_canonical_ids)
+                or result_set.ordered_canonical_ids[index]
+                != selection.canonical_id
+            ):
+                raise ValueError("selected result ordinal and identity must agree")
+        if self.clarification_selection is not None:
+            selection = self.clarification_selection
+            pending = self.conversation_state.pending_clarification
+            if pending is None or pending.id != selection.clarification_id:
+                raise ValueError("clarification selection is stale")
+            current_ids = {option.id for option in pending.options}
+            if not set(selection.option_ids).issubset(current_ids):
+                raise ValueError("clarification selection contains a foreign option")
+            if len(selection.option_ids) > 1 and not pending.allow_multiple:
+                raise ValueError("clarification does not allow multiple selections")
+        return self
+
 
 class Source(ContractModel):
     record_id: str
@@ -92,9 +164,60 @@ class Source(ContractModel):
     domain: str
 
 
+PublicFieldValue = str | list[str] | None
+
+
+class PublicResultItem(ContractModel):
+    """Reusable ordered result card backed by one approved stored record."""
+
+    type: Literal["result"] = "result"
+    record_id: str
+    source_id: str
+    canonical_id: str
+    title: str
+    url: HttpUrl
+    domain: str
+    result_set_id: str | None = None
+    ordinal: int | None = Field(default=None, strict=True, ge=1)
+    fields: dict[str, PublicFieldValue] = Field(default_factory=dict)
+
+
+class PublicComparisonValue(ContractModel):
+    record_id: str
+    value: PublicFieldValue
+    state: Literal["published", "not_published"]
+
+
+class PublicComparisonField(ContractModel):
+    name: str
+    label: str
+    values: list[PublicComparisonValue]
+
+
+class PublicComparisonItem(ContractModel):
+    """Backend-authored comparison; clients never infer rows from prose."""
+
+    type: Literal["comparison"] = "comparison"
+    result_set_id: str | None = None
+    records: list[PublicResultItem]
+    fields: list[PublicComparisonField]
+
+
+class ResponseAction(ContractModel):
+    """Validated backend action; never synthesized from answer or user text."""
+
+    type: Literal["application"]
+    label: str
+    url: HttpUrl
+    record_id: str
+    source_id: str
+
+
 class ResponseBody(ContractModel):
     answer: str
     items: list[dict[str, Any]] = Field(default_factory=list)
+    answer_state: AnswerState | None = None
+    actions: list[ResponseAction] = Field(default_factory=list)
     sources: list[Source] = Field(default_factory=list)
     request_id: str
     conversation_state: ConversationState = Field(default_factory=ConversationState)

@@ -50,14 +50,12 @@ from askanu_rag.temporal_compatibility import (
 
 _SPACE_RE = re.compile(r"\s+")
 _EXCLUSIVE_PRICE_RE = re.compile(
-    r"(?:\b(?:under|below|less than)\b|<)\s*(?:A?\$)?\s*(?P<amount>\d{2,6})",
+    r"\b(?:under|below|less than)\b\s*(?:A?\$)?\s*(?P<amount>\d{2,6})",
     re.IGNORECASE,
 )
 _INCLUSIVE_PRICE_RE = re.compile(
-    r"(?:\b(?:no more than|up to|budget(?: of)?|max(?:imum)?(?: of)?)\b)"
-    r"\s*(?:A?\$)?\s*(?P<prefix_amount>\d{2,6})|"
-    r"(?:A?\$)?\s*(?P<suffix_amount>\d{2,6})\s*"
-    r"(?:or less|maximum|max)\b",
+    r"\b(?:no more than|up to|max(?:imum)?)\b"
+    r"\s*(?:A?\$)?\s*(?P<amount>\d{2,6})",
     re.IGNORECASE,
 )
 _AFTER_RE = re.compile(r"\bafter\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
@@ -98,9 +96,7 @@ def _price_constraint(
             exclusive.group("amount")
         )
     assert inclusive is not None
-    return ConstraintSemanticType.MAX_PRICE, int(
-        inclusive.group("prefix_amount") or inclusive.group("suffix_amount")
-    )
+    return ConstraintSemanticType.MAX_PRICE, int(inclusive.group("amount"))
 
 
 def _entity(
