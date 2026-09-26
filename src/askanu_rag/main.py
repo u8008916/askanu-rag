@@ -206,6 +206,7 @@ def create_app(
     entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
     entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
     problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    resource_trace_sink: Callable[[Any], None] | None = None,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
@@ -502,17 +503,42 @@ def create_app(
             if scholarship_response is not None:
                 return _mark_response(request, scholarship_response)
 
-        if accommodation_queries is not None and is_plausible_resource_question(
-            resolved_question, "accommodation", pending, payload.history
+        accommodation_domain_resolved = (
+            conversation_turn.interpretation.domain == Domain.ACCOMMODATION
+            and not conversation_turn.interpretation.requires_clarification
+            and (
+                conversation_turn.interpretation.entity is not None
+                or conversation_turn.interpretation.referenced_result_set_id is not None
+            )
+        )
+        if accommodation_queries is not None and (
+            accommodation_domain_resolved
+            or is_plausible_resource_question(
+                resolved_question, "accommodation", pending, payload.history
+            )
         ):
             accommodation_response = await accommodation_queries.answer(
                 resolved_question,
                 request_id,
                 payload.conversation_state.pending_clarification,
                 payload.history,
+                resolved_domain=accommodation_domain_resolved,
+                interpretation=conversation_turn.interpretation,
+                selected_canonical_ids=conversation_turn.selected_canonical_ids,
+                conversation_state=conversation_turn.state,
             )
             if accommodation_response is not None:
-                return _mark_response(request, accommodation_response)
+                outcome = accommodation_queries.integrate_conversation(
+                    accommodation_response,
+                    resolved_question,
+                    conversation_turn.state,
+                    conversation_turn.interpretation,
+                )
+                request.state.conversation_state = outcome.state
+                request.state.resource_query_trace = outcome.trace
+                if resource_trace_sink is not None and outcome.trace is not None:
+                    resource_trace_sink(outcome.trace)
+                return _mark_response(request, outcome.response)
 
         support_domain_resolved = (
             conversation_turn.interpretation.domain == Domain.SUPPORT

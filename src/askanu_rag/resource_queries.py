@@ -4,18 +4,38 @@ from __future__ import annotations
 
 import math
 import re
+from dataclasses import dataclass
 from typing import Literal
 
 from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, _source_from_record
 from askanu_rag.models import (
+    AnswerState,
     AccommodationRecord,
     AskResponse,
     Clarification,
     ClarificationOption,
+    ConstraintSemanticType,
+    ConversationState,
+    Domain,
+    EntityKind,
+    EntityResolutionBasis,
+    EvidenceBundle,
+    EvidenceItem,
     InsufficientEvidenceResponse,
+    MissingEvidence,
     NeedsClarificationResponse,
     OkResponse,
+    QueryInterpretation,
+    ResolvedEntity,
+    ResultSet,
+    RetrievalPlan,
     SupportRecord,
+)
+from askanu_rag.evidence_selection import (
+    build_evidence_bundle,
+    build_reasoned_evidence_bundle,
+    build_result_set,
+    classify_result_set_status,
 )
 from askanu_rag.retrieval import ResourceReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
@@ -25,9 +45,17 @@ from askanu_rag.retrieval.semantic import (
     sparse_score_is_usable,
 )
 from askanu_rag.synthesis import SynthesisError
+from askanu_rag.retrieval_planning import build_retrieval_plan
+from askanu_rag.state_transitions import (
+    refine_result_set,
+    remember_entity,
+    remember_result_set,
+)
 
 ACCOMMODATION_PATTERN = re.compile(
-    r"\b(?:accommodation|residences?|halls?|lodges?|colleges?|rooms?)\b", re.I
+    r"\b(?:accommodation|housing|residences?|halls?|lodges?|colleges?|rooms?|"
+    r"places? to live|somewhere to live)\b",
+    re.I,
 )
 ACCOMMODATION_INTENT_PATTERN = re.compile(
     r"\b(?:located|location|catering|catered|cost|price|rate|rent|fees?|"
@@ -53,10 +81,15 @@ SUPPORT_PATTERN = re.compile(
 )
 LIVE_AVAILABILITY_PATTERN = re.compile(
     r"\b(?:live availability|available (?:right )?now|rooms? available|"
+    r"any (?:rooms?|spaces?) (?:left|available)|space (?:right now|at the moment)|"
     r"vacan(?:cy|cies|t)|guaranteed room|get a room .* now)\b",
     re.I,
 )
-COST_PATTERN = re.compile(r"\b(?:cost|price|rate|rent|fee|how much)\b", re.I)
+COST_PATTERN = re.compile(
+    r"\b(?:cost|price|rate|rent|fees?|how much|budget|under|below|maximum|"
+    r"no more than|up to)\b",
+    re.I,
+)
 FACILITIES_PATTERN = re.compile(r"\b(?:facilit(?:y|ies)|feature|amenit(?:y|ies))\b", re.I)
 APPLICATION_PATTERN = re.compile(r"\b(?:apply|application)\b", re.I)
 HOURS_PATTERN = re.compile(r"\b(?:hours|open|opening times?|when can)\b", re.I)
@@ -65,12 +98,19 @@ ROOM_PATTERN = re.compile(r"\b(?:rooms?|studio|apartment|occupancy)\b", re.I)
 CONTRACT_PATTERN = re.compile(r"\b(?:contract|term|weeks?)\b", re.I)
 INCLUSIONS_PATTERN = re.compile(r"\b(?:include|included|inclusions?)\b", re.I)
 OTHER_FEES_PATTERN = re.compile(r"\b(?:other fees?|extra fees?|additional fees?)\b", re.I)
-CATERING_PATTERN = re.compile(r"\b(?:catered|self-catered|catering|meals?)\b", re.I)
+CATERING_PATTERN = re.compile(
+    r"\b(?:catered|self[- ]catered|catering|meals?|meal plans?|cook for myself)\b",
+    re.I,
+)
 LOCATION_PATTERN = re.compile(r"\b(?:where is|located|location)\b", re.I)
 AUDIENCE_PATTERN = re.compile(
     r"\b(?:audience|who can live|who can use|undergraduate|postgraduate)\b", re.I
 )
 OVERVIEW_PATTERN = re.compile(r"\b(?:overview|describe|tell me about)\b", re.I)
+RETURN_ACCOMMODATION_PATTERN = re.compile(
+    r"\b(?:back|return|go back) to (?:the )?(?:accommodation|residences?)\b",
+    re.I,
+)
 ACCESSIBILITY_PATTERN = re.compile(r"\b(?:accessibility|accessible|disability access)\b", re.I)
 ELIGIBILITY_PATTERN = re.compile(r"\b(?:eligible|eligibility|who can apply)\b", re.I)
 CATEGORY_PATTERN = re.compile(r"\b(?:category|type of)\b", re.I)
@@ -93,6 +133,13 @@ BROAD_DISCOVERY_PATTERN = re.compile(
     r"(?:what|which)\s+(?:accommodation|residences?|support|services?)\b)",
     re.I,
 )
+ACCOMMODATION_DISCOVERY_PATTERN = re.compile(
+    r"\b(?:accommodation|residence)\s+(?:options?|choices?)\b|"
+    r"\bhousing(?:\s+(?:options?|choices?))?\b|"
+    r"\b(?:places? to live|somewhere to live)\b|"
+    r"\boptions? for (?:living|housing)\b",
+    re.I,
+)
 OTHER_RESOURCE_DOMAIN_PATTERN = re.compile(
     r"\b(?:courses?|programs?|majors?|minors?|speciali[sz]ations?|"
     r"prerequisites?|scholarships?|jobs?|events?)\b",
@@ -110,6 +157,208 @@ RESOURCE_REFERENCE_PATTERN = re.compile(
     r"the same (?:residence|service)|them|their)\b",
     re.I,
 )
+
+_PUBLISHED_AMOUNT_PATTERN = re.compile(r"\$\s*([0-9][0-9,]*(?:\.\d{1,2})?)")
+
+
+@dataclass(frozen=True)
+class ResourceQueryTrace:
+    """Internal, test-visible V7 trace; never added to the public API schema."""
+
+    question: str
+    interpretation: QueryInterpretation | None
+    retained_state: ConversationState
+    retrieval_plan: RetrievalPlan | None
+    result_set: ResultSet | None
+    evidence_bundle: EvidenceBundle | None
+    selected_canonical_ids: tuple[str, ...]
+    canonical_sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResourceQueryOutcome:
+    response: AskResponse
+    state: ConversationState
+    trace: ResourceQueryTrace | None = None
+
+
+def _published_amounts(value: str | None) -> tuple[float, ...]:
+    if value is None:
+        return ()
+    return tuple(
+        float(match.group(1).replace(",", ""))
+        for match in _PUBLISHED_AMOUNT_PATTERN.finditer(value)
+    )
+
+
+def _record_price_evidence(record: AccommodationRecord) -> tuple[float, ...]:
+    metadata = record.metadata_json
+    advertised = _published_amounts(metadata.advertised_rate)
+    if advertised:
+        return advertised
+    return tuple(
+        amount
+        for room in metadata.rooms
+        for amount in _published_amounts(room.rate)
+    )
+
+
+def _requested_catering_preference(question: str) -> str | None:
+    normalized = normalize_job_title(question).replace(" ", "-")
+    if "self-catered" in normalized or "cook-for-myself" in normalized:
+        return "self-catered"
+    if re.search(r"(?<!self-)\bcatered\b", normalized) or "meal-plan" in normalized:
+        return "catered"
+    return None
+
+
+def _filter_accommodation_population(
+    records: tuple[ResourceRecord, ...],
+    question: str,
+    interpretation: QueryInterpretation | None,
+) -> tuple[tuple[ResourceRecord, ...], bool, tuple[ResourceRecord, ...]]:
+    """Apply only hard, source-backed Accommodation filters.
+
+    The returned completeness flag is false when at least one record cannot be
+    evaluated. An empty/unknown metadata value is never treated as a negative.
+    """
+
+    candidates = tuple(
+        record for record in records if isinstance(record, AccommodationRecord)
+    )
+    unknown: dict[str, ResourceRecord] = {}
+    price_limit: float | None = None
+    if interpretation is not None:
+        for constraint in interpretation.constraints.items:
+            if (
+                constraint.scope.domain == Domain.ACCOMMODATION
+                and constraint.semantic_type == ConstraintSemanticType.MAX_PRICE
+            ):
+                price_limit = float(constraint.value)
+                break
+    if price_limit is not None:
+        matched: list[ResourceRecord] = []
+        for record in candidates:
+            amounts = _record_price_evidence(record)
+            if not amounts:
+                unknown[record.record_id] = record
+            elif any(amount <= price_limit for amount in amounts):
+                matched.append(record)
+        candidates = tuple(matched)
+
+    catering = _requested_catering_preference(question)
+    if catering is not None:
+        matched = []
+        for record in candidates:
+            options = tuple(
+                normalize_job_title(value).replace(" ", "-")
+                for value in record.metadata_json.catering_options
+            )
+            if not options:
+                unknown[record.record_id] = record
+                continue
+            if catering == "self-catered":
+                is_match = any("self-catered" in value for value in options)
+            else:
+                is_match = any(
+                    "catered" in value and "self-catered" not in value
+                    for value in options
+                )
+            if is_match:
+                matched.append(record)
+        candidates = tuple(matched)
+
+    return candidates, not unknown, tuple(unknown.values())
+
+
+def _accommodation_field_value(
+    record: AccommodationRecord, field: str
+) -> str | None:
+    metadata = record.metadata_json
+    if field == "category":
+        return metadata.category
+    if field == "location":
+        return metadata.location
+    if field == "advertised_rate":
+        return metadata.advertised_rate
+    if field == "cost_period":
+        return metadata.cost_period
+    if field == "catering_options":
+        return ", ".join(metadata.catering_options) or None
+    if field == "audiences":
+        return ", ".join(metadata.audiences) or None
+    if field == "features":
+        return ", ".join(metadata.features) or None
+    if field == "overview":
+        return metadata.overview
+    if field == "application_text":
+        return metadata.application_text
+    if field == "application_url":
+        return metadata.application_url
+    if field == "vacancy_status":
+        return metadata.vacancy_status
+    if field == "rooms":
+        values = [
+            f"{room.name}: {room.rate}"
+            for room in metadata.rooms
+            if room.rate is not None
+        ]
+        return "; ".join(values) or None
+    return None
+
+
+def _trace_fields(question: str, *, discovery: bool) -> tuple[str, ...]:
+    if LIVE_AVAILABILITY_PATTERN.search(question):
+        return ("vacancy_status", "application_text", "application_url")
+    if COMPARE_PATTERN.search(question):
+        return (
+            "category",
+            "location",
+            "advertised_rate",
+            "cost_period",
+            "catering_options",
+            "audiences",
+            "features",
+        )
+    fields: list[str] = []
+    for pattern, field in (
+        (COST_PATTERN, "advertised_rate"),
+        (COST_PATTERN, "cost_period"),
+        (ROOM_PATTERN, "rooms"),
+        (CATERING_PATTERN, "catering_options"),
+        (APPLICATION_PATTERN, "application_text"),
+        (APPLICATION_PATTERN, "application_url"),
+        (LOCATION_PATTERN, "location"),
+        (FACILITIES_PATTERN, "features"),
+        (OVERVIEW_PATTERN, "overview"),
+    ):
+        if pattern.search(question) and field not in fields:
+            fields.append(field)
+    if discovery:
+        for field in ("category", "catering_options", "advertised_rate"):
+            if field not in fields:
+                fields.append(field)
+    return tuple(fields or ("overview",))
+
+
+def _evidence_item(
+    record: AccommodationRecord, fields: tuple[str, ...]
+) -> EvidenceItem:
+    selected = tuple(
+        field for field in fields if _accommodation_field_value(record, field) is not None
+    )
+    evidence_text = "; ".join(
+        f"{field}: {_accommodation_field_value(record, field)}"
+        for field in selected
+    ) or record.content
+    return EvidenceItem(
+        record_id=record.record_id,
+        source_id=record.source_id,
+        domain=Domain.ACCOMMODATION,
+        canonical_url=record.canonical_url,
+        evidence_text=evidence_text[:4_000],
+        selected_fields=selected,
+    )
 
 
 def is_plausible_resource_question(
@@ -187,7 +436,30 @@ def _is_broad_resource_request(
     normalized = normalize_job_title(question).strip(".!?")
     return bool(
         BROAD_DISCOVERY_PATTERN.search(question)
+        or (
+            domain == "accommodation"
+            and ACCOMMODATION_DISCOVERY_PATTERN.search(question)
+        )
         or normalized in {f"tell me about {domain}", domain}
+    )
+
+
+def _is_accommodation_discovery_request(
+    question: str, interpretation: QueryInterpretation | None
+) -> bool:
+    normalized = normalize_job_title(question)
+    if normalized in {"tell me about accommodation", "accommodation"}:
+        return False
+    if interpretation is not None and interpretation.intent is not None:
+        if interpretation.intent.operation in {"initial_discovery", "refine_results"}:
+            return True
+    return bool(
+        re.search(
+            r"\b(?:options?|choices?|places? to live|somewhere to live|housing)\b",
+            normalized,
+        )
+        or re.match(r"^(?:show|list|find|which)\b", normalized)
+        or _requested_catering_preference(question) is not None
     )
 
 
@@ -299,6 +571,9 @@ class DomainResourceQueryService:
         history=(),
         *,
         resolved_domain: bool = False,
+        interpretation: QueryInterpretation | None = None,
+        selected_canonical_ids: tuple[str, ...] = (),
+        conversation_state: ConversationState | None = None,
     ) -> AskResponse | None:
         pattern = ACCOMMODATION_PATTERN if self.domain == "accommodation" else SUPPORT_PATTERN
         has_domain_signal = bool(
@@ -307,10 +582,68 @@ class DomainResourceQueryService:
             or (self.domain == "support" and TOPIC_PATTERN.search(question))
         )
         records = self.repository.all_domain_records(self.domain)
+        if (
+            self.domain == "accommodation"
+            and interpretation is not None
+            and interpretation.intent is not None
+            and interpretation.intent.operation == "refine_results"
+            and interpretation.referenced_result_set_id is not None
+        ):
+            parent = next(
+                (
+                    item
+                    for item in (conversation_state or ConversationState()).result_sets
+                    if item.result_set_id == interpretation.referenced_result_set_id
+                ),
+                None,
+            )
+            if parent is not None:
+                parent_ids = set(parent.ordered_canonical_ids)
+                records = tuple(
+                    record for record in records if record.entity_id in parent_ids
+                )
+        population_complete = True
+        unevaluated: tuple[ResourceRecord, ...] = ()
+        discovery_request = bool(
+            self.domain == "accommodation"
+            and _is_accommodation_discovery_request(question, interpretation)
+        )
+        if self.domain == "accommodation" and (
+            discovery_request
+            or (
+                interpretation is not None
+                and any(
+                    item.semantic_type.value == "max_price"
+                    for item in interpretation.constraints.items
+                )
+            )
+        ):
+            records, population_complete, unevaluated = _filter_accommodation_population(
+                records, question, interpretation
+            )
         pending_matches = _pending_resource_selection(
             question, pending, records, self.domain
         )
-        exact = tuple(record for record in records if _contains_title(question, record))
+        resolved_ids = list(selected_canonical_ids)
+        if (
+            interpretation is not None
+            and interpretation.entity is not None
+            and interpretation.entity.domain.value == self.domain
+            and interpretation.entity.canonical_id not in resolved_ids
+        ):
+            resolved_ids.append(interpretation.entity.canonical_id)
+        by_identity = {
+            identity: record
+            for record in records
+            for identity in (record.entity_id, record.record_id)
+        }
+        exact = tuple(
+            by_identity[identity]
+            for identity in resolved_ids
+            if identity in by_identity
+        )
+        if not exact:
+            exact = tuple(record for record in records if _contains_title(question, record))
         if not exact and RESOURCE_REFERENCE_PATTERN.search(question):
             for turn in reversed(tuple(history)):
                 if getattr(turn, "role", None) != "user":
@@ -368,6 +701,7 @@ class DomainResourceQueryService:
             and not pending_matches
             and len(records) > 1
             and _is_broad_resource_request(question, self.domain)
+            and not discovery_request
         ):
             return _resource_clarification(records, request_id, self.domain)
 
@@ -376,6 +710,8 @@ class DomainResourceQueryService:
             selected = pending_matches
         elif exact:
             selected = exact
+        elif discovery_request:
+            selected = records[:20]
         else:
             sparse_status = "ok"
             try:
@@ -433,6 +769,26 @@ class DomainResourceQueryService:
                 ).candidates
             )
         if not selected:
+            if self.domain == "accommodation" and discovery_request:
+                if population_complete:
+                    return InsufficientEvidenceResponse(
+                        answer=(
+                            "No residences in the completely evaluated approved "
+                            "Accommodation population match the active source-backed "
+                            "constraints."
+                        ),
+                        sources=[_source_from_record(record) for record in records[:5]],
+                        request_id=request_id,
+                    )
+                return InsufficientEvidenceResponse(
+                    answer=(
+                        "I cannot truthfully report no matches because part of the "
+                        "approved Accommodation population lacks usable published "
+                        "evidence for the active constraints."
+                    ),
+                    sources=[_source_from_record(record) for record in unevaluated[:5]],
+                    request_id=request_id,
+                )
             if records and _is_broad_resource_request(question, self.domain):
                 return _resource_clarification(records, request_id, self.domain)
             return InsufficientEvidenceResponse(
@@ -454,8 +810,172 @@ class DomainResourceQueryService:
                     + f" {noun}"
                 )
         if self.domain == "accommodation":
-            return self._accommodation_answer(question, selected, request_id)
+            return self._accommodation_answer(
+                question, selected[: self.evidence_top_k], request_id
+            )
         return self._support_answer(question, selected, request_id)
+
+    def integrate_conversation(
+        self,
+        response: AskResponse,
+        question: str,
+        state: ConversationState,
+        interpretation: QueryInterpretation,
+    ) -> ResourceQueryOutcome:
+        """Attach Accommodation retrieval to the shared V7 state/evidence path."""
+
+        if self.domain != "accommodation":
+            return ResourceQueryOutcome(response=response, state=state)
+
+        all_records = tuple(
+            record
+            for record in self.repository.all_domain_records("accommodation")
+            if isinstance(record, AccommodationRecord)
+        )
+        by_entity_id = {record.entity_id: record for record in all_records}
+        by_record_id = {record.record_id: record for record in all_records}
+        parent = next(
+            (
+                item
+                for item in state.result_sets
+                if item.result_set_id == interpretation.referenced_result_set_id
+                and item.domain == Domain.ACCOMMODATION
+            ),
+            None,
+        )
+        population = all_records
+        if (
+            interpretation.intent is not None
+            and interpretation.intent.operation == "refine_results"
+            and parent is not None
+        ):
+            population = tuple(
+                by_entity_id[canonical_id]
+                for canonical_id in parent.ordered_canonical_ids
+                if canonical_id in by_entity_id
+            )
+        discovery = _is_accommodation_discovery_request(question, interpretation)
+        matched, population_complete, unknown = _filter_accommodation_population(
+            population, question, interpretation
+        )
+        response_record_ids = [source.record_id for source in response.sources]
+        selected = tuple(
+            by_record_id[record_id]
+            for record_id in response_record_ids
+            if record_id in by_record_id
+        )
+
+        plan = build_retrieval_plan(
+            interpretation,
+            plan_id=f"plan:accommodation:{state.turn_index}",
+        )
+        result_set: ResultSet | None = None
+        updated = state
+        if discovery and plan is not None:
+            result_ids = tuple(record.entity_id for record in matched[:20])
+            status = classify_result_set_status(
+                result_ids, population_complete=population_complete
+            )
+            if (
+                interpretation.intent is not None
+                and interpretation.intent.operation == "refine_results"
+                and parent is not None
+            ):
+                result_set = refine_result_set(
+                    parent,
+                    result_set_id=f"rs:accommodation:{state.turn_index}",
+                    ordered_canonical_ids=result_ids,
+                    constraints=interpretation.constraints,
+                    status=status,
+                    turn=state.turn_index,
+                    originating_query=question,
+                )
+            else:
+                result_set = build_result_set(
+                    plan,
+                    result_set_id=f"rs:accommodation:{state.turn_index}",
+                    entity_kind=EntityKind.RESIDENCE,
+                    ordered_canonical_ids=result_ids,
+                    originating_query=question,
+                    created_turn=state.turn_index,
+                    population_complete=population_complete,
+                )
+            updated = remember_result_set(updated, result_set)
+
+        if len(selected) == 1:
+            record = selected[0]
+            entity = ResolvedEntity(
+                domain=Domain.ACCOMMODATION,
+                kind=EntityKind.RESIDENCE,
+                canonical_id=record.entity_id,
+                canonical_name=record.title,
+                source_record_id=record.record_id,
+                resolution_basis=EntityResolutionBasis.RETAINED_STATE,
+                mentioned_turn=state.turn_index,
+            )
+            updated = remember_entity(
+                updated,
+                entity,
+                focus=updated.selected_result is None and result_set is None,
+            )
+
+        fields = _trace_fields(question, discovery=discovery)
+        evidence_records = selected
+        if discovery and not matched:
+            evidence_records = tuple(
+                record for record in population if record.record_id not in {
+                    item.record_id for item in unknown
+                }
+            )[:20]
+        evidence = tuple(_evidence_item(record, fields) for record in evidence_records)
+        if LIVE_AVAILABILITY_PATTERN.search(question):
+            evidence = tuple(item for item in evidence if item.selected_fields)
+        missing: list[MissingEvidence] = []
+        for record in selected:
+            for field in fields:
+                if _accommodation_field_value(record, field) is None:
+                    missing.append(MissingEvidence(field=field, reason="null"))
+        if discovery and not population_complete:
+            missing.append(
+                MissingEvidence(
+                    field="constraint_evidence", reason="incomplete_population"
+                )
+            )
+
+        derived = bool(discovery or COMPARE_PATTERN.search(question))
+        if plan is None:
+            evidence_bundle = None
+        elif evidence or missing:
+            evidence_bundle = build_reasoned_evidence_bundle(
+                plan,
+                bundle_id=f"evidence:accommodation:{state.turn_index}",
+                selected_evidence=evidence,
+                missing_evidence=tuple(missing),
+                derived=derived,
+                result_set_id=result_set.result_set_id if result_set else None,
+            )
+        else:
+            evidence_bundle = build_evidence_bundle(
+                plan,
+                bundle_id=f"evidence:accommodation:{state.turn_index}",
+                missing_evidence=(
+                    MissingEvidence(field="requested_fact", reason="absent"),
+                ),
+                answer_state=AnswerState.UNKNOWN,
+                result_set_id=result_set.result_set_id if result_set else None,
+            )
+        trace_records = evidence_records or unknown[:20]
+        trace = ResourceQueryTrace(
+            question=question,
+            interpretation=interpretation,
+            retained_state=updated,
+            retrieval_plan=plan,
+            result_set=result_set,
+            evidence_bundle=evidence_bundle,
+            selected_canonical_ids=tuple(record.entity_id for record in selected),
+            canonical_sources=tuple(str(record.canonical_url) for record in trace_records),
+        )
+        return ResourceQueryOutcome(response=response, state=updated, trace=trace)
 
     @staticmethod
     def _safe(answer: str) -> str:
@@ -670,9 +1190,26 @@ class DomainResourceQueryService:
                     facts.append("Published contact: " + "; ".join(contact_facts))
                 else:
                     missing_fact = True
-            if (
-                COMPARE_PATTERN.search(question)
-                or OVERVIEW_PATTERN.search(question)
+            if COMPARE_PATTERN.search(question):
+                for label, value in (
+                    ("Category", metadata.category),
+                    ("Residence location", metadata.location),
+                    ("Published advertised rate wording", metadata.advertised_rate),
+                    ("Published cost period", metadata.cost_period),
+                    (
+                        "Catering",
+                        ", ".join(metadata.catering_options) or None,
+                    ),
+                    ("Audiences", ", ".join(metadata.audiences) or None),
+                    (
+                        "Published features",
+                        ", ".join(metadata.features) or None,
+                    ),
+                ):
+                    facts.append(f"{label}: {value or 'not published'}")
+            elif (
+                OVERVIEW_PATTERN.search(question)
+                or RETURN_ACCOMMODATION_PATTERN.search(question)
                 or _is_broad_resource_request(question, self.domain)
             ):
                 for label, value in (

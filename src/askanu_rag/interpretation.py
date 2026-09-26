@@ -49,7 +49,12 @@ from askanu_rag.temporal_compatibility import (
 )
 
 _SPACE_RE = re.compile(r"\s+")
-_PRICE_RE = re.compile(r"(?:under|below|less than|max(?:imum)?(?: of)?|<)\s*\$?\s*(\d{2,6})", re.IGNORECASE)
+_PRICE_RE = re.compile(
+    r"(?:under|below|less than|no more than|up to|budget(?: of)?|"
+    r"max(?:imum)?(?: of)?|<)\s*\$?\s*(\d{2,6})|"
+    r"\$?\s*(\d{2,6})\s*(?:or less|maximum|max)\b",
+    re.IGNORECASE,
+)
 _AFTER_RE = re.compile(r"\bafter\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 _BEFORE_RE = re.compile(r"\bbefore\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 _BETWEEN_RE = re.compile(
@@ -107,7 +112,7 @@ def _domain_from_words(question: str) -> Domain | None:
         (("course", "prerequisite", "units"), Domain.COURSES),
         (("scholarship",), Domain.SCHOLARSHIPS),
         (("job", "role"), Domain.JOBS),
-        (("accommodation", "residence", "hall", "lodge", "catered", "vacancy", "rooms available"), Domain.ACCOMMODATION),
+        (("accommodation", "housing", "residence", "hall", "lodge", "catered", "vacancy", "rooms available", "place to live", "places to live", "somewhere to live"), Domain.ACCOMMODATION),
         (("event",), Domain.EVENTS),
         (("support", "service"), Domain.SUPPORT),
     )
@@ -120,7 +125,7 @@ def _domain_from_words(question: str) -> Domain | None:
 def _is_domain_return(question: str) -> bool:
     return bool(
         re.search(
-            r"\bback to (?:the )?(?:courses|scholarships|jobs|events|services|"
+            r"\b(?:back|return|go back) to (?:the )?(?:courses|scholarships|jobs|events|services|"
             r"residences|accommodation|support)\b",
             _normalise(question),
         )
@@ -146,7 +151,7 @@ def _explicit_constraints(question: str, domain: Domain | None, turn: int) -> Co
     if price:
         found.append(ScopedConstraint(
             semantic_type=ConstraintSemanticType.MAX_PRICE,
-            value=int(price.group(1)),
+            value=int(price.group(1) or price.group(2)),
             scope=ConstraintScope(domain=domain),
             lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
             introduced_turn=turn,
@@ -215,6 +220,8 @@ def _merge_constraints(
 
 def _result_reference(question: str) -> str | None:
     normalised = _normalise(question)
+    if re.search(r"\b(?:the )?first (?:two|2)\b", normalised):
+        return "first_two"
     if "second" in normalised:
         return "second"
     if "first" in normalised:
@@ -238,21 +245,21 @@ def _intent(
     normalised = _normalise(question)
     if pending and normalised in {"yes", "no", "first", "second", "both"}:
         return ResolvedIntent(name="clarification_response", operation="clarification_response")
-    if "back to" in normalised:
+    if any(phrase in normalised for phrase in ("back to", "return to", "go back to")):
         family = "fact_lookup" if any(word in normalised for word in ("where", "cost", "units", "prerequisite", "catered")) else "lookup"
         return ResolvedIntent(name=family, operation="return_topic")
     if "any more" in normalised or "more results" in normalised:
         return ResolvedIntent(name="discover", operation="continue_results")
+    if "compare" in normalised:
+        return ResolvedIntent(name="compare", operation="compare")
     if result_reference:
         family = "fact_lookup" if any(word in normalised for word in ("where", "when", "close", "cost")) else "lookup"
         return ResolvedIntent(name=family, operation="lookup")
-    if "compare" in normalised:
-        return ResolvedIntent(name="compare", operation="compare")
     if refining and not explicit_entity:
         return ResolvedIntent(name="discover", operation="refine_results")
-    if any(word in normalised for word in ("prerequisite", "units", "where", "cost", "catered", "apply", "available", "vacancy", "close")):
+    if any(word in normalised for word in ("prerequisite", "units", "where", "cost", "price", "rate", "catered", "catering", "meal", "apply", "application", "available", "vacancy", "close")):
         return ResolvedIntent(name="fact_lookup", operation="lookup")
-    if has_constraints or any(word in normalised for word in ("show", "find", "what events", "which")):
+    if has_constraints or any(word in normalised for word in ("show", "list", "find", "what events", "which")):
         return ResolvedIntent(name="discover", operation="initial_discovery")
     return ResolvedIntent(name="lookup", operation="lookup")
 
@@ -322,7 +329,10 @@ def interpret_turn(
         for token in (
             "after ", "before ", "today", "tomorrow", "any more",
             "cost", "apply", "available", "vacancy", "prerequisite", "units",
-            "where", "when", "close", "catered", "is it", "its ",
+            "where", "when", "close", "catered", "catering", "meal", "application",
+            "price", "rate", "room", "is it", "its ",
+            "under ", "below ", "less than", "no more than", "up to ",
+            "budget", "maximum", " max",
         )
         )
     ):
@@ -375,14 +385,20 @@ def interpret_turn(
                     basis=EntityResolutionBasis.RETAINED_STATE,
                 )
 
-    if entity is None and result_reference is None and (
+    refining_result_set_reference = bool(
+        _PRICE_RE.search(question)
+        and domain is not None
+        and any(item.domain == domain for item in state.result_sets)
+    )
+    if entity is None and result_reference is None and not refining_result_set_reference and (
         typed is not None
-        or ("back to" in normalised and not domain_return)
+        or (domain_return and domain == Domain.ACCOMMODATION)
         or any(
             word in normalised
             for word in (
                 " it", "its ", "is it", "cost", "apply", "available",
-                "vacancy", "prerequisite", "units", "catered",
+                "vacancy", "prerequisite", "units", "catered", "catering",
+                "meal", "application", "price", "rate", "room", "how much",
             )
         )
     ):
@@ -452,6 +468,20 @@ def interpret_turn(
         has_constraints=bool(explicit_constraints.items),
         refining=refining,
     )
+
+    if refining and referenced_result_set_id is None:
+        compatible = next(
+            (
+                item
+                for item in state.result_sets
+                if item.domain == domain
+                and (entity is None or item.entity_kind == entity.kind)
+            ),
+            None,
+        )
+        if compatible is not None:
+            reference_origin = "prior_result_set"
+            referenced_result_set_id = compatible.result_set_id
 
     if intent.operation == "continue_results":
         compatible = next(

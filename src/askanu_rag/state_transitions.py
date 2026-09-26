@@ -394,7 +394,7 @@ class ResultReferenceResolution:
     clarification_required: bool
 
 
-ResultReference = Literal["first", "second", "those", "other"]
+ResultReference = Literal["first", "second", "first_two", "those", "other"]
 
 
 def resolve_result_reference(
@@ -427,6 +427,10 @@ def resolve_result_reference(
     identities = result_set.ordered_canonical_ids
     if reference == "those":
         return ResultReferenceResolution(result_set, identities, False)
+    if reference == "first_two":
+        if len(identities) < 2:
+            return ResultReferenceResolution(result_set, (), True)
+        return ResultReferenceResolution(result_set, identities[:2], False)
     if reference in {"first", "second"}:
         index = 0 if reference == "first" else 1
         if index >= len(identities):
