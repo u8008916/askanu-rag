@@ -19,7 +19,8 @@ optional, versioned `conversation_state` described in `API_CONTRACT.md`; it does
 not add a `session_id`, server-side session, profile, or public free-form intent
 field. For each request the RAG backend applies:
 
-1. validate `question`, bounded `history`, and `pending_clarification`;
+1. validate `question`, bounded `history`, structured selections, and
+   `pending_clarification`;
 2. prefer an explicit entity/year/correction or clear topic switch in the current
    question;
 3. otherwise resolve a valid pending selection (`first`, `second`, a direct
@@ -40,6 +41,14 @@ validates option record IDs against the current catalog and rebuilds response
 labels from stored records before returning them. Invalid, stale or conflicting
 pending state cannot provide facts or URLs. A new explicit question, correction
 or topic switch takes priority over old pending state.
+
+Natural `both` is accepted only when the current pending clarification permits
+multiple selection and contains exactly two valid options. The generic public
+`clarification_selection` input supports one or more current option IDs under
+the same validation rule. The generic public `selected_result` input carries a
+ResultSet ID, canonical identity, and ordinal; RAG requires agreement with the
+retained ordering and re-resolves the identity against current approved stored
+evidence. Neither mechanism trusts client-carried identity as factual authority.
 
 History contributes only constrained entity/year/intent meaning. It is never
 copied wholesale into the Gemini prompt, never treated as a source of course
@@ -110,6 +119,12 @@ Temporal constraints use independent scoped semantic types `DATE_WINDOW` and
 constraint, and vice versa. Explicit current-turn constraints replace only the
 same semantic type and scope; other compatible inherited hard constraints
 survive. Constraints never cross domain scope.
+
+The shared price-bound family has two serialized operators. `max_price` is the
+inclusive upper bound (`up to`, `maximum`, `max`, `no more than`); additive
+`max_price_exclusive` is the strict upper bound (`under`, `below`, `less than`).
+They replace one another within the same scope. No other wording creates a
+deterministic numeric price constraint.
 
 `QueryInterpretation` internally preserves explicit and inherited constraints,
 entity origin, prior typed-state/ResultSet origin, ambiguity, and replacement/

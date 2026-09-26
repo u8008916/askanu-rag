@@ -27,6 +27,11 @@ from askanu_rag.models import (
     NeedsClarificationResponse,
     OkResponse,
     QueryInterpretation,
+    PublicComparisonField,
+    PublicComparisonItem,
+    PublicComparisonValue,
+    PublicResultItem,
+    ResponseAction,
     ResolvedEntity,
     ResultSet,
     RetrievalPlan,
@@ -160,8 +165,8 @@ RESOURCE_REFERENCE_PATTERN = re.compile(
 )
 
 _ROOM_WEEKLY_AUD_RATE_PATTERN = re.compile(
-    r"^\s*(?:A\$\s*|AUD\s+)([0-9][0-9,]*(?:\.\d{1,2})?)"
-    r"\s*(?:/\s*week|per\s+week)\s*$",
+    r"^\s*(?:A\$\s*|AUD\s+|\$\s*)([0-9][0-9,]*(?:\.\d{1,2})?)"
+    r"(?:\s*(?:/\s*week|per\s+week))?\s*$",
     re.IGNORECASE,
 )
 
@@ -171,6 +176,7 @@ class QualifyingRoomEvidence:
     record_id: str
     name: str
     rate: str
+    cost_period: str
     contract: str | None
     inclusions: str | None
     other_fees: str | None
@@ -206,10 +212,14 @@ class ResourceQueryOutcome:
     trace: ResourceQueryTrace | None = None
 
 
-def _room_weekly_aud_rate(room: AccommodationRoom) -> float | None:
-    """Return one unambiguous explicit AUD weekly rate, never a proxy."""
+def _room_weekly_aud_rate(
+    room: AccommodationRoom,
+    *,
+    cost_period: str | None,
+) -> float | None:
+    """Interpret the approved producer's structured weekly tariff field only."""
 
-    if room.rate is None:
+    if room.rate is None or cost_period is None:
         return None
     match = _ROOM_WEEKLY_AUD_RATE_PATTERN.fullmatch(room.rate)
     if match is None:
@@ -224,7 +234,10 @@ def _record_price_evidence(
 
     evidence: list[tuple[QualifyingRoomEvidence, float]] = []
     for room in record.metadata_json.rooms:
-        amount = _room_weekly_aud_rate(room)
+        amount = _room_weekly_aud_rate(
+            room,
+            cost_period=record.metadata_json.cost_period,
+        )
         if amount is None:
             continue
         evidence.append(
@@ -233,6 +246,7 @@ def _record_price_evidence(
                     record_id=record.record_id,
                     name=room.name,
                     rate=room.rate,
+                    cost_period=record.metadata_json.cost_period,
                     contract=room.contract,
                     inclusions=room.inclusions,
                     other_fees=room.other_fees,
@@ -378,9 +392,24 @@ def _accommodation_field_value(
 def _room_context_text(room: AccommodationRoom | QualifyingRoomEvidence) -> str:
     """Keep one named room's rate qualifiers and related cost context together."""
 
+    if isinstance(room, QualifyingRoomEvidence):
+        values = [
+            f"{room.name} has a published room rate of {room.rate} "
+            f"for the {room.cost_period} period"
+        ]
+        for label, value in (
+            ("contract", room.contract),
+            ("inclusions", room.inclusions),
+            ("other fees", room.other_fees),
+        ):
+            if value is not None:
+                values.append(f"{label}: {value}")
+        return "; ".join(values)
+
     values = [f"Room {room.name}"]
     for label, value in (
-        ("published rate", room.rate),
+        ("published room rate", room.rate),
+        ("published cost period", getattr(room, "cost_period", None)),
         ("contract", room.contract),
         ("inclusions", room.inclusions),
         ("other fees", room.other_fees),
@@ -392,7 +421,9 @@ def _room_context_text(room: AccommodationRoom | QualifyingRoomEvidence) -> str:
 
 def _trace_fields(question: str, *, discovery: bool) -> tuple[str, ...]:
     if LIVE_AVAILABILITY_PATTERN.search(question):
-        return ("vacancy_status", "application_text", "application_url")
+        # The requested fact is vacancy. A safe application action is useful
+        # navigation, but it is not evidence for the vacancy answer itself.
+        return ("vacancy_status",)
     if COMPARE_PATTERN.search(question):
         return (
             "category",
@@ -453,6 +484,104 @@ def _evidence_item(
         evidence_text=evidence_text[:4_000],
         selected_fields=selected,
     )
+
+
+_PUBLIC_ACCOMMODATION_FIELDS: tuple[tuple[str, str], ...] = (
+    ("category", "Category"),
+    ("location", "Location"),
+    ("catering_options", "Catering"),
+    ("advertised_rate", "Advertised rate"),
+    ("cost_period", "Cost period"),
+    ("audiences", "Audiences"),
+    ("features", "Features"),
+)
+
+
+def _public_accommodation_value(
+    record: AccommodationRecord,
+    field: str,
+) -> str | list[str] | None:
+    metadata = record.metadata_json
+    if field in {"catering_options", "audiences", "features"}:
+        values = list(getattr(metadata, field))
+        return values or None
+    value = getattr(metadata, field)
+    return value
+
+
+def _public_result_item(
+    record: AccommodationRecord,
+    result_set: ResultSet | None,
+    *,
+    include_fields: bool = True,
+) -> PublicResultItem:
+    ordinal: int | None = None
+    if result_set is not None and record.entity_id in result_set.ordered_canonical_ids:
+        ordinal = result_set.ordered_canonical_ids.index(record.entity_id) + 1
+    fields = {
+        field: value
+        for field, _ in _PUBLIC_ACCOMMODATION_FIELDS
+        if (value := _public_accommodation_value(record, field)) is not None
+    }
+    return PublicResultItem(
+        record_id=record.record_id,
+        source_id=record.source_id,
+        canonical_id=record.entity_id,
+        title=record.title,
+        url=record.canonical_url,
+        domain=record.domain,
+        result_set_id=result_set.result_set_id if result_set is not None else None,
+        ordinal=ordinal,
+        fields=fields if include_fields else {},
+    )
+
+
+def _public_comparison_item(
+    records: tuple[AccommodationRecord, ...],
+    result_set: ResultSet | None,
+) -> PublicComparisonItem:
+    return PublicComparisonItem(
+        result_set_id=result_set.result_set_id if result_set is not None else None,
+        records=[
+            _public_result_item(record, result_set, include_fields=False)
+            for record in records
+        ],
+        fields=[
+            PublicComparisonField(
+                name=field,
+                label=label,
+                values=[
+                    PublicComparisonValue(
+                        record_id=record.record_id,
+                        value=_public_accommodation_value(record, field),
+                        state=(
+                            "published"
+                            if _public_accommodation_value(record, field) is not None
+                            else "not_published"
+                        ),
+                    )
+                    for record in records
+                ],
+            )
+            for field, label in _PUBLIC_ACCOMMODATION_FIELDS
+        ],
+    )
+
+
+def _public_application_actions(
+    records: tuple[AccommodationRecord, ...],
+) -> list[ResponseAction]:
+    return [
+        ResponseAction(
+            type="application",
+            label="Apply now",
+            url=record.metadata_json.application_url,
+            record_id=record.record_id,
+            source_id=record.source_id,
+        )
+        for record in records
+        if record.metadata_json.application_url is not None
+    ]
 
 
 def is_plausible_resource_question(
@@ -583,26 +712,46 @@ def _pending_resource_selection(
     pending: Clarification | None,
     records: tuple[ResourceRecord, ...],
     domain: Literal["accommodation", "support"],
+    structured_option_ids: tuple[str, ...] = (),
 ) -> tuple[ResourceRecord, ...]:
     if pending is None or pending.type != f"{domain}_selection":
         return ()
     normalized = normalize_job_title(question).strip(".!?")
-    selected_id = None
-    if normalized in {"first", "first one", "1"} and pending.options:
-        selected_id = pending.options[0].id
-    elif normalized in {"second", "second one", "2"} and len(pending.options) > 1:
-        selected_id = pending.options[1].id
-    else:
-        for option in pending.options[:20]:
-            if normalized in {
-                normalize_job_title(option.id),
-                normalize_job_title(option.label),
-            }:
-                selected_id = option.id
-                break
+    selected_ids: tuple[str, ...] = structured_option_ids
+    if not selected_ids:
+        if (
+            normalized == "both"
+            and pending.allow_multiple
+            and len(pending.options) == 2
+        ):
+            selected_ids = tuple(option.id for option in pending.options)
+        elif normalized in {"first", "first one", "1"} and pending.options:
+            selected_ids = (pending.options[0].id,)
+        elif (
+            normalized in {"second", "second one", "2"}
+            and len(pending.options) > 1
+        ):
+            selected_ids = (pending.options[1].id,)
+        else:
+            for option in pending.options[:20]:
+                if normalized in {
+                    normalize_job_title(option.id),
+                    normalize_job_title(option.label),
+                }:
+                    selected_ids = (option.id,)
+                    break
+    current_option_ids = {option.id for option in pending.options[:20]}
+    if not selected_ids or not set(selected_ids).issubset(current_option_ids):
+        return ()
+    if len(selected_ids) > 1 and not pending.allow_multiple:
+        return ()
     by_id = {record.record_id: record for record in records}
-    selected = by_id.get(selected_id) if selected_id else None
-    return (selected,) if selected is not None else ()
+    selected = tuple(
+        by_id[identifier]
+        for identifier in selected_ids
+        if identifier in by_id
+    )
+    return selected if len(selected) == len(selected_ids) else ()
 
 
 def _pending_resource_intent(
@@ -668,6 +817,7 @@ class DomainResourceQueryService:
         interpretation: QueryInterpretation | None = None,
         selected_canonical_ids: tuple[str, ...] = (),
         conversation_state: ConversationState | None = None,
+        clarification_option_ids: tuple[str, ...] = (),
     ) -> AskResponse | None:
         pattern = ACCOMMODATION_PATTERN if self.domain == "accommodation" else SUPPORT_PATTERN
         has_domain_signal = bool(
@@ -725,7 +875,11 @@ class DomainResourceQueryService:
             unevaluated = filter_outcome.unknown_records
             qualifying_rooms = filter_outcome.qualifying_rooms
         pending_matches = _pending_resource_selection(
-            question, pending, records, self.domain
+            question,
+            pending,
+            records,
+            self.domain,
+            clarification_option_ids,
         )
         resolved_ids = list(selected_canonical_ids)
         if (
@@ -1109,6 +1263,41 @@ class DomainResourceQueryService:
             selected_canonical_ids=tuple(record.entity_id for record in selected),
             canonical_sources=tuple(str(record.canonical_url) for record in trace_records),
             qualifying_rooms=qualifying_rooms,
+        )
+        public_result_set = result_set or parent
+        public_records = tuple(
+            record
+            for record in selected
+            if isinstance(record, AccommodationRecord)
+            and (not discovery or record in matched)
+        )
+        if COMPARE_PATTERN.search(question) and public_records:
+            public_items = [
+                _public_comparison_item(public_records, public_result_set).model_dump(
+                    mode="json"
+                )
+            ]
+        else:
+            public_items = [
+                _public_result_item(record, public_result_set).model_dump(mode="json")
+                for record in public_records
+            ]
+        actions = (
+            _public_application_actions(public_records)
+            if APPLICATION_PATTERN.search(question)
+            or LIVE_AVAILABILITY_PATTERN.search(question)
+            else []
+        )
+        response = response.model_copy(
+            update={
+                "items": public_items,
+                "actions": actions,
+                "answer_state": (
+                    evidence_bundle.answer_state
+                    if evidence_bundle is not None
+                    else AnswerState.UNKNOWN
+                ),
+            }
         )
         return ResourceQueryOutcome(response=response, state=updated, trace=trace)
 

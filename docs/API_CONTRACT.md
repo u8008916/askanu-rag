@@ -22,7 +22,9 @@ Request:
     "result_sets":[],
     "selected_result":null,
     "pending_clarification":null
-  }
+  },
+  "selected_result":null,
+  "clarification_selection":null
 }
 ```
 
@@ -37,6 +39,16 @@ History and state have different roles: `history` is bounded recent language
 context; `conversation_state` is bounded structured semantic context. Neither
 is institutional factual evidence. There is no server session ID/store,
 persistent profile, account memory, Redis/cache or sticky-session requirement.
+
+`selected_result` is an optional generic clicked-result input containing
+`result_set_id`, `canonical_id`, and one-based `ordinal`. All three values must
+agree with a retained ResultSet and RAG re-resolves the identity against current
+approved repository evidence before use. `clarification_selection` is an
+optional generic structured response containing the current `clarification_id`
+and one or more `option_ids`. IDs must belong to the current pending option set;
+multiple IDs additionally require `allow_multiple: true`. Both inputs are
+untrusted context and cannot supply institutional facts, URLs, or arbitrary
+record identities.
 
 Frozen request transport limits:
 
@@ -98,6 +110,8 @@ Error responses use controlled JSON with the existing `error` status and respons
   "status":"error",
   "answer":"The request could not be completed.",
   "items":[],
+  "answer_state":null,
+  "actions":[],
   "sources":[],
   "clarification":null,
   "request_id":"req_...",
@@ -105,9 +119,11 @@ Error responses use controlled JSON with the existing `error` status and respons
 }
 ```
 
-The additive `conversation_state` response field is present for every Ask
-status. Existing response status, answer, item, source, clarification and
-request-ID semantics are unchanged.
+The additive `conversation_state`, `answer_state`, and `actions` response fields
+are present for every Ask status. `answer_state` is null when the route does not
+produce a shared evidence state; otherwise it is `CONFIRMED`, `DERIVED`,
+`PARTIAL`, or `UNKNOWN`. `actions` contains only validated backend projections,
+never links parsed from generated prose, history, or user input.
 
 The answer may provide a safe, user-facing explanation. Never return stack traces, credentials, secrets, prompts or internal dependency diagnostics. The exact 5xx code depends on the failure; this contract does not prescribe a separate code for each dependency.
 
@@ -117,6 +133,8 @@ The answer may provide a safe, user-facing explanation. Never return stack trace
   "status":"ok",
   "answer":"...",
   "items":[],
+  "answer_state":null,
+  "actions":[],
   "sources":[
     {
       "record_id":"course:COMP1110:2026",
@@ -132,6 +150,30 @@ The answer may provide a safe, user-facing explanation. Never return stack trace
 }
 ```
 
+Accommodation and later verticals reuse `items` for shared structured results.
+A result item has `type: "result"`, stored provenance (`record_id`, `source_id`,
+`url`, `domain`), stable `canonical_id`, title, optional ResultSet identity and
+ordinal, and a `fields` object containing only source-backed display values. A
+backend-authored comparison uses `type: "comparison"`, ordered record
+identities, and named fields whose per-record values explicitly state
+`published` or `not_published`. The App does not reconstruct comparisons from
+answer prose or compare cards itself.
+
+A structured action currently uses this reusable shape:
+
+```json
+{
+  "type":"application",
+  "label":"Apply now",
+  "url":"https://anu.starrezhousing.com/StarRezPortalX",
+  "record_id":"accommodation:residence:example-hall",
+  "source_id":"accommodation_anu_study"
+}
+```
+
+Only a stored, model-validated approved `application_url` may populate this
+action.
+
 ### Source object identifiers
 
 Every source object contains `record_id`, `source_id`, `title`, `url`, and `domain`.
@@ -146,6 +188,8 @@ Every source object contains `record_id`, `source_id`, `title`, `url`, and `doma
   "status":"needs_clarification",
   "answer":"Do you mean COMP1110 or COMP1600?",
   "items":[],
+  "answer_state":null,
+  "actions":[],
   "sources":[],
   "clarification":{
     "id":"clar-42",
@@ -234,6 +278,20 @@ Preserve option order for `first`/`second`; `allow_multiple` supports `both`.
 Clear pending clarification when resolved, corrected, switched to a new topic,
 or cleared with Clear Chat. This is untrusted current-session context, not
 factual evidence.
+
+The equivalent structured multi-selection request is:
+
+```json
+{
+  "question":"Use those options",
+  "history":[],
+  "conversation_state":{"pending_clarification":{"id":"clar-42","type":"entity_selection","options":[{"id":"record-a","label":"A"},{"id":"record-b","label":"B"}],"allow_multiple":true}},
+  "clarification_selection":{"clarification_id":"clar-42","option_ids":["record-a","record-b"]}
+}
+```
+
+Every selected ID is checked against both the pending options and current
+approved repository evidence. Foreign or stale values cannot produce facts.
 
 ## GET /api/v1/events/upcoming?limit=5
 Deterministic; `Australia/Canberra`; upcoming only; ascending start time; default 5.
