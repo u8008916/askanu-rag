@@ -855,6 +855,60 @@ def test_natural_continuation_variants_use_the_retained_cursor(phrase: str) -> N
     ]
 
 
+def test_natural_continuation_rejects_missing_cursor() -> None:
+    conversation = Conversation(_twelve_residences())
+    first = conversation.ask("Show me accommodation options")
+    state_without_cursor = {
+        **conversation.state,
+        "result_page": None,
+    }
+
+    response = conversation.client.post(
+        "/api/v1/ask",
+        json={
+            "question": "show more",
+            "history": conversation.history,
+            "conversation_state": state_without_cursor,
+        },
+    )
+
+    assert first["result_page"]["next_ordinal"] == 6
+    assert response.status_code == 400
+
+
+def test_natural_continuation_rejects_cursor_for_different_result_set() -> None:
+    conversation = Conversation(_twelve_residences())
+    first = conversation.ask("Show me accommodation options")
+    active_result_set = conversation.state["result_sets"][0]
+    other_result_set_id = "rs:accommodation:other"
+    other_result_set = {
+        **active_result_set,
+        "result_set_id": other_result_set_id,
+    }
+    state_with_wrong_cursor = {
+        **conversation.state,
+        "result_sets": [active_result_set, other_result_set],
+        "result_page": {
+            "result_set_id": other_result_set_id,
+            "next_ordinal": 6,
+        },
+    }
+
+    response = conversation.client.post(
+        "/api/v1/ask",
+        json={
+            "question": "show more",
+            "history": conversation.history,
+            "conversation_state": state_with_wrong_cursor,
+        },
+    )
+
+    assert first["result_page"]["result_set_id"] == active_result_set[
+        "result_set_id"
+    ]
+    assert response.status_code == 400
+
+
 def test_page_two_click_keeps_original_result_set_ordinal() -> None:
     conversation = Conversation(_twelve_residences())
     first = conversation.ask("Show me accommodation options")
