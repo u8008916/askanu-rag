@@ -98,7 +98,7 @@ def effective_embedding_version(model_version: str, policy_version: str) -> str:
 
     if not model_version.strip() or not policy_version.strip():
         raise ValueError("embedding and retrieval policy versions must not be blank")
-    return f"{model_version.strip()}+{policy_version.strip()}"
+    return f"{model_version.strip()}:{policy_version.strip()}"
 
 
 class EmbeddingIndexService:
