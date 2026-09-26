@@ -9,14 +9,21 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import TypeAdapter, ValidationError
 
 from askanu_rag.main import create_app
 from askanu_rag.models import (
     AnswerState,
     AccommodationRoom,
+    AskResponse,
     ConstraintSemanticType,
     Domain,
     EntityKind,
+    OkResponse,
+    PublicComparisonField,
+    PublicComparisonItem,
+    PublicComparisonValue,
+    PublicResultItem,
     ResultSetStatus,
 )
 from askanu_rag.retrieval import (
@@ -126,7 +133,7 @@ class Conversation:
             "/api/v1/ask",
             json=request_body,
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         body = response.json()
         self.state = body["conversation_state"]
         turn = len(self.history) + 1
@@ -140,6 +147,7 @@ class Conversation:
                 },
             )
         )
+        self.history = self.history[-10:]
         return body
 
 
@@ -353,6 +361,26 @@ def test_qualifying_room_preserves_its_complete_paired_context() -> None:
     assert trace.qualifying_rooms[0].inclusions == "Utilities and internet"
     assert trace.qualifying_rooms[0].other_fees == "A$250 refundable deposit"
     assert "Rates from A$999/week" not in trace.evidence_bundle.selected_evidence[0].evidence_text
+
+
+def test_public_result_exposes_exact_producer_shaped_qualifying_room() -> None:
+    conversation = Conversation((PRODUCER_380,))
+
+    body = conversation.ask("accommodation under $450")
+
+    assert body["items"][0]["qualifying_evidence"] == {
+        "type": "room_rate",
+        "room_name": "Standard",
+        "rate": "$380.00",
+        "cost_period": "2027 Indicative costs",
+        "contract": "44 weeks",
+        "inclusions": "Internet included",
+        "other_fees": "Refundable Deposit: $1,300",
+    }
+    unfiltered = Conversation((PRODUCER_380,)).ask(
+        "Show me accommodation options"
+    )
+    assert unfiltered["items"][0]["qualifying_evidence"] is None
 
 
 @pytest.mark.parametrize(
@@ -744,3 +772,304 @@ def test_course_switch_then_return_recovers_typed_residence() -> None:
     assert trace.interpretation.intent.operation == "return_topic"
     assert trace.interpretation.entity.kind == EntityKind.RESIDENCE
     assert trace.selected_canonical_ids == ("bravo-hall",)
+
+
+def _twelve_residences():
+    return tuple(
+        _residence(
+            f"page-{index}-hall",
+            f"Page {index} Hall",
+            rate=f"${300 + index}.00",
+            catering=["Self-catered" if index % 2 else "Catered meal plan"],
+        )
+        for index in range(1, 13)
+    )
+
+
+def _next_page_request(body):
+    page = body["result_page"]
+    assert page["next_ordinal"] is not None
+    return {
+        "result_set_id": page["result_set_id"],
+        "start_ordinal": page["next_ordinal"],
+        "limit": 5,
+    }
+
+
+def test_stable_result_continuation_pages_twelve_without_reranking() -> None:
+    records = _twelve_residences()
+    conversation = Conversation(records)
+
+    first = conversation.ask("Show me accommodation options")
+    second = conversation.ask(
+        "Show more", result_page=_next_page_request(first)
+    )
+    third = conversation.ask(
+        "Show me more", result_page=_next_page_request(second)
+    )
+    terminal = conversation.ask("What else?")
+
+    result_set = _latest_result(first)
+    result_set_id = result_set["result_set_id"]
+    pages = (first, second, third)
+    assert [item["ordinal"] for item in first["items"]] == [1, 2, 3, 4, 5]
+    assert [item["ordinal"] for item in second["items"]] == [6, 7, 8, 9, 10]
+    assert [item["ordinal"] for item in third["items"]] == [11, 12]
+    assert [page["result_page"]["result_set_id"] for page in pages] == [
+        result_set_id,
+        result_set_id,
+        result_set_id,
+    ]
+    assert third["result_page"] == {
+        "result_set_id": result_set_id,
+        "start_ordinal": 11,
+        "returned": 2,
+        "has_more": False,
+        "next_ordinal": None,
+    }
+    assert terminal["items"] == []
+    assert terminal["result_page"] == {
+        "result_set_id": result_set_id,
+        "start_ordinal": 13,
+        "returned": 0,
+        "has_more": False,
+        "next_ordinal": None,
+    }
+    all_ids = [
+        item["canonical_id"] for page in pages for item in page["items"]
+    ]
+    assert all_ids == result_set["ordered_canonical_ids"]
+    assert len(all_ids) == len(set(all_ids)) == 12
+
+
+@pytest.mark.parametrize("phrase", ("show more", "show me more", "what else?"))
+def test_natural_continuation_variants_use_the_retained_cursor(phrase: str) -> None:
+    conversation = Conversation(_twelve_residences())
+    first = conversation.ask("Show me accommodation options")
+
+    second = conversation.ask(phrase)
+
+    assert [item["ordinal"] for item in second["items"]] == [6, 7, 8, 9, 10]
+    assert second["result_page"]["result_set_id"] == first["result_page"][
+        "result_set_id"
+    ]
+
+
+def test_page_two_click_keeps_original_result_set_ordinal() -> None:
+    conversation = Conversation(_twelve_residences())
+    first = conversation.ask("Show me accommodation options")
+    second = conversation.ask(
+        "Show me more", result_page=_next_page_request(first)
+    )
+    seventh = second["items"][1]
+
+    body = conversation.ask(
+        "How much does it cost?",
+        selected_result={
+            "result_set_id": seventh["result_set_id"],
+            "canonical_id": seventh["canonical_id"],
+            "ordinal": seventh["ordinal"],
+        },
+    )
+
+    assert seventh["ordinal"] == 7
+    assert body["conversation_state"]["selected_result"]["ordinal"] == 7
+    assert body["sources"][0]["record_id"] == seventh["record_id"]
+
+
+def test_refined_child_result_set_owns_its_continuation() -> None:
+    conversation = Conversation(_twelve_residences())
+    first = conversation.ask("Show me accommodation options")
+    parent_id = first["result_page"]["result_set_id"]
+
+    refined = conversation.ask("self-catered")
+    child = _latest_result(refined)
+    continued = conversation.ask("Show more")
+
+    assert child["parent_result_set_id"] == parent_id
+    assert refined["result_page"]["result_set_id"] == child["result_set_id"]
+    assert continued["result_page"]["result_set_id"] == child["result_set_id"]
+    assert continued["result_page"]["start_ordinal"] == 6
+    assert all(
+        item["canonical_id"] in child["ordered_canonical_ids"]
+        for item in continued["items"]
+    )
+
+
+def test_result_page_rejects_unknown_stale_invalid_oversized_and_injected_ids() -> None:
+    conversation = Conversation(_twelve_residences())
+    first = conversation.ask("Show me accommodation options")
+    valid = _next_page_request(first)
+
+    for bad_page in (
+        {**valid, "result_set_id": "rs:foreign:1"},
+        {**valid, "start_ordinal": 1},
+        {**valid, "start_ordinal": 0},
+        {**valid, "limit": 6},
+    ):
+        response = conversation.client.post(
+            "/api/v1/ask",
+            json={
+                "question": "Show more",
+                "history": conversation.history,
+                "conversation_state": conversation.state,
+                "result_page": bad_page,
+            },
+        )
+        assert response.status_code == 400
+
+    refined = conversation.ask("self-catered")
+    stale_parent = conversation.client.post(
+        "/api/v1/ask",
+        json={
+            "question": "Show more",
+            "history": conversation.history,
+            "conversation_state": conversation.state,
+            "result_page": valid,
+        },
+    )
+    assert refined["result_page"]["result_set_id"] != valid["result_set_id"]
+    assert stale_parent.status_code == 400
+
+    tampered_state = dict(conversation.state)
+    tampered_sets = [dict(item) for item in tampered_state["result_sets"]]
+    tampered_sets[0]["ordered_canonical_ids"][5] = "client-created-hall"
+    tampered_state["result_sets"] = tampered_sets
+    injected = conversation.client.post(
+        "/api/v1/ask",
+        json={
+            "question": "Show more",
+            "history": conversation.history,
+            "conversation_state": tampered_state,
+            "result_page": _next_page_request(refined),
+        },
+    )
+    assert injected.status_code == 400
+
+
+def test_public_item_union_validates_real_shapes_and_rejects_malformed_items() -> None:
+    result = PublicResultItem(
+        record_id=ALPHA.record_id,
+        source_id=ALPHA.source_id,
+        canonical_id=ALPHA.entity_id,
+        title=ALPHA.title,
+        url=ALPHA.canonical_url,
+        domain="accommodation",
+        result_set_id="rs:test:1",
+        ordinal=1,
+    )
+    comparison = PublicComparisonItem(
+        result_set_id="rs:test:1",
+        records=[result],
+        fields=[
+            PublicComparisonField(
+                name="location",
+                label="Location",
+                values=[
+                    PublicComparisonValue(
+                        record_id=ALPHA.record_id,
+                        value="Acton campus",
+                        state="published",
+                    )
+                ],
+            )
+        ],
+    )
+    adapter = TypeAdapter(AskResponse)
+
+    result_response = adapter.validate_python(
+        OkResponse(answer="result", items=[result], request_id="req-result")
+    )
+    comparison_response = adapter.validate_python(
+        OkResponse(
+            answer="comparison",
+            items=[comparison],
+            request_id="req-comparison",
+        )
+    )
+
+    assert isinstance(result_response.items[0], PublicResultItem)
+    assert isinstance(comparison_response.items[0], PublicComparisonItem)
+    with pytest.raises(ValidationError):
+        adapter.validate_python(
+            {
+                "status": "ok",
+                "answer": "bad",
+                "items": [{"type": "result", "record_id": "missing-fields"}],
+                "request_id": "req-bad",
+            }
+        )
+    with pytest.raises(ValidationError):
+        adapter.validate_python(
+            {
+                "status": "ok",
+                "answer": "bad discriminator",
+                "items": [{"type": "invented"}],
+                "request_id": "req-bad-type",
+            }
+        )
+
+
+def test_openapi_exposes_the_public_item_discriminator() -> None:
+    schema = create_app().openapi()
+    item_schema = schema["components"]["schemas"]["OkResponse"]["properties"][
+        "items"
+    ]["items"]
+
+    assert item_schema["discriminator"] == {
+        "propertyName": "type",
+        "mapping": {
+            "comparison": "#/components/schemas/PublicComparisonItem",
+            "job": "#/components/schemas/PublicJobItem",
+            "result": "#/components/schemas/PublicResultItem",
+        },
+    }
+
+
+def test_day4_structured_api_golden_flow() -> None:
+    course = load_course_program_records(
+        "fixtures/day5_course_program_records.json"
+    )[0]
+    conversation = Conversation((*_twelve_residences(), course))
+
+    page_one = conversation.ask("Show me accommodation options")
+    page_two = conversation.ask(
+        "Show me more", result_page=_next_page_request(page_one)
+    )
+    refined = conversation.ask("self-catered")
+    priced = conversation.ask("under $450")
+    compared = conversation.ask("compare first two")
+    selected = conversation.ask("tell me about the second one")
+    cost = conversation.ask("how much does it cost?")
+    vacancy = conversation.ask("is there availability?")
+    application = conversation.ask("how do I apply?")
+    course_body = conversation.ask("What are the prerequisites for COMP1110?")
+    returned = conversation.ask("back to accommodation")
+
+    assert [item["ordinal"] for item in page_one["items"]] == [1, 2, 3, 4, 5]
+    assert [item["ordinal"] for item in page_two["items"]] == [6, 7, 8, 9, 10]
+    assert page_one["result_page"]["result_set_id"] == page_two["result_page"][
+        "result_set_id"
+    ]
+    refined_set = _latest_result(refined)
+    priced_set = _latest_result(priced)
+    assert refined_set["parent_result_set_id"] == page_one["result_page"][
+        "result_set_id"
+    ]
+    assert priced_set["parent_result_set_id"] == refined_set["result_set_id"]
+    assert all(
+        item["qualifying_evidence"]["type"] == "room_rate"
+        for item in priced["items"]
+    )
+    assert compared["items"][0]["type"] == "comparison"
+    second_record_id = compared["items"][0]["records"][1]["record_id"]
+    assert selected["sources"][0]["record_id"] == second_record_id
+    assert cost["sources"][0]["record_id"] == second_record_id
+    assert "$" in cost["answer"]
+    assert vacancy["status"] == "insufficient_evidence"
+    assert vacancy["answer_state"] == "UNKNOWN"
+    assert application["actions"][0]["type"] == "application"
+    assert application["actions"][0]["record_id"] == second_record_id
+    assert course_body["sources"][0]["domain"] == "courses"
+    assert returned["sources"][0]["record_id"] == second_record_id
+    assert conversation.traces[-1].interpretation.intent.operation == "return_topic"

@@ -17,6 +17,7 @@ from askanu_rag.models import (
     JobRecord,
     NeedsClarificationResponse,
     OkResponse,
+    PublicJobItem,
 )
 from askanu_rag.retrieval import JobReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
@@ -621,7 +622,9 @@ class JobQueryService:
             return OkResponse(
                 answer="\n".join(_job_answer(record, today) for record in records),
                 items=[
-                    current_job_item(record).model_dump(mode="json")
+                    PublicJobItem(
+                        **current_job_item(record).model_dump(mode="python")
+                    )
                     for record in records
                 ],
                 sources=[_source_from_record(record) for record in records],

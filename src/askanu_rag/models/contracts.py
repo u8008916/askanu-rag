@@ -80,12 +80,23 @@ class ResultSelection(ContractModel):
     ordinal: int = Field(strict=True, ge=1, le=MAX_RESULT_IDENTITIES)
 
 
+class ResultPageRequest(ContractModel):
+    """Bounded presentation request over one authoritative retained ResultSet."""
+
+    result_set_id: str = Field(min_length=1, max_length=200)
+    start_ordinal: int = Field(
+        strict=True, ge=1, le=MAX_RESULT_IDENTITIES + 1
+    )
+    limit: int = Field(strict=True, ge=1, le=5)
+
+
 class AskRequest(ContractModel):
     question: str = Field(max_length=MAX_QUESTION_CHARS)
     history: list[HistoryTurn] = Field(max_length=MAX_HISTORY_TURNS)
     conversation_state: ConversationState = Field(default_factory=ConversationState)
     selected_result: ResultSelection | None = None
     clarification_selection: ClarificationSelection | None = None
+    result_page: ResultPageRequest | None = None
 
     @field_validator("question")
     @classmethod
@@ -153,6 +164,33 @@ class AskRequest(ContractModel):
                 raise ValueError("clarification selection contains a foreign option")
             if len(selection.option_ids) > 1 and not pending.allow_multiple:
                 raise ValueError("clarification does not allow multiple selections")
+        if self.result_page is not None:
+            page = self.result_page
+            result_set = next(
+                (
+                    item
+                    for item in self.conversation_state.result_sets
+                    if item.result_set_id == page.result_set_id
+                ),
+                None,
+            )
+            if result_set is None:
+                raise ValueError("result page set is not retained")
+            if result_set.status.value != "RESULTS":
+                raise ValueError("result page requires a RESULTS result set")
+            if (
+                self.conversation_state.focus is None
+                or self.conversation_state.focus.result_set_id
+                != page.result_set_id
+            ):
+                raise ValueError("result page set is stale or foreign to current focus")
+            cursor = self.conversation_state.result_page
+            if cursor is None or cursor.result_set_id != page.result_set_id:
+                raise ValueError("result page cursor is not current")
+            if page.start_ordinal != cursor.next_ordinal:
+                raise ValueError("result page start must match the server cursor")
+            if page.start_ordinal > len(result_set.ordered_canonical_ids) + 1:
+                raise ValueError("result page start exceeds the retained ordering")
         return self
 
 
@@ -165,6 +203,18 @@ class Source(ContractModel):
 
 
 PublicFieldValue = str | list[str] | None
+
+
+class PublicRoomRateEvidence(ContractModel):
+    """One named room whose published weekly rate proved a numeric match."""
+
+    type: Literal["room_rate"] = "room_rate"
+    room_name: str
+    rate: str
+    cost_period: str
+    contract: str | None
+    inclusions: str | None
+    other_fees: str | None
 
 
 class PublicResultItem(ContractModel):
@@ -180,6 +230,7 @@ class PublicResultItem(ContractModel):
     result_set_id: str | None = None
     ordinal: int | None = Field(default=None, strict=True, ge=1)
     fields: dict[str, PublicFieldValue] = Field(default_factory=dict)
+    qualifying_evidence: PublicRoomRateEvidence | None = None
 
 
 class PublicComparisonValue(ContractModel):
@@ -203,6 +254,58 @@ class PublicComparisonItem(ContractModel):
     fields: list[PublicComparisonField]
 
 
+class CurrentJobItem(ContractModel):
+    """Minimal source-grounded DTO for the deterministic Current Jobs list."""
+
+    record_id: str
+    source_id: str
+    job_id: str
+    title: str
+    employment_types: list[str]
+    location: str | None
+    classification: str | None
+    salary: str | None
+    closing_text: str | None
+    closing_date: str | None
+    closing_at: str | None
+    status: Literal["current"]
+    url: HttpUrl
+    domain: Literal["jobs"]
+
+
+class PublicJobItem(CurrentJobItem):
+    """Typed Jobs shape used only inside the shared Ask response."""
+
+    type: Literal["job"] = "job"
+
+
+PublicItem = Annotated[
+    PublicResultItem | PublicComparisonItem | PublicJobItem,
+    Field(discriminator="type"),
+]
+
+
+class ResultPage(ContractModel):
+    """Server-authored metadata for one stable ResultSet presentation page."""
+
+    result_set_id: str
+    start_ordinal: int = Field(strict=True, ge=1, le=MAX_RESULT_IDENTITIES + 1)
+    returned: int = Field(strict=True, ge=0, le=5)
+    has_more: bool
+    next_ordinal: int | None = Field(
+        default=None, strict=True, ge=1, le=MAX_RESULT_IDENTITIES
+    )
+
+    @model_validator(mode="after")
+    def page_metadata_is_consistent(self) -> "ResultPage":
+        expected = self.start_ordinal + self.returned
+        if self.has_more and self.next_ordinal != expected:
+            raise ValueError("continued page requires the next contiguous ordinal")
+        if not self.has_more and self.next_ordinal is not None:
+            raise ValueError("terminal page cannot advertise another ordinal")
+        return self
+
+
 class ResponseAction(ContractModel):
     """Validated backend action; never synthesized from answer or user text."""
 
@@ -215,9 +318,12 @@ class ResponseAction(ContractModel):
 
 class ResponseBody(ContractModel):
     answer: str
-    items: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[PublicItem] = Field(default_factory=list)
     answer_state: AnswerState | None = None
     actions: list[ResponseAction] = Field(default_factory=list)
+    result_page: ResultPage | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     sources: list[Source] = Field(default_factory=list)
     request_id: str
     conversation_state: ConversationState = Field(default_factory=ConversationState)
@@ -275,25 +381,6 @@ AskResponse = Annotated[
 
 class HealthResponse(ContractModel):
     status: Literal["ok"] = "ok"
-
-
-class CurrentJobItem(ContractModel):
-    """Minimal source-grounded DTO for the deterministic Current Jobs list."""
-
-    record_id: str
-    source_id: str
-    job_id: str
-    title: str
-    employment_types: list[str]
-    location: str | None
-    classification: str | None
-    salary: str | None
-    closing_text: str | None
-    closing_date: str | None
-    closing_at: str | None
-    status: Literal["current"]
-    url: HttpUrl
-    domain: Literal["jobs"]
 
 
 class CurrentJobsResponse(ContractModel):

@@ -28,6 +28,7 @@ from askanu_rag.models.conversation_state import (
     ResolvedIntent,
     ResolvedSlot,
     ResultSet,
+    ResultPageCursor,
     ResultSetStatus,
     ScalarValue,
     ScopedConstraint,
@@ -289,6 +290,23 @@ def remember_result_set(
         )
         updates["selected_result"] = None
     return _replace(state, **updates)
+
+
+def remember_result_page(
+    state: ConversationState,
+    *,
+    result_set_id: str,
+    next_ordinal: int,
+) -> ConversationState:
+    """Advance presentation only; the retained ResultSet ordering is unchanged."""
+
+    return _replace(
+        state,
+        result_page=ResultPageCursor(
+            result_set_id=result_set_id,
+            next_ordinal=next_ordinal,
+        ),
+    )
 
 
 def refine_result_set(
