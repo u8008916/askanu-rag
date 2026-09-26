@@ -42,11 +42,14 @@ def resolve_result_page(
     ):
         result_set_id = interpretation.referenced_result_set_id
         cursor = state.result_page
-        start_ordinal = (
-            cursor.next_ordinal
-            if cursor is not None and cursor.result_set_id == result_set_id
-            else 6
-        )
+        if (
+            state.focus is None
+            or state.focus.result_set_id != result_set_id
+            or cursor is None
+            or cursor.result_set_id != result_set_id
+        ):
+            return None
+        start_ordinal = cursor.next_ordinal
         limit = 5
     else:
         return None
