@@ -624,6 +624,52 @@ def create_app(
 
         course_response = await course_queries.answer(course_question, request_id)
         if course_response is not None:
+            # When retrieval itself proves that this Course lookup resolved to
+            # exactly one approved source record, preserve that record identity
+            # for later conversational references. State remembers identity
+            # only; institutional facts continue to come from repository data.
+            response_sources = tuple(
+                getattr(course_response, "sources", ()) or ()
+            )
+            if (
+                isinstance(repository, CatalogReader)
+                and course_entity is not None
+                and course_entity.domain == Domain.COURSES
+                and course_entity.kind == EntityKind.COURSE
+                and len(response_sources) == 1
+            ):
+                source_record_id = getattr(
+                    response_sources[0],
+                    "record_id",
+                    None,
+                )
+                if source_record_id is not None:
+                    exact_record = next(
+                        (
+                            record
+                            for record in repository.all_records()
+                            if record.record_id == source_record_id
+                            and record.metadata_json.entity_type == "course"
+                            and record_code(record)
+                            == course_entity.canonical_id
+                        ),
+                        None,
+                    )
+                    if exact_record is not None:
+                        exact_entity = course_entity.model_copy(
+                            update={
+                                "canonical_name": exact_record.title,
+                                "source_record_id": exact_record.record_id,
+                                "mentioned_turn": (
+                                    request.state.conversation_state.turn_index
+                                ),
+                            }
+                        )
+                        request.state.conversation_state = remember_entity(
+                            request.state.conversation_state,
+                            exact_entity,
+                        )
+
             return _mark_response(request, course_response)
 
         # Unsupported ANU/follow-up questions abstain rather than claiming facts.

@@ -17,10 +17,11 @@ from askanu_rag.models import (
     ResolvedEntity,
 )
 from askanu_rag.models.conversation_state import ENTITY_DOMAIN
+from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 
 _SPACE_RE = re.compile(r"\s+")
 _COURSE_CODE_RE = re.compile(
-    r"\bCOMP\s*-?\s*(\d{4}[A-Z]?)\b",
+    r"(?<![A-Za-z0-9])([A-Za-z]{4}\s*-?\s*\d{4}[A-Za-z]?)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 
@@ -144,8 +145,11 @@ def resolve_explicit_entity(
     ]
     course_codes = tuple(
         dict.fromkeys(
-            f"COMP{match.group(1).upper()}"
+            code
             for match in _COURSE_CODE_RE.finditer(question)
+            if (
+                code := normalize_course_code_reference(match.group(1))
+            ) is not None
         )
     )
     if identifiers or course_codes:

@@ -392,3 +392,158 @@ def test_more_corrupted_course_name_is_not_silently_guessed():
         entity["canonical_id"] == "COMP1110"
         for entity in state["recent_entities"]
     )
+
+
+import pytest
+
+
+def test_non_comp_course_replaces_previous_comp_focus():
+    with TestClient(create_app(repository=repository())) as client:
+        comp = ask(
+            client,
+            "Tell me about COMP2200.",
+        )
+        comp_body = comp.json()
+
+        assert comp_body["status"] == "ok"
+        assert "COMP2200 (2026)" in comp_body["answer"]
+
+        biol = ask(
+            client,
+            "Tell me about BIOL9001P.",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP2200.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": comp_body["answer"],
+                },
+            ],
+            state=comp_body["conversation_state"],
+        )
+        biol_body = biol.json()
+
+        assert biol_body["status"] == "ok"
+        assert "BIOL9001P (2026)" in biol_body["answer"]
+
+        retained = biol_body["conversation_state"]["recent_entities"][0]
+        assert retained["canonical_id"] == "BIOL9001P"
+
+        followup = ask(
+            client,
+            "What are its prerequisites?",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": "Tell me about COMP2200.",
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": comp_body["answer"],
+                },
+                {
+                    "turn_id": "u2",
+                    "role": "user",
+                    "content": "Tell me about BIOL9001P.",
+                },
+                {
+                    "turn_id": "a2",
+                    "role": "assistant",
+                    "content": biol_body["answer"],
+                },
+            ],
+            state=biol_body["conversation_state"],
+        )
+
+    body = followup.json()
+
+    assert followup.status_code == 200
+    assert body["status"] == "insufficient_evidence"
+    assert "BIOL9001P (2026)" in body["answer"]
+    assert "COMP2200" not in body["answer"]
+    assert (
+        body["sources"][0]["record_id"]
+        == "courses:course:BIOL9001P_2026"
+    )
+
+
+_QASIM_ALL_COURSE_RECORDS = tuple(
+    (
+        record.metadata_json.course_code,
+        record.metadata_json.academic_year,
+        record.record_id,
+    )
+    for record in repository().all_records()
+    if record.metadata_json.entity_type == "course"
+)
+
+
+@pytest.mark.parametrize(
+    "course_code,academic_year,record_id",
+    _QASIM_ALL_COURSE_RECORDS,
+)
+def test_every_frozen_course_record_roundtrips_through_conversation_state(
+    course_code,
+    academic_year,
+    record_id,
+):
+    question = f"Tell me about {course_code} in {academic_year}."
+
+    with TestClient(create_app(repository=repository())) as client:
+        first = ask(
+            client,
+            question,
+        )
+        first_body = first.json()
+
+        assert first.status_code == 200
+        assert first_body["status"] == "ok"
+        assert f"{course_code} ({academic_year})" in first_body["answer"]
+
+        assert len(first_body["sources"]) == 1
+        assert first_body["sources"][0]["record_id"] == record_id
+
+        retained = first_body["conversation_state"]["recent_entities"][0]
+        assert retained["canonical_id"] == course_code
+        assert retained["source_record_id"] == record_id
+
+        followup = ask(
+            client,
+            "What are its prerequisites?",
+            history=[
+                {
+                    "turn_id": "u1",
+                    "role": "user",
+                    "content": question,
+                },
+                {
+                    "turn_id": "a1",
+                    "role": "assistant",
+                    "content": first_body["answer"],
+                },
+            ],
+            state=first_body["conversation_state"],
+        )
+
+    followup_body = followup.json()
+
+    assert followup.status_code == 200
+    assert followup_body["status"] in {
+        "ok",
+        "insufficient_evidence",
+    }
+    assert followup_body["clarification"] is None
+    assert len(followup_body["sources"]) == 1
+    assert followup_body["sources"][0]["record_id"] == record_id
+
+    retained_after = (
+        followup_body["conversation_state"]["recent_entities"][0]
+    )
+    assert retained_after["canonical_id"] == course_code
+    assert retained_after["source_record_id"] == record_id
