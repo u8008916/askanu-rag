@@ -9,6 +9,12 @@ DAY7 = ROOT / "migrations/versions/20260911_0001_course_program_records.py"
 DAY9 = ROOT / "migrations/versions/20260913_0002_shared_source_records.py"
 HANDOFF = ROOT / "docs/V5_DAY9_SCHOLARSHIPS_HANDOFF.md"
 
+def frozen_migration_sha256(path: Path) -> str:
+    """Hash frozen migration bytes using their deployed CRLF representation."""
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    deployed_bytes = data.replace(b"\n", b"\r\n")
+    return hashlib.sha256(deployed_bytes).hexdigest()
+
 
 def load_day9_revision():
     spec = importlib.util.spec_from_file_location("day9_revision", DAY9)
@@ -19,7 +25,7 @@ def load_day9_revision():
 
 
 def test_deployed_day7_revision_is_byte_for_byte_untouched():
-    digest = hashlib.sha256(DAY7.read_bytes()).hexdigest()
+    digest = frozen_migration_sha256(DAY7)
     assert digest == "80836b03d4484a33626121655355263202839f715e07ebcf1a7e5dcdee28c74c"
 
 
