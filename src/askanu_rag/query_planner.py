@@ -7,7 +7,7 @@ from typing import Literal
 from askanu_rag.course_queries import COURSE_CODE_CANDIDATE_PATTERN, PREREQUISITES_INTENT_PATTERN
 from askanu_rag.retrieval.catalog import CatalogReader, normalize_title, record_code
 from askanu_rag.retrieval.identifiers import (
-    normalize_course_code,
+    normalize_course_code_reference,
     normalize_program_code,
     normalize_subplan_code,
 )
@@ -39,7 +39,10 @@ YEAR_PATTERN = re.compile(r"(?<!\d)\d{4}(?!\d)")
 
 def plan_query(question: str, catalog: CatalogReader) -> QueryPlan:
     courses = list(COURSE_CODE_CANDIDATE_PATTERN.finditer(question))
-    identities = [("course", normalize_course_code(match.group(1))) for match in courses]
+    identities = [
+        ("course", normalize_course_code_reference(match.group(1)))
+        for match in courses
+    ]
     spans = [match.span() for match in courses]
     # Known stored non-course identities are matched without inventing code grammars.
     known_non_courses = {

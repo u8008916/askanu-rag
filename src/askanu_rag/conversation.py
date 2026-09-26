@@ -10,7 +10,7 @@ from askanu_rag.course_queries import (
 )
 from askanu_rag.models import AskRequest, Clarification, ClarificationOption
 from askanu_rag.retrieval.catalog import CatalogReader, record_code
-from askanu_rag.retrieval.identifiers import normalize_course_code
+from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 
 
 SELECTION_PATTERN = re.compile(
@@ -24,7 +24,7 @@ REFERENCE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 COURSE_FOLLOW_UP_PATTERN = re.compile(
-    r"\b(?:pre[-\s]?requisites?|requisites?|offerings?|offered|sessions?|"
+    r"\b(?:pre[-\s]?(?:requisites?|reqs?)|requisites?|offerings?|offered|sessions?|"
     r"semesters?|incompatibilit(?:y|ies)|assumed knowledge)\b",
     re.IGNORECASE,
 )
@@ -66,7 +66,7 @@ def _course_refs(text: str) -> tuple[str, ...]:
         dict.fromkeys(
             code
             for match in COURSE_CODE_CANDIDATE_PATTERN.finditer(text)
-            if (code := normalize_course_code(match.group(1))) is not None
+            if (code := normalize_course_code_reference(match.group(1))) is not None
         )
     )
 
@@ -268,7 +268,10 @@ def _resolve_pending(payload: AskRequest, catalog: CatalogReader):
 
 
 def resolve_current_session(
-    payload: AskRequest, catalog: CatalogReader
+    payload: AskRequest,
+    catalog: CatalogReader,
+    *,
+    resolved_course_code: str | None = None,
 ) -> ConversationResolution:
     """Resolve only entity/constraint meaning; facts always come from retrieval."""
 
@@ -313,6 +316,37 @@ def resolve_current_session(
     pending = _resolve_pending(payload, catalog)
     if pending is not None:
         return pending
+
+    # V7 structured state resolves conversational identity only. Institutional
+    # facts are still re-read from the current approved repository record.
+    if resolved_course_code is not None and (
+        REFERENCE_PATTERN.search(question)
+        or COURSE_FOLLOW_UP_PATTERN.search(question)
+    ):
+        records = _records_for_codes(
+            catalog,
+            (resolved_course_code,),
+            current_years,
+        )
+        clarification = _clarification(records, allow_multiple=False)
+        if clarification:
+            return ConversationResolution(
+                question,
+                clarification,
+                "Which academic year do you mean?",
+            )
+        if len(records) == 1:
+            history_text = tuple(
+                turn.content
+                for turn in reversed(payload.history)
+                if turn.role == "user"
+            )
+            return ConversationResolution(
+                _question_for(
+                    records,
+                    _intent((question,) + history_text),
+                )
+            )
 
     if not (
         REFERENCE_PATTERN.search(question) or COURSE_FOLLOW_UP_PATTERN.search(question)

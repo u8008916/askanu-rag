@@ -59,6 +59,7 @@ from askanu_rag.models import (
     ClarificationOption,
     CurrentJobsResponse,
     Domain,
+    EntityKind,
     ErrorResponse,
     HealthResponse,
     InsufficientEvidenceResponse,
@@ -463,7 +464,22 @@ def create_app(
 
         request_id = _request_id(request)
         if isinstance(repository, CatalogReader):
-            resolution = resolve_current_session(payload, repository)
+            resolved_entity = conversation_turn.interpretation.entity
+            resolved_course_code = (
+                resolved_entity.canonical_id
+                if (
+                    resolved_entity is not None
+                    and resolved_entity.domain == Domain.COURSES
+                    and resolved_entity.kind == EntityKind.COURSE
+                    and not conversation_turn.interpretation.requires_clarification
+                )
+                else None
+            )
+            resolution = resolve_current_session(
+                payload,
+                repository,
+                resolved_course_code=resolved_course_code,
+            )
             if resolution.clarification is not None:
                 return _mark_response(
                     request,

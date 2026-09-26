@@ -17,6 +17,23 @@ def normalize_course_code(identifier: str) -> str | None:
     return canonical
 
 
+def normalize_course_code_reference(identifier: str) -> str | None:
+    """Normalize a bounded user-written course-code reference.
+
+    Canonical storage validation remains strict. This accepts only the common
+    presentation forms COMP1110, COMP 1110 and COMP-1110 (including harmless
+    surrounding whitespace), then delegates to the strict canonical normalizer.
+    """
+
+    match = re.fullmatch(
+        r"\s*([A-Za-z]{4})\s*(?:-\s*)?(\d{4}[A-Za-z]?)\s*",
+        identifier,
+    )
+    if match is None:
+        return None
+    return normalize_course_code(f"{match.group(1)}{match.group(2)}")
+
+
 def normalize_program_code(identifier: str) -> str:
     """Apply conservative normalization without inventing a program grammar."""
 

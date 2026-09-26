@@ -17,7 +17,8 @@ from askanu_rag.models import (
     OkResponse,
     Source,
 )
-from askanu_rag.retrieval import CourseProgramReader, normalize_course_code
+from askanu_rag.retrieval import CourseProgramReader
+from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 from askanu_rag.synthesis import (
     SynthesisClient,
     SynthesisError,
@@ -26,11 +27,11 @@ from askanu_rag.synthesis import (
 )
 
 COURSE_CODE_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?<![A-Za-z0-9])([A-Za-z]{4}\s*\d{4}[A-Za-z]?)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])([A-Za-z]{4}\s*-?\s*\d{4}[A-Za-z]?)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 PREREQUISITES_INTENT_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:pre[-\s]?requisites?|requisites?)\b",
+    r"\b(?:pre[-\s]?(?:requisites?|reqs?)|requisites?)\b",
     re.IGNORECASE,
 )
 ACADEMIC_YEAR_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -58,7 +59,7 @@ def classify_course_prerequisites_query(
     normalized_codes = {
         code
         for match in candidate_matches
-        if (code := normalize_course_code(match.group(1))) is not None
+        if (code := normalize_course_code_reference(match.group(1))) is not None
     }
     if len(normalized_codes) != 1:
         return None

@@ -104,7 +104,7 @@ def _typed_reference(question: str) -> tuple[Domain, EntityKind] | None:
 def _domain_from_words(question: str) -> Domain | None:
     normalised = _normalise(question)
     mapping = (
-        (("course", "prerequisite", "units"), Domain.COURSES),
+        (("course", "prerequisite", "prereq", "units"), Domain.COURSES),
         (("scholarship",), Domain.SCHOLARSHIPS),
         (("job", "role"), Domain.JOBS),
         (("accommodation", "residence", "hall", "lodge", "catered", "vacancy", "rooms available"), Domain.ACCOMMODATION),
@@ -239,7 +239,7 @@ def _intent(
     if pending and normalised in {"yes", "no", "first", "second", "both"}:
         return ResolvedIntent(name="clarification_response", operation="clarification_response")
     if "back to" in normalised:
-        family = "fact_lookup" if any(word in normalised for word in ("where", "cost", "units", "prerequisite", "catered")) else "lookup"
+        family = "fact_lookup" if any(word in normalised for word in ("where", "cost", "units", "prerequisite", "prereq", "catered")) else "lookup"
         return ResolvedIntent(name=family, operation="return_topic")
     if "any more" in normalised or "more results" in normalised:
         return ResolvedIntent(name="discover", operation="continue_results")
@@ -250,7 +250,7 @@ def _intent(
         return ResolvedIntent(name="compare", operation="compare")
     if refining and not explicit_entity:
         return ResolvedIntent(name="discover", operation="refine_results")
-    if any(word in normalised for word in ("prerequisite", "units", "where", "cost", "catered", "apply", "available", "vacancy", "close")):
+    if any(word in normalised for word in ("prerequisite", "prereq", "units", "where", "cost", "catered", "apply", "available", "vacancy", "close")):
         return ResolvedIntent(name="fact_lookup", operation="lookup")
     if has_constraints or any(word in normalised for word in ("show", "find", "what events", "which")):
         return ResolvedIntent(name="discover", operation="initial_discovery")
@@ -321,7 +321,7 @@ def interpret_turn(
         token in normalised
         for token in (
             "after ", "before ", "today", "tomorrow", "any more",
-            "cost", "apply", "available", "vacancy", "prerequisite", "units",
+            "cost", "apply", "available", "vacancy", "prerequisite", "prereq", "units",
             "where", "when", "close", "catered", "is it", "its ",
         )
         )
@@ -382,7 +382,7 @@ def interpret_turn(
             word in normalised
             for word in (
                 " it", "its ", "is it", "cost", "apply", "available",
-                "vacancy", "prerequisite", "units", "catered",
+                "vacancy", "prerequisite", "prereq", "units", "catered",
             )
         )
     ):

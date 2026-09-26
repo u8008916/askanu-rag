@@ -19,7 +19,10 @@ from askanu_rag.models import (
 from askanu_rag.models.conversation_state import ENTITY_DOMAIN
 
 _SPACE_RE = re.compile(r"\s+")
-_COURSE_CODE_RE = re.compile(r"\bCOMP\s*(\d{4}[A-Z]?)\b", re.IGNORECASE)
+_COURSE_CODE_RE = re.compile(
+    r"\bCOMP\s*-?\s*(\d{4}[A-Z]?)\b",
+    re.IGNORECASE,
+)
 
 
 def normalise_entity_text(value: str) -> str:
