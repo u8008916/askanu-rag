@@ -601,7 +601,28 @@ def create_app(
                 await event_queries.answer(resolved_question, request_id),
             )
 
-        course_response = await course_queries.answer(resolved_question, request_id)
+        # Safe aliases are resolved only by the bounded V7 understanding
+        # catalogue. Retrieval must consume that canonical identity on the same
+        # turn rather than trying to independently fuzzy-match the user's text.
+        #
+        # Preserve the original wording so fact intent (for example
+        # "prerequisites") is still planned normally; append only the approved
+        # canonical course identifier.
+        course_question = resolved_question
+        course_entity = conversation_turn.interpretation.entity
+        if (
+            course_entity is not None
+            and course_entity.domain == Domain.COURSES
+            and course_entity.kind == EntityKind.COURSE
+            and course_entity.resolution_basis == EntityResolutionBasis.SAFE_ALIAS
+            and not conversation_turn.interpretation.requires_clarification
+            and COURSE_CODE_CANDIDATE_PATTERN.search(course_question) is None
+        ):
+            course_question = (
+                f"{course_question.rstrip()} {course_entity.canonical_id}"
+            )
+
+        course_response = await course_queries.answer(course_question, request_id)
         if course_response is not None:
             return _mark_response(request, course_response)
 

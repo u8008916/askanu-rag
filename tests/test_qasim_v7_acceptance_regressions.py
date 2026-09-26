@@ -327,3 +327,68 @@ def test_explicit_new_course_request_supersedes_stale_year_clarification():
         )
 
     assert_comp1110_prerequisites(followup)
+
+
+def test_safe_alias_structurd_programming_retrieves_on_same_turn():
+    with TestClient(create_app(repository=repository())) as client:
+        response = ask(
+            client,
+            "Tell me about Structurd Programming.",
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "ok"
+    assert "COMP1110 (2026)" in body["answer"]
+
+    retained = body["conversation_state"]["recent_entities"][0]
+    assert retained["canonical_id"] == "COMP1110"
+    assert retained["resolution_basis"] == "safe_alias"
+
+
+def test_safe_alias_structured_programing_retrieves_on_same_turn():
+    with TestClient(create_app(repository=repository())) as client:
+        response = ask(
+            client,
+            "Tell me about Structured Programing.",
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "ok"
+    assert "COMP1110 (2026)" in body["answer"]
+
+    retained = body["conversation_state"]["recent_entities"][0]
+    assert retained["canonical_id"] == "COMP1110"
+    assert retained["resolution_basis"] == "safe_alias"
+
+
+def test_safe_alias_preserves_prerequisite_fact_intent():
+    with TestClient(create_app(repository=repository())) as client:
+        response = ask(
+            client,
+            "What are the prerequisites for Structurd Programming?",
+        )
+
+    assert_comp1110_prerequisites(response)
+
+
+def test_more_corrupted_course_name_is_not_silently_guessed():
+    with TestClient(create_app(repository=repository())) as client:
+        response = ask(
+            client,
+            "Tell me about Structred Prgraming.",
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] != "ok"
+
+    state = body["conversation_state"]
+    assert not any(
+        entity["canonical_id"] == "COMP1110"
+        for entity in state["recent_entities"]
+    )
