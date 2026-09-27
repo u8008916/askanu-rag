@@ -28,6 +28,56 @@ def _approved(record):
             and record.canonical_url.host == "programsandcourses.anu.edu.au")
 
 
+_OVERVIEW_URL_PATTERN = re.compile(
+    r"(?i)\b(?:https?://|www\.)[^\s<>]+"
+)
+
+_OVERVIEW_UNSAFE_EVIDENCE = re.compile(
+    # Navigation/active-content shapes remain forbidden.
+    r"https?://|www\.|\]\(|(?:javascript|data):|"
+    # Treat actual tag-shaped markup as unsafe while permitting legitimate
+    # mathematical comparisons such as >70% or <50%.
+    r"</?[a-z][^>]{0,200}>|"
+    # Detect instruction-shaped prompt injection rather than ordinary words
+    # such as "reveal patterns" or "ignore the impact".
+    r"\b(?:ignore|override|disregard)\s+"
+    r"(?:(?:all|any|the)\s+)?"
+    r"(?:(?:previous|prior|above|earlier|system|developer)\s+)?"
+    r"(?:instructions?|rules?|polic(?:y|ies)|prompts?)\b|"
+    r"\b(?:follow|obey|execute)\s+"
+    r"(?:(?:these|the|following)\s+){1,2}"
+    r"(?:instructions?|commands?|prompts?)\b|"
+    r"\b(?:reveal|show|print|disclose)\s+(?:the\s+)?"
+    r"(?:system|developer)\s+prompts?\b|"
+    r"\b(?:system|developer)\s+prompts?\b|"
+    # Encoded markup and control characters remain forbidden.
+    r"&(?:lt|gt|#\d+|#x[0-9a-f]+);|"
+    r"[\x00-\x08\x0b-\x1f\x7f]",
+    re.IGNORECASE,
+)
+
+
+def _overview_excerpt(content: str) -> str:
+    """Return bounded free-form overview prose without embedded navigation."""
+
+    excerpt = (
+        content
+        if len(content) <= 600
+        else content[:600].rsplit(" ", 1)[0] + "…"
+    )
+
+    return _OVERVIEW_URL_PATTERN.sub(
+        "[external link omitted]",
+        excerpt,
+    )
+
+
+def _overview_evidence_is_unsafe(value: str) -> bool:
+    """Check free-form overview evidence without rejecting benign prose."""
+
+    return _OVERVIEW_UNSAFE_EVIDENCE.search(value) is not None
+
+
 def _display_identity(record):
     prefix = (
         f"{record.metadata_json.entity_type.title()} "
@@ -237,7 +287,7 @@ class HybridQueryService:
             if plan.fact == "unsupported":
                 return None
             if plan.fact == "overview":
-                excerpt = record.content if len(record.content) <= 600 else record.content[:600].rsplit(" ", 1)[0] + "…"
+                excerpt = _overview_excerpt(record.content)
                 projected["content_excerpt"] = excerpt
                 sentence = f"{identity}. Stored excerpt: {excerpt}"
             elif plan.fact == "offerings":
@@ -276,7 +326,12 @@ class HybridQueryService:
                         return None
                     projected[fact] = value
                     sentence = f"{identity}. Stored {fact.replace('_', ' ')}: {value}"
-            if UNSAFE_EVIDENCE.search(sentence) or len(sentence) > 3000:
+            unsafe_evidence = (
+                _overview_evidence_is_unsafe(sentence)
+                if plan.fact == "overview"
+                else UNSAFE_EVIDENCE.search(sentence) is not None
+            )
+            if unsafe_evidence or len(sentence) > 3000:
                 raise SynthesisError()
             evidence.append(projected)
             sentences.append(sentence)
