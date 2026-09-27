@@ -202,6 +202,44 @@ def _guided_card_resolution(
 
 
 def _record_for_id(catalog: CatalogReader, record_id: str):
+    # Canonical Course source IDs have the form:
+    # courses:course:COMP1110_2026
+    #
+    # When possible, use the repository's deterministic Course lookup instead
+    # of materialising the entire Course catalogue just to recover one record.
+    prefix = "courses:course:"
+    finder = getattr(catalog, "find_course_by_code", None)
+
+    if finder is not None and record_id.startswith(prefix):
+        identity = record_id[len(prefix):]
+        code, separator, year = identity.rpartition("_")
+
+        if separator and code and len(year) == 4 and year.isdigit():
+            result = finder(code, year)
+
+            candidates = (
+                ()
+                if result is None
+                else result
+                if isinstance(result, tuple)
+                else (result,)
+            )
+
+            exact = next(
+                (
+                    record
+                    for record in candidates
+                    if record.record_id == record_id
+                    and record.metadata_json.entity_type == "course"
+                ),
+                None,
+            )
+
+            if exact is not None:
+                return exact
+
+    # Preserve the historical fallback for non-standard source IDs and
+    # catalogue implementations used by older tests.
     return next(
         (
             record
@@ -216,15 +254,69 @@ def _record_for_id(catalog: CatalogReader, record_id: str):
 def _records_for_codes(catalog: CatalogReader, codes, years=()):
     code_set = set(codes)
     year_set = set(years)
+
+    # A uniquely retained Course identity can use the deterministic repository
+    # lookup directly rather than materialising the complete Course catalogue.
+    if len(code_set) == 1 and len(year_set) <= 1:
+        finder = getattr(
+            catalog,
+            "find_course_by_code",
+            None,
+        )
+
+        if finder is not None:
+            code = next(
+                iter(code_set)
+            )
+
+            year = next(
+                iter(year_set),
+                None,
+            )
+
+            result = finder(
+                code,
+                year,
+            )
+
+            values = (
+                ()
+                if result is None
+                else result
+                if isinstance(
+                    result,
+                    tuple,
+                )
+                else (result,)
+            )
+
+            return tuple(
+                record
+                for record in values
+                if (
+                    record.metadata_json.entity_type
+                    == "course"
+                    and record_code(record)
+                    == code
+                    and (
+                        not year_set
+                        or record.metadata_json.academic_year
+                        in year_set
+                    )
+                )
+            )
+
     return tuple(
         record
         for record in catalog.all_records()
         if record.metadata_json.entity_type == "course"
         and record_code(record) in code_set
-        and (not year_set or record.metadata_json.academic_year in year_set)
+        and (
+            not year_set
+            or record.metadata_json.academic_year
+            in year_set
+        )
     )
-
-
 def _resolve_pending(payload: AskRequest, catalog: CatalogReader):
     pending = payload.conversation_state.pending_clarification
     if pending is None or pending.type != "entity_selection":

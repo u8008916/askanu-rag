@@ -196,12 +196,24 @@ class HybridQueryService:
         ]
         dense = []
         dense_status = "disabled"
+
+        # Avoid sending a redundant full-population ID array to PostgreSQL.
+        # Root-cause acceptance showed that 3,012 IDs changed an otherwise
+        # ~157 ms exact vector query into a ~23.4 s query. Keep the allowlist
+        # whenever any earlier hard filter actually narrowed the population.
+        dense_allowed_records = candidates
+        if (
+            {record.record_id for record in candidates}
+            == {record.record_id for record in records}
+        ):
+            dense_allowed_records = ()
+
         if self.vector is not None:
             try:
                 vector_hits = self.vector.search(
                     plan.semantic_query,
                     domain="courses",
-                    allowed_records=candidates,
+                    allowed_records=dense_allowed_records,
                     top_k=self.top_k,
                 )
                 dense_status = "ok"

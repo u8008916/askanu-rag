@@ -1,6 +1,7 @@
 """Small deterministic-first plan. Explicit constraints never become fallback hints."""
 
 import re
+from askanu_rag.retrieval.identifiers import normalize_course_code as _v7_normalize_course_code
 from dataclasses import dataclass
 from typing import Literal
 
@@ -38,7 +39,258 @@ SESSION_PATTERN = re.compile(r"\b(first semester|second semester|semester [12]|s
 YEAR_PATTERN = re.compile(r"(?<!\d)\d{4}(?!\d)")
 
 
+
+# V7_DAY3_FAST_COURSE_PLAN
+def _v7_fast_course_plan(question: str) -> QueryPlan | None:
+    """Resolve unambiguous Course requests without a catalogue-wide scan."""
+
+    course_matches = list(
+        COURSE_CODE_CANDIDATE_PATTERN.finditer(
+            question
+        )
+    )
+
+    spans = [
+        match.span()
+        for match in course_matches
+    ]
+
+    years = {
+        match.group()
+        for match in YEAR_PATTERN.finditer(
+            question
+        )
+        if not any(
+            match.start() < end
+            and match.end() > start
+            for start, end in spans
+        )
+    }
+
+    sessions = {
+        match.group()
+        .casefold()
+        .replace(
+            "semester 1",
+            "first semester",
+        )
+        .replace(
+            "semester 2",
+            "second semester",
+        )
+        for match
+        in SESSION_PATTERN.finditer(
+            question
+        )
+    }
+
+    mentions_course = bool(
+        re.search(
+            r"\bcourses?\b",
+            question,
+            re.I,
+        )
+    )
+
+    mentions_other_entity = bool(
+        re.search(
+            r"\b(?:programs?|majors?|minors?|"
+            r"speciali[sz]ations?)\b",
+            question,
+            re.I,
+        )
+    )
+
+    invalid = (
+        len(years) > 1
+        or len(sessions) > 1
+        or bool(
+            re.search(
+                r"\b(?:current|latest|next|last|this)\s+"
+                r"(?:academic\s+)?(?:year|semester|session)\b|"
+                r"\bthird semester\b",
+                question,
+                re.I,
+            )
+        )
+    )
+
+    if re.search(
+        r"\bco-?requisites?\b",
+        question,
+        re.I,
+    ):
+        fact = "corequisites"
+
+    elif re.search(
+        r"\badmission requirements?\b",
+        question,
+        re.I,
+    ):
+        fact = "admission_requirements"
+
+    elif re.search(
+        r"\bprogram requirements?\b",
+        question,
+        re.I,
+    ):
+        fact = "program_requirements"
+
+    elif re.search(
+        r"\blearning outcomes?\b",
+        question,
+        re.I,
+    ):
+        fact = "learning_outcomes"
+
+    elif re.search(
+        r"\bdescription\b",
+        question,
+        re.I,
+    ):
+        fact = "description"
+
+    elif PREREQUISITES_INTENT_PATTERN.search(
+        question
+    ):
+        fact = "prerequisites"
+
+    elif re.search(
+        r"\brequirements?\b",
+        question,
+        re.I,
+    ):
+        fact = "requirements"
+
+    elif re.search(
+        r"\b(?:offered|offerings?|semesters?|sessions?)\b",
+        question,
+        re.I,
+    ):
+        fact = "offerings"
+
+    elif re.search(
+        r"\bincompatibilit(?:y|ies)\b",
+        question,
+        re.I,
+    ):
+        fact = "incompatibilities"
+
+    elif re.search(
+        r"\bassumed knowledge\b",
+        question,
+        re.I,
+    ):
+        fact = "assumed_knowledge"
+
+    elif re.search(
+        r"\b(?:fees?|deadlines?|eligibility|guarantee)\b",
+        question,
+        re.I,
+    ):
+        fact = "unsupported"
+
+    else:
+        fact = "overview"
+
+    descriptive = bool(
+        re.search(
+            r"\b(?:teaches?|covers?|learn|study|related to|"
+            r"focused on|involv(?:e|es|ing)|about)\b",
+            question,
+            re.I,
+        )
+    )
+
+    # One explicit Course code is already a deterministic Course identity.
+    # Mixed entity wording and the existing "after/following" hybrid shape
+    # deliberately remain on the original planner path.
+    if (
+        len(course_matches) == 1
+        and not mentions_other_entity
+        and not re.search(
+            r"\b(?:after|following)\b",
+            question,
+            re.I,
+        )
+    ):
+        identifier = _v7_normalize_course_code(
+            course_matches[0].group(1)
+        )
+
+        if identifier is not None:
+            return QueryPlan(
+                "exact",
+                identifiers=(
+                    (
+                        "course",
+                        identifier,
+                    ),
+                ),
+                entity_type=(
+                    "course"
+                    if mentions_course
+                    else None
+                ),
+                academic_year=next(
+                    iter(years),
+                    None,
+                ),
+                session=next(
+                    iter(sessions),
+                    None,
+                ),
+                fact=fact,
+                list_shaped=False,
+                invalid_constraints=invalid,
+            )
+
+    # A query explicitly asking for a Course by topic does not need all
+    # 3,012 records merely to establish its route. Retrieval still reads and
+    # ranks the authoritative Course corpus afterwards.
+    if (
+        not course_matches
+        and mentions_course
+        and not mentions_other_entity
+        and descriptive
+        and fact == "overview"
+        and not re.search(
+            r"\b(?:named|called)\b|[\"']",
+            question,
+            re.I,
+        )
+    ):
+        return QueryPlan(
+            "semantic",
+            entity_type="course",
+            academic_year=next(
+                iter(years),
+                None,
+            ),
+            session=next(
+                iter(sessions),
+                None,
+            ),
+            fact="overview",
+            list_shaped=bool(
+                re.search(
+                    r"\bcourses\b",
+                    question,
+                    re.I,
+                )
+            ),
+            semantic_query=question,
+            invalid_constraints=invalid,
+        )
+
+    return None
+
+
 def plan_query(question: str, catalog: CatalogReader) -> QueryPlan:
+    fast_plan = _v7_fast_course_plan(question)
+    if fast_plan is not None:
+        return fast_plan
+
     courses = list(COURSE_CODE_CANDIDATE_PATTERN.finditer(question))
     identities = [
         ("course", normalize_course_code_reference(match.group(1)))

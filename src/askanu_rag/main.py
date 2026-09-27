@@ -132,6 +132,74 @@ def controlled_error_response(
     return JSONResponse(status_code=status_code, content=content)
 
 
+def _course_record_for_source_id(
+    repository,
+    record_id: str,
+    *,
+    expected_code: str | None = None,
+):
+    """Resolve one canonical Course source record without a catalogue scan."""
+
+    prefix = "courses:course:"
+    finder = getattr(repository, "find_course_by_code", None)
+
+    if finder is not None and record_id.startswith(prefix):
+        identity = record_id[len(prefix):]
+        code, separator, year = identity.rpartition("_")
+
+        if (
+            separator
+            and code
+            and len(year) == 4
+            and year.isdigit()
+            and (
+                expected_code is None
+                or code == expected_code
+            )
+        ):
+            result = finder(code, year)
+
+            candidates = (
+                ()
+                if result is None
+                else result
+                if isinstance(result, tuple)
+                else (result,)
+            )
+
+            exact = next(
+                (
+                    record
+                    for record in candidates
+                    if record.record_id == record_id
+                    and record.metadata_json.entity_type == "course"
+                    and (
+                        expected_code is None
+                        or record_code(record) == expected_code
+                    )
+                ),
+                None,
+            )
+
+            if exact is not None:
+                return exact
+
+    # Compatibility fallback for non-standard source IDs / repositories.
+    return next(
+        (
+            record
+            for record in repository.all_records()
+            if record.record_id == record_id
+            and record.metadata_json.entity_type == "course"
+            and (
+                expected_code is None
+                or record_code(record) == expected_code
+            )
+        ),
+        None,
+    )
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", None) or new_request_id()
 
@@ -494,14 +562,9 @@ def create_app(
             # stored Course record. Persist that source identity in semantic
             # state so later references keep the selected academic year.
             if resolution.selected_record_id is not None:
-                selected_record = next(
-                    (
-                        record
-                        for record in repository.all_records()
-                        if record.record_id == resolution.selected_record_id
-                        and record.metadata_json.entity_type == "course"
-                    ),
-                    None,
+                selected_record = _course_record_for_source_id(
+                    repository,
+                    resolution.selected_record_id,
                 )
                 if selected_record is not None:
                     selected_entity = ResolvedEntity(
@@ -644,16 +707,10 @@ def create_app(
                     None,
                 )
                 if source_record_id is not None:
-                    exact_record = next(
-                        (
-                            record
-                            for record in repository.all_records()
-                            if record.record_id == source_record_id
-                            and record.metadata_json.entity_type == "course"
-                            and record_code(record)
-                            == course_entity.canonical_id
-                        ),
-                        None,
+                    exact_record = _course_record_for_source_id(
+                        repository,
+                        source_record_id,
+                        expected_code=course_entity.canonical_id,
                     )
                     if exact_record is not None:
                         exact_entity = course_entity.model_copy(
