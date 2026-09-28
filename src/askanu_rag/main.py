@@ -42,6 +42,7 @@ from askanu_rag.job_queries import (
     current_job_item,
     is_plausible_job_question,
 )
+from askanu_rag.journey_presentation import integrate_course_presentation
 from askanu_rag.resource_queries import (
     DomainResourceQueryService,
     is_plausible_resource_question,
@@ -67,6 +68,8 @@ from askanu_rag.models import (
     InsufficientEvidenceResponse,
     NeedsClarificationResponse,
     OffTopicResponse,
+    QueryInterpretation,
+    ResolvedIntent,
     SemanticFocus,
     UpcomingEventsResponse,
 )
@@ -85,6 +88,8 @@ from askanu_rag.retrieval import (
     load_common_records_directory,
 )
 from askanu_rag.scholarship_queries import (
+    OPEN_APPLICATION_PATTERN,
+    SCHOLARSHIP_FOLLOW_UP_PATTERN,
     ScholarshipQueryService,
     is_plausible_scholarship_question,
 )
@@ -237,12 +242,17 @@ def _state_with_verified_result_selection(
         for item in state.result_sets
         if item.result_set_id == selection.result_set_id
     )
-    if (
-        result_set.domain not in {Domain.ACCOMMODATION, Domain.SUPPORT}
-        or not isinstance(repository, ResourceReader)
+    if result_set.domain == Domain.SCHOLARSHIPS and isinstance(
+        repository, ScholarshipReader
     ):
+        records = repository.all_scholarships()
+    elif (
+        result_set.domain in {Domain.ACCOMMODATION, Domain.SUPPORT}
+        and isinstance(repository, ResourceReader)
+    ):
+        records = repository.all_domain_records(result_set.domain.value)
+    else:
         raise StarletteHTTPException(status_code=400)
-    records = repository.all_domain_records(result_set.domain.value)
     record = next(
         (
             item
@@ -297,19 +307,21 @@ def _verify_structured_result_page(
         for item in payload.conversation_state.result_sets
         if item.result_set_id == page.result_set_id
     )
-    if (
-        result_set.domain != Domain.ACCOMMODATION
-        or not isinstance(repository, ResourceReader)
+    if result_set.domain == Domain.SCHOLARSHIPS and isinstance(
+        repository, ScholarshipReader
     ):
+        records = repository.all_scholarships()
+    elif result_set.domain == Domain.ACCOMMODATION and isinstance(
+        repository, ResourceReader
+    ):
+        records = repository.all_domain_records(result_set.domain.value)
+    else:
         raise StarletteHTTPException(status_code=400)
     start = page.start_ordinal - 1
     requested_ids = result_set.ordered_canonical_ids[
         start : start + page.limit
     ]
-    current_ids = {
-        record.entity_id
-        for record in repository.all_domain_records(result_set.domain.value)
-    }
+    current_ids = {record.entity_id for record in records}
     if any(canonical_id not in current_ids for canonical_id in requested_ids):
         raise StarletteHTTPException(status_code=400)
 
@@ -659,6 +671,26 @@ def create_app(
                 and resolved_entity is not None
                 else None
             )
+            if (
+                resolved_course_code is not None
+                and resolved_course_record_id is None
+                and conversation_turn.interpretation.intent is not None
+                and conversation_turn.interpretation.intent.operation
+                == "return_topic"
+            ):
+                retained_course = next(
+                    (
+                        entity
+                        for entity in request_state.recent_entities
+                        if entity.domain == Domain.COURSES
+                        and entity.kind == EntityKind.COURSE
+                        and entity.canonical_id == resolved_course_code
+                        and entity.source_record_id is not None
+                    ),
+                    None,
+                )
+                if retained_course is not None:
+                    resolved_course_record_id = retained_course.source_record_id
             resolution = resolve_current_session(
                 payload,
                 repository,
@@ -721,16 +753,70 @@ def create_app(
             if job_response is not None:
                 return _mark_response(request, job_response)
 
-        if scholarship_queries is not None and is_plausible_scholarship_question(
-            resolved_question, pending
-        ):
-            scholarship_response = await scholarship_queries.answer(
-                resolved_question,
-                request_id,
-                request_state.pending_clarification,
+        scholarship_focus_active = bool(
+            conversation_turn.state.focus is not None
+            and conversation_turn.state.focus.domain == Domain.SCHOLARSHIPS
+            and SCHOLARSHIP_FOLLOW_UP_PATTERN.search(resolved_question)
+            and conversation_turn.interpretation.domain in {
+                None,
+                Domain.SCHOLARSHIPS,
+            }
+        )
+        structured_scholarship_page = bool(
+            payload.result_page is not None
+            and any(
+                item.result_set_id == payload.result_page.result_set_id
+                and item.domain == Domain.SCHOLARSHIPS
+                for item in conversation_turn.state.result_sets
             )
-            if scholarship_response is not None:
-                return _mark_response(request, scholarship_response)
+        )
+        scholarship_domain_resolved = structured_scholarship_page or (
+            conversation_turn.interpretation.domain == Domain.SCHOLARSHIPS
+            and not conversation_turn.interpretation.requires_clarification
+        ) or scholarship_focus_active
+        if scholarship_queries is not None and (
+            scholarship_domain_resolved
+            or is_plausible_scholarship_question(resolved_question, pending)
+        ):
+            scholarship_interpretation = conversation_turn.interpretation
+            interpretation_updates: dict[str, object] = {}
+            if scholarship_interpretation.domain is None:
+                interpretation_updates["domain"] = Domain.SCHOLARSHIPS
+            if OPEN_APPLICATION_PATTERN.search(resolved_question):
+                interpretation_updates["intent"] = ResolvedIntent(
+                    name="discover",
+                    operation="refine_results",
+                )
+            elif scholarship_interpretation.intent is None:
+                interpretation_updates["intent"] = ResolvedIntent(
+                    name="fact_lookup",
+                    operation="lookup",
+                )
+            if interpretation_updates:
+                scholarship_interpretation = QueryInterpretation.model_validate(
+                    scholarship_interpretation.model_dump(mode="python")
+                    | interpretation_updates
+                )
+            try:
+                scholarship_answer = await scholarship_queries.answer_with_context(
+                    resolved_question,
+                    request_id,
+                    request_state.pending_clarification,
+                    interpretation=scholarship_interpretation,
+                    selected_canonical_ids=conversation_turn.selected_canonical_ids,
+                    conversation_state=conversation_turn.state,
+                    result_page=payload.result_page,
+                )
+            except ResultPageResolutionError as exc:
+                raise StarletteHTTPException(status_code=400) from exc
+            scholarship_outcome = scholarship_queries.integrate_conversation(
+                scholarship_answer,
+                question=resolved_question,
+                state=conversation_turn.state,
+                interpretation=scholarship_interpretation,
+            )
+            request.state.conversation_state = scholarship_outcome.state
+            return _mark_response(request, scholarship_outcome.response)
 
         structured_accommodation_page = bool(
             payload.result_page is not None
@@ -874,6 +960,42 @@ def create_app(
                             request.state.conversation_state,
                             exact_entity,
                         )
+
+            course_records = (
+                tuple(
+                    record
+                    for source in response_sources
+                    if (
+                        record := _course_record_for_source_id(
+                            repository,
+                            source.record_id,
+                        )
+                    )
+                    is not None
+                )
+                if isinstance(repository, CatalogReader)
+                else ()
+            )
+            if course_records:
+                course_interpretation = conversation_turn.interpretation
+                if (
+                    len(course_records) > 1
+                    and course_interpretation.intent is not None
+                    and course_interpretation.intent.name == "compare"
+                    and course_interpretation.domain is None
+                ):
+                    course_interpretation = course_interpretation.model_copy(
+                        update={"domain": Domain.COURSES}
+                    )
+                presentation = integrate_course_presentation(
+                    course_response,
+                    course_records,
+                    question=course_question,
+                    state=request.state.conversation_state,
+                    interpretation=course_interpretation,
+                )
+                request.state.conversation_state = presentation.state
+                course_response = presentation.response
 
             return _mark_response(request, course_response)
 

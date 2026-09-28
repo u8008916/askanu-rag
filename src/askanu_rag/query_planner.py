@@ -184,6 +184,13 @@ def _v7_fast_course_plan(question: str) -> QueryPlan | None:
         fact = "assumed_knowledge"
 
     elif re.search(
+        r"\bunits?\b",
+        question,
+        re.I,
+    ):
+        fact = "units"
+
+    elif re.search(
         r"\b(?:fees?|deadlines?|eligibility|guarantee|"
         r"lecturers?|convenors?|instructors?|teachers?|"
         r"teaching staff)\b|\bwho\s+teaches?\b",
@@ -380,6 +387,8 @@ def plan_query(question: str, catalog: CatalogReader) -> QueryPlan:
         fact = "incompatibilities"
     elif re.search(r"\bassumed knowledge\b", question, re.I):
         fact = "assumed_knowledge"
+    elif re.search(r"\bunits?\b", question, re.I):
+        fact = "units"
     elif re.search(
         r"\b(?:fees?|deadlines?|eligibility|guarantee|"
         r"lecturers?|convenors?|instructors?|teachers?|"
