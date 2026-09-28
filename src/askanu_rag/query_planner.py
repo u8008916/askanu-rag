@@ -184,7 +184,9 @@ def _v7_fast_course_plan(question: str) -> QueryPlan | None:
         fact = "assumed_knowledge"
 
     elif re.search(
-        r"\b(?:fees?|deadlines?|eligibility|guarantee)\b",
+        r"\b(?:fees?|deadlines?|eligibility|guarantee|"
+        r"lecturers?|convenors?|instructors?|teachers?|"
+        r"teaching staff)\b|\bwho\s+teaches?\b",
         question,
         re.I,
     ):
@@ -254,6 +256,10 @@ def _v7_fast_course_plan(question: str) -> QueryPlan | None:
         and not mentions_other_entity
         and descriptive
         and fact == "overview"
+        and not re.search(
+            r"\bcourse\s+[A-Z][A-Z0-9_-]{2,}\b",
+            question,
+        )
         and not re.search(
             r"\b(?:named|called)\b|[\"']",
             question,
