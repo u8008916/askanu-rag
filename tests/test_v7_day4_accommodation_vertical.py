@@ -28,6 +28,7 @@ from askanu_rag.models import (
 )
 from askanu_rag.retrieval import (
     CourseProgramRepository,
+    load_common_records,
     load_course_program_records,
 )
 from askanu_rag.retrieval.vector import VectorHit
@@ -110,13 +111,14 @@ PRODUCER_380 = PRODUCER_380.model_copy(
 
 
 class Conversation:
-    def __init__(self, records, *, vector=None):
+    def __init__(self, records, *, vector=None, **app_kwargs):
         self.traces = []
         self.client = TestClient(
             create_app(
                 CourseProgramRepository(records),
                 resource_trace_sink=self.traces.append,
                 vector_retriever=vector,
+                **app_kwargs,
             )
         )
         self.state = {}
@@ -1127,3 +1129,80 @@ def test_day4_structured_api_golden_flow() -> None:
     assert course_body["sources"][0]["domain"] == "courses"
     assert returned["sources"][0]["record_id"] == second_record_id
     assert conversation.traces[-1].interpretation.intent.operation == "return_topic"
+
+
+def _conversation_with_accommodation_state(records, **app_kwargs) -> Conversation:
+    conversation = Conversation(
+        (*_twelve_residences(), *records),
+        **app_kwargs,
+    )
+    conversation.ask("Show me accommodation options")
+    priced = conversation.ask("under $450")
+    assert priced["sources"]
+    assert all(source["domain"] == "accommodation" for source in priced["sources"])
+    return conversation
+
+
+def test_accommodation_state_does_not_leak_into_scholarships() -> None:
+    scholarships = load_common_records("fixtures/day9_scholarship_records.json")
+    conversation = _conversation_with_accommodation_state(scholarships)
+
+    body = conversation.ask("Show open featured scholarships")
+
+    assert body["sources"]
+    assert all(source["domain"] == "scholarships" for source in body["sources"])
+    assert body["conversation_state"]["focus"]["domain"] == "scholarships"
+    assert all(
+        constraint["scope"]["domain"] == "accommodation"
+        for constraint in body["conversation_state"]["constraints"]["items"]
+        if constraint["semantic_type"].startswith("max_price")
+    )
+
+
+def test_accommodation_state_does_not_leak_into_jobs() -> None:
+    from test_jobs import TODAY, make_job
+
+    conversation = _conversation_with_accommodation_state(
+        (make_job(),),
+        jobs_today_provider=lambda: TODAY,
+    )
+
+    body = conversation.ask("Are there any fixed-term jobs currently open?")
+
+    assert body["sources"]
+    assert all(source["domain"] == "jobs" for source in body["sources"])
+    assert all(item["type"] == "job" for item in body["items"])
+
+
+def test_accommodation_state_does_not_leak_into_events() -> None:
+    from test_events import NOW, records
+
+    conversation = _conversation_with_accommodation_state(
+        records(),
+        events_now_provider=lambda: NOW,
+    )
+
+    body = conversation.ask("What events are upcoming?")
+
+    assert body["sources"]
+    assert all(source["domain"] == "events" for source in body["sources"])
+
+
+def test_clear_chat_removes_accommodation_result_state() -> None:
+    conversation = Conversation(_twelve_residences())
+    conversation.ask("Show me accommodation options")
+    conversation.ask("tell me about the second one")
+
+    assert conversation.state["result_sets"]
+    assert conversation.state["result_page"] is not None
+    assert conversation.state["selected_result"] is not None
+
+    cleared = conversation.ask("Clear Chat")
+    state = cleared["conversation_state"]
+
+    assert state["result_sets"] == []
+    assert state["result_page"] is None
+    assert state["selected_result"] is None
+    assert state["pending_clarification"] is None
+    assert state["recent_entities"] == []
+    assert state["focus"] is None
