@@ -57,6 +57,9 @@ DEFAULT_PROBLEM_DOMAIN_RESOLVER = PatternProblemDomainResolver(
                 r"\bappeal(?:ing)? (?:a |my |the )?grade\b",
                 r"\bgrade (?:appeal|review)\b",
                 r"\bchallenge (?:a |my |the )?(?:mark|grade|assessment)\b",
+                r"\b(?:concern|problem|issue) (?:with|about) (?:an? |my |the )?assessment\b",
+                r"\bneed (?:some )?(?:academic|study) help\b",
+                r"\bwho (?:can|should) i (?:talk|speak) to\b.*\b(?:assignment|assessment|grade|mark)\b",
             ),
         ),
         ProblemDomainSignal(

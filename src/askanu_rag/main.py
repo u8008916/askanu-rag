@@ -246,6 +246,11 @@ def _state_with_verified_result_selection(
         repository, ScholarshipReader
     ):
         records = repository.all_scholarships()
+    elif result_set.domain == Domain.JOBS and isinstance(repository, JobReader):
+        current = repository.find_job_by_entity_id(selection.canonical_id)
+        records = () if current is None else (current,)
+    elif result_set.domain == Domain.EVENTS and isinstance(repository, EventReader):
+        records = repository.all_events()
     elif (
         result_set.domain in {Domain.ACCOMMODATION, Domain.SUPPORT}
         and isinstance(repository, ResourceReader)
@@ -311,7 +316,15 @@ def _verify_structured_result_page(
         repository, ScholarshipReader
     ):
         records = repository.all_scholarships()
-    elif result_set.domain == Domain.ACCOMMODATION and isinstance(
+    elif result_set.domain == Domain.JOBS and isinstance(repository, JobReader):
+        records = tuple(
+            record
+            for canonical_id in result_set.ordered_canonical_ids
+            if (record := repository.find_job_by_entity_id(canonical_id)) is not None
+        )
+    elif result_set.domain == Domain.EVENTS and isinstance(repository, EventReader):
+        records = repository.all_events()
+    elif result_set.domain in {Domain.ACCOMMODATION, Domain.SUPPORT} and isinstance(
         repository, ResourceReader
     ):
         records = repository.all_domain_records(result_set.domain.value)
@@ -741,17 +754,45 @@ def create_app(
             resolved_question = payload.question
 
         pending = request_state.pending_clarification
-        if job_queries is not None and is_plausible_job_question(
-            resolved_question, pending
-        ):
-            job_response = await job_queries.answer(
-                resolved_question,
-                request_id,
-                request_state.pending_clarification,
-                payload.history,
+        structured_job_page = bool(
+            payload.result_page is not None
+            and any(
+                item.result_set_id == payload.result_page.result_set_id
+                and item.domain == Domain.JOBS
+                for item in conversation_turn.state.result_sets
             )
+        )
+        job_domain_resolved = structured_job_page or (
+            conversation_turn.interpretation.domain == Domain.JOBS
+            and not conversation_turn.interpretation.requires_clarification
+        )
+        if job_queries is not None and (
+            job_domain_resolved
+            or is_plausible_job_question(resolved_question, pending)
+        ):
+            try:
+                job_response = await job_queries.answer(
+                    resolved_question,
+                    request_id,
+                    request_state.pending_clarification,
+                    payload.history,
+                    interpretation=conversation_turn.interpretation,
+                    selected_canonical_ids=conversation_turn.selected_canonical_ids,
+                    conversation_state=conversation_turn.state,
+                    result_page=payload.result_page,
+                )
+            except ResultPageResolutionError as exc:
+                raise StarletteHTTPException(status_code=400) from exc
             if job_response is not None:
-                return _mark_response(request, job_response)
+                outcome = job_queries.integrate_conversation(
+                    job_response,
+                    question=resolved_question,
+                    state=conversation_turn.state,
+                    interpretation=conversation_turn.interpretation,
+                    result_page=payload.result_page,
+                )
+                request.state.conversation_state = outcome.state
+                return _mark_response(request, outcome.response)
 
         scholarship_focus_active = bool(
             conversation_turn.state.focus is not None
@@ -871,7 +912,10 @@ def create_app(
 
         support_domain_resolved = (
             conversation_turn.interpretation.domain == Domain.SUPPORT
-            and not conversation_turn.interpretation.requires_clarification
+            and (
+                not conversation_turn.interpretation.requires_clarification
+                or conversation_turn.interpretation.entity is None
+            )
         )
         if support_queries is not None and (
             support_domain_resolved
@@ -885,18 +929,57 @@ def create_app(
                 request_state.pending_clarification,
                 payload.history,
                 resolved_domain=support_domain_resolved,
+                interpretation=conversation_turn.interpretation,
+                selected_canonical_ids=conversation_turn.selected_canonical_ids,
+                conversation_state=conversation_turn.state,
                 clarification_option_ids=clarification_option_ids,
             )
             if support_response is not None:
-                return _mark_response(request, support_response)
+                outcome = support_queries.integrate_conversation(
+                    support_response,
+                    resolved_question,
+                    conversation_turn.state,
+                    conversation_turn.interpretation,
+                )
+                request.state.conversation_state = outcome.state
+                return _mark_response(request, outcome.response)
 
-        if event_queries is not None and is_plausible_event_question(
-            resolved_question
-        ):
-            return _mark_response(
-                request,
-                await event_queries.answer(resolved_question, request_id),
+        structured_event_page = bool(
+            payload.result_page is not None
+            and any(
+                item.result_set_id == payload.result_page.result_set_id
+                and item.domain == Domain.EVENTS
+                for item in conversation_turn.state.result_sets
             )
+        )
+        event_domain_resolved = structured_event_page or (
+            conversation_turn.interpretation.domain == Domain.EVENTS
+            and not conversation_turn.interpretation.requires_clarification
+        )
+        if event_queries is not None and (
+            event_domain_resolved
+            or is_plausible_event_question(resolved_question)
+        ):
+            try:
+                event_response = await event_queries.answer(
+                    resolved_question,
+                    request_id,
+                    interpretation=conversation_turn.interpretation,
+                    selected_canonical_ids=conversation_turn.selected_canonical_ids,
+                    conversation_state=conversation_turn.state,
+                    result_page=payload.result_page,
+                )
+            except ResultPageResolutionError as exc:
+                raise StarletteHTTPException(status_code=400) from exc
+            outcome = event_queries.integrate_conversation(
+                event_response,
+                question=resolved_question,
+                state=conversation_turn.state,
+                interpretation=conversation_turn.interpretation,
+                result_page=payload.result_page,
+            )
+            request.state.conversation_state = outcome.state
+            return _mark_response(request, outcome.response)
 
         # Safe aliases are resolved only by the bounded V7 understanding
         # catalogue. Retrieval must consume that canonical identity on the same

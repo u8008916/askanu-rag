@@ -66,6 +66,7 @@ from askanu_rag.state_transitions import (
     remember_entity,
     remember_result_page,
     remember_result_set,
+    set_pending_clarification,
 )
 
 ACCOMMODATION_PATTERN = re.compile(
@@ -656,6 +657,46 @@ def _public_application_actions(
     ]
 
 
+def _public_support_item(
+    record: SupportRecord,
+    result_set: ResultSet | None,
+) -> PublicResultItem:
+    """Project only source-published Support fields into the shared item."""
+
+    metadata = record.metadata_json
+    ordinal = None
+    if result_set is not None and record.entity_id in result_set.ordered_canonical_ids:
+        ordinal = result_set.ordered_canonical_ids.index(record.entity_id) + 1
+    fields: dict[str, str | list[str] | None] = {
+        "category": metadata.category,
+        "purpose": metadata.purpose,
+        "audiences": list(metadata.audiences) or None,
+        "email": metadata.contact.email,
+        "phone": metadata.contact.phone,
+        "location": metadata.contact.location,
+        "hours": metadata.hours,
+        "access": metadata.access,
+        "cost": metadata.cost,
+        "topics": [
+            f"{topic.title}: {topic.description or 'description not published'}"
+            for topic in metadata.topics
+        ]
+        or None,
+        "referrals": [referral.label for referral in metadata.referrals] or None,
+    }
+    return PublicResultItem(
+        record_id=record.record_id,
+        source_id=record.source_id,
+        canonical_id=record.entity_id,
+        title=record.title,
+        url=record.canonical_url,
+        domain="support",
+        result_set_id=result_set.result_set_id if result_set is not None else None,
+        ordinal=ordinal,
+        fields=fields,
+    )
+
+
 def is_plausible_resource_question(
     question: str,
     domain: Literal["accommodation", "support"],
@@ -1207,7 +1248,101 @@ class DomainResourceQueryService:
         interpretation: QueryInterpretation,
         result_page: ResultPageRequest | None = None,
     ) -> ResourceQueryOutcome:
-        """Attach Accommodation retrieval to the shared V7 state/evidence path."""
+        """Attach resource retrieval to the shared V7 state/evidence path."""
+
+        if self.domain == "support":
+            selected_items = tuple(
+                item
+                for item in response.items
+                if isinstance(item, PublicResultItem)
+                and item.domain == "support"
+            )
+            parent = next(
+                (
+                    item
+                    for item in reversed(state.result_sets)
+                    if item.domain == Domain.SUPPORT
+                    and (
+                        interpretation.referenced_result_set_id is None
+                        or item.result_set_id
+                        == interpretation.referenced_result_set_id
+                    )
+                ),
+                None,
+            )
+            updated = state
+            result_set: ResultSet | None = None
+            listing = bool(
+                interpretation.entity is None
+                and selected_items
+                and response.status == "ok"
+            )
+            if listing:
+                plan = build_retrieval_plan(
+                    interpretation,
+                    plan_id=f"plan:support:{state.turn_index}",
+                )
+                if plan is not None:
+                    identities = tuple(item.canonical_id for item in selected_items)
+                    result_set = build_result_set(
+                        plan,
+                        result_set_id=f"rs:support:{state.turn_index}",
+                        entity_kind=EntityKind.SUPPORT_SERVICE,
+                        ordered_canonical_ids=identities,
+                        originating_query=question,
+                        created_turn=state.turn_index,
+                        population_complete=True,
+                    )
+                    updated = remember_result_set(updated, result_set)
+                    updated = set_pending_clarification(updated, None)
+            active_set = result_set or parent
+            if len(selected_items) == 1:
+                item = selected_items[0]
+                updated = remember_entity(
+                    updated,
+                    ResolvedEntity(
+                        domain=Domain.SUPPORT,
+                        kind=EntityKind.SUPPORT_SERVICE,
+                        canonical_id=item.canonical_id,
+                        canonical_name=item.title,
+                        source_record_id=item.record_id,
+                        resolution_basis=EntityResolutionBasis.RETAINED_STATE,
+                        mentioned_turn=state.turn_index,
+                    ),
+                    focus=active_set is None,
+                )
+            response = response.model_copy(
+                update={
+                    "items": [
+                        item.model_copy(
+                            update={
+                                "result_set_id": (
+                                    active_set.result_set_id
+                                    if active_set is not None
+                                    else None
+                                ),
+                                "ordinal": (
+                                    active_set.ordered_canonical_ids.index(
+                                        item.canonical_id
+                                    )
+                                    + 1
+                                    if active_set is not None
+                                    and item.canonical_id
+                                    in active_set.ordered_canonical_ids
+                                    else None
+                                ),
+                            }
+                        )
+                        for item in selected_items
+                    ],
+                    "answer_state": (
+                        AnswerState.CONFIRMED
+                        if response.status == "ok"
+                        else AnswerState.UNKNOWN
+                    ),
+                }
+            )
+            return ResourceQueryOutcome(response=response, state=updated)
 
         if self.domain != "accommodation":
             return ResourceQueryOutcome(response=response, state=state)
@@ -1766,6 +1901,7 @@ class DomainResourceQueryService:
     ) -> AskResponse:
         services = tuple(record for record in records if isinstance(record, SupportRecord))
         sources = [_source_from_record(record) for record in services]
+        public_items = [_public_support_item(record, None) for record in services]
         if DIAGNOSIS_PATTERN.search(question):
             return InsufficientEvidenceResponse(
                 answer=(
@@ -1773,6 +1909,7 @@ class DomainResourceQueryService:
                     "but it cannot diagnose a medical or mental health condition or "
                     "provide personal medical or legal advice."
                 ),
+                items=public_items,
                 sources=sources,
                 request_id=request_id,
             )
@@ -1867,6 +2004,7 @@ class DomainResourceQueryService:
                     "guarantee. Use the published service details without assuming "
                     "those assurances."
                 ),
+                items=public_items,
                 sources=sources,
                 request_id=request_id,
             )
@@ -1877,6 +2015,7 @@ class DomainResourceQueryService:
                     "fact. Missing hours, access, availability, or response details "
                     "remain unknown."
                 ),
+                items=public_items,
                 sources=sources,
                 request_id=request_id,
             )
@@ -1885,6 +2024,7 @@ class DomainResourceQueryService:
                 "I can route you to published services but cannot diagnose a condition "
                 "or promise professional availability. " + "\n\n".join(sections)
             ),
+            items=public_items,
             sources=sources,
             request_id=request_id,
         )
