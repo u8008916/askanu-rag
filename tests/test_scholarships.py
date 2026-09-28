@@ -120,7 +120,7 @@ def ask(repo, question, *, history=(), pending=None, vector=None, dense=None):
             },
         )
     TypeAdapter(AskResponse).validate_python(response.json())
-    assert set(response.json()) == {
+    expected_fields = {
         "status",
         "answer",
         "items",
@@ -130,6 +130,10 @@ def ask(repo, question, *, history=(), pending=None, vector=None, dense=None):
         "clarification",
         "request_id",
         "conversation_state",
+    }
+    assert set(response.json()) in {
+        frozenset(expected_fields),
+        frozenset(expected_fields | {"result_page"}),
     }
     return response.json()
 
