@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from askanu_rag.interpretation import interpret_turn
 from askanu_rag.main import create_app
-from askanu_rag.models import ConstraintSemanticType
+from askanu_rag.models import ConstraintSemanticType, ConversationState
 from askanu_rag.retrieval import CourseProgramRepository
 from test_v7_day4_accommodation_vertical import ALPHA, BRAVO
 from test_v7_day6_journeys import NOW, TODAY, event, job
@@ -72,6 +73,130 @@ def _constraint(body: dict, semantic_type: ConstraintSemanticType) -> dict:
         for item in body["conversation_state"]["constraints"]["items"]
         if item["semantic_type"] == semantic_type.value
     )
+
+
+def _explicit_values(
+    question: str,
+    semantic_type: ConstraintSemanticType,
+) -> list[str]:
+    interpretation = interpret_turn(question, (), ConversationState())
+    return [
+        str(item.value)
+        for item in interpretation.explicit_constraints.items
+        if item.semantic_type == semantic_type
+    ]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_location", "expected_id"),
+    (
+        ("jobs at ANU in Canberra", "canberra", "810001"),
+        ("jobs available at ANU in Canberra", "canberra", "810001"),
+        ("any jobs at ANU in Canberra", "canberra", "810001"),
+        ("jobs at ANU in Sydney", "sydney", None),
+        ("jobs at ANU in Antarctica", "antarctica", None),
+    ),
+)
+def test_r6_job_location_stops_at_institutional_anu_scope(
+    question: str,
+    expected_location: str,
+    expected_id: str | None,
+) -> None:
+    body = _ask(JOBS, question)
+
+    retained = _constraint(body, ConstraintSemanticType.LOCATION)
+    assert retained["value"].casefold() == expected_location
+    assert _explicit_values(question, ConstraintSemanticType.LOCATION) == [
+        expected_location
+    ]
+    assert _explicit_values(question, ConstraintSemanticType.EMPLOYMENT_TYPE) == []
+    if expected_id is not None:
+        assert body["status"] == "ok"
+        assert [item["canonical_id"] for item in body["items"]] == [expected_id]
+    else:
+        assert body["status"] == "insufficient_evidence"
+        assert body["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_location", "expected_id"),
+    (
+        ("Any jobs in Canberra?", "canberra", "810001"),
+        ("Tell me about jobs in Canberra", "canberra", "810001"),
+        ("What about jobs in Sydney?", "sydney", None),
+    ),
+)
+def test_r6_job_query_words_are_not_employment_types(
+    question: str,
+    expected_location: str,
+    expected_id: str | None,
+) -> None:
+    body = _ask(JOBS, question)
+
+    assert _explicit_values(question, ConstraintSemanticType.EMPLOYMENT_TYPE) == []
+    assert _constraint(body, ConstraintSemanticType.LOCATION)["value"].casefold() == (
+        expected_location
+    )
+    if expected_id is not None:
+        assert body["status"] == "ok"
+        assert [item["canonical_id"] for item in body["items"]] == [expected_id]
+    else:
+        assert body["status"] == "insufficient_evidence"
+        assert body["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("question", "employment_type", "location", "expected_id"),
+    (
+        ("Are there any casual jobs in Canberra?", "casual", "canberra", None),
+        ("Tell me about full-time jobs in Canberra", "full-time", "canberra", None),
+        ("casual jobs in Melbourne", "casual", "melbourne", "810002"),
+        ("full-time jobs in Sydney", "full-time", "sydney", None),
+    ),
+)
+def test_r6_real_job_modifiers_survive_query_word_rejection(
+    question: str,
+    employment_type: str,
+    location: str,
+    expected_id: str | None,
+) -> None:
+    body = _ask(JOBS, question)
+
+    assert _explicit_values(question, ConstraintSemanticType.EMPLOYMENT_TYPE) == [
+        employment_type
+    ]
+    assert _explicit_values(question, ConstraintSemanticType.LOCATION) == [location]
+    assert _constraint(body, ConstraintSemanticType.EMPLOYMENT_TYPE)[
+        "value"
+    ].casefold() == employment_type
+    assert _constraint(body, ConstraintSemanticType.LOCATION)["value"].casefold() == (
+        location
+    )
+    if expected_id is not None:
+        assert body["status"] == "ok"
+        assert [item["canonical_id"] for item in body["items"]] == [expected_id]
+    else:
+        assert body["status"] == "insufficient_evidence"
+        assert body["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_location"),
+    (
+        ("Tell me about accommodation in Canberra", "canberra"),
+        ("Tell me about events in Canberra", "canberra"),
+        ("Tell me about accommodation", None),
+        ("Tell me about events", None),
+    ),
+)
+def test_r6_shared_location_parser_rejects_cross_domain_query_words(
+    question: str,
+    expected_location: str | None,
+) -> None:
+    assert _explicit_values(question, ConstraintSemanticType.LOCATION) == (
+        [expected_location] if expected_location is not None else []
+    )
+    assert _explicit_values(question, ConstraintSemanticType.EMPLOYMENT_TYPE) == []
 
 
 @pytest.mark.parametrize(
