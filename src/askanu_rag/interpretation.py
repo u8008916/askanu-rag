@@ -275,16 +275,34 @@ def _merge_constraints(
     return merged, replaced, surviving_types
 
 
-def _result_reference(question: str) -> str | None:
+_ORDINAL_WORDS = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+}
+_NUMERIC_ORDINAL_RE = re.compile(r"\b([1-4])(?:st|nd|rd|th)\b")
+_NUMBER_REFERENCE_RE = re.compile(r"\bnumber\s+([1-4])\b")
+
+
+def _result_reference(question: str) -> str | int | None:
     normalised = _normalise(question)
     if re.search(r"\b(?:the )?first (?:two|2)\b", normalised):
         return "first_two"
-    if "second" in normalised:
-        return "second"
-    if "third" in normalised:
-        return "third"
-    if "first" in normalised:
-        return "first"
+    numeric = _NUMERIC_ORDINAL_RE.search(normalised)
+    numbered = _NUMBER_REFERENCE_RE.search(normalised)
+    candidates = [
+        (match.start(), int(match.group(1)))
+        for match in (numeric, numbered)
+        if match is not None
+    ]
+    candidates.extend(
+        (match.start(), ordinal)
+        for word, ordinal in _ORDINAL_WORDS.items()
+        if (match := re.search(rf"\b{word}\b", normalised)) is not None
+    )
+    if candidates:
+        return min(candidates)[1]
     if "other" in normalised:
         return "other"
     if "those" in normalised:
@@ -316,7 +334,7 @@ def _intent(
     question: str,
     *,
     explicit_entity: bool,
-    result_reference: str | None,
+    result_reference: str | int | None,
     pending: bool,
     has_constraints: bool,
     refining: bool,
@@ -667,5 +685,5 @@ def interpret_turn(
     )
 
 
-def result_reference_for(question: str) -> str | None:
+def result_reference_for(question: str) -> str | int | None:
     return _result_reference(question)

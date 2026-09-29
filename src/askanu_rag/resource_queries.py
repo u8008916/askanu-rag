@@ -125,7 +125,11 @@ LOCATION_PATTERN = re.compile(r"\b(?:where is|located|location)\b", re.I)
 AUDIENCE_PATTERN = re.compile(
     r"\b(?:audience|who can live|who can use|undergraduate|postgraduate)\b", re.I
 )
-OVERVIEW_PATTERN = re.compile(r"\b(?:overview|describe|tell me about)\b", re.I)
+OVERVIEW_PATTERN = re.compile(
+    r"\b(?:overview|describe|tell me(?: more)? about|"
+    r"give me(?: more)? information about)\b",
+    re.I,
+)
 RETURN_ACCOMMODATION_PATTERN = re.compile(
     r"\b(?:back|return|go back) to (?:the )?(?:accommodation|residences?)\b",
     re.I,

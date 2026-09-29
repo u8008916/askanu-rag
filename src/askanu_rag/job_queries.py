@@ -96,7 +96,11 @@ JOB_TITLE_SHAPE_PATTERN = re.compile(
     re.I,
 )
 TITLE_PATTERNS = (
-    re.compile(r"^\s*tell me about\s+(.+?)\s*[?.!]*\s*$", re.I),
+    re.compile(
+        r"^\s*(?:tell me(?: more)? about|give me(?: more)? information about)"
+        r"\s+(.+?)\s*[?.!]*\s*$",
+        re.I,
+    ),
     re.compile(r"^\s*when does\s+(.+?)\s+close\s*[?.!]*\s*$", re.I),
     re.compile(
         r"^\s*is\s+(.+?)\s+(?:still\s+)?(?:current|open)\s*[?.!]*\s*$",
@@ -589,8 +593,22 @@ class JobQueryService:
                 )
             if len(structured) == 1:
                 selected = structured[0]
+        candidate = _title_candidate(question)
+        title_matches = (
+            self._repository.find_jobs_by_title(candidate)
+            if candidate is not None
+            else ()
+        )
+        if len(title_matches) > 1:
+            return _job_clarification(title_matches, request_id)
+        if len(title_matches) == 1:
+            # An exact stored title is stronger than a number embedded inside
+            # that title (for example "Verified Role 2").  A real Job ID still
+            # resolves below when the complete title did not match.
+            selected = title_matches[0]
+
         numeric = JOB_ID_PATTERN.search(question)
-        if numeric is not None:
+        if numeric is not None and not title_matches:
             selected = self._repository.find_job_by_entity_id(numeric.group(1))
             if selected is None:
                 return InsufficientEvidenceResponse(
@@ -640,18 +658,6 @@ class JobQueryService:
                 sources=[_source_from_record(selected)],
                 request_id=request_id,
             )
-
-        candidate = _title_candidate(question)
-        if candidate is not None:
-            matches = self._repository.find_jobs_by_title(candidate)
-            if len(matches) > 1:
-                return _job_clarification(matches, request_id)
-            if len(matches) == 1:
-                return OkResponse(
-                    answer=_job_answer(matches[0], today),
-                    sources=[_source_from_record(matches[0])],
-                    request_id=request_id,
-                )
 
         semantic_intent = bool(
             candidate is None

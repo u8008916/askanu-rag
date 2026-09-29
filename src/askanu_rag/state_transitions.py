@@ -434,7 +434,7 @@ class ResultReferenceResolution:
 
 ResultReference = Literal[
     "first", "second", "third", "first_two", "those", "other"
-]
+] | int
 
 
 def resolve_result_reference(
@@ -471,8 +471,14 @@ def resolve_result_reference(
         if len(identities) < 2:
             return ResultReferenceResolution(result_set, (), True)
         return ResultReferenceResolution(result_set, identities[:2], False)
-    if reference in {"first", "second", "third"}:
-        index = {"first": 0, "second": 1, "third": 2}[reference]
+    if isinstance(reference, int) or reference in {"first", "second", "third"}:
+        index = (
+            reference - 1
+            if isinstance(reference, int)
+            else {"first": 0, "second": 1, "third": 2}[reference]
+        )
+        if index < 0:
+            return ResultReferenceResolution(result_set, (), True)
         if index >= len(identities):
             return ResultReferenceResolution(result_set, (), True)
         return ResultReferenceResolution(result_set, (identities[index],), False)
