@@ -81,6 +81,7 @@ def orchestrate_turn(
     entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
     problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
     clarification_option_ids: Sequence[str] = (),
+    prefer_selected_result: bool = False,
 ) -> ConversationTurn:
     """Validate, interpret and deterministically update one conversational turn."""
 
@@ -104,6 +105,7 @@ def orchestrate_turn(
         entity_catalogue=entity_catalogue,
         entity_aliases=entity_aliases,
         problem_domain_resolver=problem_domain_resolver,
+        prefer_selected_result=prefer_selected_result,
     )
     temporal_normalisation = normalise_legacy_temporal_constraints(
         updated.constraints,

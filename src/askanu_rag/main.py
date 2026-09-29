@@ -639,6 +639,7 @@ def create_app(
             entity_aliases=entity_aliases,
             problem_domain_resolver=problem_domain_resolver,
             clarification_option_ids=clarification_option_ids,
+            prefer_selected_result=payload.selected_result is not None,
         )
         request.state.conversation_state = conversation_turn.state
         request.state.query_interpretation = conversation_turn.interpretation

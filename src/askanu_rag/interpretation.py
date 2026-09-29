@@ -281,6 +281,8 @@ def _result_reference(question: str) -> str | None:
         return "first_two"
     if "second" in normalised:
         return "second"
+    if "third" in normalised:
+        return "third"
     if "first" in normalised:
         return "first"
     if "other" in normalised:
@@ -370,6 +372,7 @@ def interpret_turn(
     entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
     entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
     problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    prefer_selected_result: bool = False,
 ) -> QueryInterpretation:
     """Interpret one already-numbered turn without mutating structured state."""
 
@@ -438,6 +441,47 @@ def interpret_turn(
         if explicit_resolution.possible_entities
         else "domain" if possible_domains else "none"
     )
+
+    # A structured selection supplied on this request has already been checked
+    # against the server-authored ResultSet and current repository record.  It
+    # therefore beats generic lexical domain words, but never an explicit
+    # entity or an ordinal reference in the current question.
+    if (
+        prefer_selected_result
+        and explicit is None
+        and not explicit_resolution.possible_entities
+        and result_reference is None
+        and state.selected_result is not None
+    ):
+        selected = state.selected_result
+        selected_set = next(
+            (
+                item
+                for item in state.result_sets
+                if item.result_set_id == selected.result_set_id
+            ),
+            None,
+        )
+        selected_entity = next(
+            (
+                item
+                for item in state.recent_entities
+                if item.canonical_id == selected.canonical_id
+                and selected_set is not None
+                and item.domain == selected_set.domain
+                and item.kind == selected_set.entity_kind
+            ),
+            None,
+        )
+        if selected_set is not None and selected_entity is not None:
+            domain = selected_set.domain
+            possible_domains = ()
+            entity = selected_entity
+            entity_origin = "result_set"
+            reference_origin = "prior_result_set"
+            referenced_result_set_id = selected_set.result_set_id
+            requires_clarification = False
+            ambiguity = "none"
 
     if result_reference is not None:
         expected_kind = typed[1] if typed else None

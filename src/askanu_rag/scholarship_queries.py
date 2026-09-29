@@ -724,9 +724,24 @@ class ScholarshipQueryService:
                 discovery=True,
             )
 
-        resolved_ids = list(selected_canonical_ids)
+        explicit_identities = _identity_matches(question, records)
+        comparing = COMPARE_PATTERN.search(question) is not None
+        if len(explicit_identities) > 1 and not comparing:
+            return ScholarshipAnswerOutcome(
+                response=_clarification(
+                    explicit_identities,
+                    request_id,
+                    "Which scholarship do you mean?",
+                )
+            )
+        resolved_ids = (
+            [record.entity_id for record in explicit_identities]
+            if explicit_identities
+            else list(selected_canonical_ids)
+        )
         if (
-            interpretation.entity is not None
+            not explicit_identities
+            and interpretation.entity is not None
             and interpretation.entity.domain == Domain.SCHOLARSHIPS
             and interpretation.entity.canonical_id not in resolved_ids
         ):
@@ -767,7 +782,6 @@ class ScholarshipQueryService:
         )
         eligibility = ELIGIBILITY_PATTERN.search(question) is not None
         requested_fact = _requested_fact(question)
-        comparing = COMPARE_PATTERN.search(question) is not None
         if selected:
             if requested_fact is not None and not eligibility and len(selected) == 1:
                 response = _fact_response(selected[0], requested_fact, request_id)

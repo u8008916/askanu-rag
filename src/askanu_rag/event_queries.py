@@ -101,6 +101,34 @@ def is_plausible_event_question(question: str) -> bool:
     return EVENT_WORD_PATTERN.search(question) is not None
 
 
+def _contains_identity(question: str, value: str) -> bool:
+    normalized = " ".join(question.casefold().split())
+    identity = " ".join(value.casefold().split())
+    return bool(identity) and re.search(
+        r"(?<![a-z0-9])" + re.escape(identity) + r"(?![a-z0-9])",
+        normalized,
+    ) is not None
+
+
+def _event_identity_matches(
+    question: str, records: tuple[EventRecord, ...]
+) -> tuple[EventRecord, ...]:
+    """Resolve only exact stored Event names or identifiers, never aliases."""
+
+    return tuple(
+        record
+        for record in records
+        if any(
+            _contains_identity(question, identity)
+            for identity in (
+                record.entity_id,
+                record.title,
+                record.metadata_json.source_event_id,
+            )
+        )
+    )
+
+
 def _requested_period(question: str):
     for pattern, period in PERIOD_PATTERNS:
         if pattern.search(question):
@@ -299,8 +327,27 @@ class EventQueryService:
                     "Event result identity is not current approved evidence"
                 )
         else:
-            structured_ids = list(selected_canonical_ids)
+            explicit_identities = _event_identity_matches(question, records)
+            if len(explicit_identities) > 1:
+                return InsufficientEvidenceResponse(
+                    answer=(
+                        "I found multiple stored Events matching that identity. "
+                        "Please name one exact Event."
+                    ),
+                    sources=[
+                        _source_from_record(record)
+                        for record in explicit_identities[:5]
+                    ],
+                    request_id=request_id,
+                )
+            structured_ids = (
+                [explicit_identities[0].entity_id]
+                if explicit_identities
+                else list(selected_canonical_ids)
+            )
             if (
+                not explicit_identities
+                and
                 interpretation is not None
                 and interpretation.entity is not None
                 and interpretation.entity.domain == Domain.EVENTS
@@ -403,6 +450,7 @@ class EventQueryService:
         listing = bool(
             resolved_page is not None
             or not interpretation.entity
+            and not _event_identity_matches(question, records)
             and not interpretation.requires_clarification
         )
         ordered = selected

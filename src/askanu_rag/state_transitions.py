@@ -432,7 +432,9 @@ class ResultReferenceResolution:
     clarification_required: bool
 
 
-ResultReference = Literal["first", "second", "first_two", "those", "other"]
+ResultReference = Literal[
+    "first", "second", "third", "first_two", "those", "other"
+]
 
 
 def resolve_result_reference(
@@ -469,8 +471,8 @@ def resolve_result_reference(
         if len(identities) < 2:
             return ResultReferenceResolution(result_set, (), True)
         return ResultReferenceResolution(result_set, identities[:2], False)
-    if reference in {"first", "second"}:
-        index = 0 if reference == "first" else 1
+    if reference in {"first", "second", "third"}:
+        index = {"first": 0, "second": 1, "third": 2}[reference]
         if index >= len(identities):
             return ResultReferenceResolution(result_set, (), True)
         return ResultReferenceResolution(result_set, (identities[index],), False)
