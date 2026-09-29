@@ -626,7 +626,13 @@ def test_result_set_eviction_is_deterministic_and_old_reference_clarifies() -> N
 
 def test_constraint_limit_refuses_silent_hard_constraint_eviction() -> None:
     state = at_turn(ConversationState(), 1)
-    semantic_types = tuple(ConstraintSemanticType)
+    # Inclusive and exclusive price bounds are one replacement family, so use
+    # only one representative while filling distinct hard-constraint slots.
+    semantic_types = tuple(
+        item
+        for item in ConstraintSemanticType
+        if item != ConstraintSemanticType.MAX_PRICE_EXCLUSIVE
+    )
     for index in range(MAX_RETAINED_CONSTRAINTS):
         semantic = semantic_types[index % len(semantic_types)]
         domain = tuple(Domain)[index // len(semantic_types)]
@@ -647,6 +653,32 @@ def test_constraint_limit_refuses_silent_hard_constraint_eviction() -> None:
             ),
         )
 
+
+def test_exclusive_price_bound_replaces_inclusive_bound_in_shared_state() -> None:
+    state = at_turn(ConversationState(), 1)
+    state = put_constraint(
+        state,
+        scoped_constraint(
+            ConstraintSemanticType.MAX_PRICE,
+            450,
+            Domain.ACCOMMODATION,
+            1,
+        ),
+    )
+    state = at_turn(state, 2)
+    state = put_constraint(
+        state,
+        scoped_constraint(
+            ConstraintSemanticType.MAX_PRICE_EXCLUSIVE,
+            400,
+            Domain.ACCOMMODATION,
+            2,
+        ),
+    )
+
+    assert [
+        (item.semantic_type, item.value) for item in state.constraints.items
+    ] == [(ConstraintSemanticType.MAX_PRICE_EXCLUSIVE, 400)]
 
 def test_state_is_context_not_institutional_evidence() -> None:
     fact = StudentStatedFact(

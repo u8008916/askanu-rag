@@ -17,7 +17,8 @@ from askanu_rag.models import (
     OkResponse,
     Source,
 )
-from askanu_rag.retrieval import CourseProgramReader, normalize_course_code
+from askanu_rag.retrieval import CourseProgramReader
+from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 from askanu_rag.synthesis import (
     SynthesisClient,
     SynthesisError,
@@ -26,16 +27,56 @@ from askanu_rag.synthesis import (
 )
 
 COURSE_CODE_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?<![A-Za-z0-9])([A-Za-z]{4}\s*\d{4}[A-Za-z]?)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])([A-Za-z]{4}\s*-?\s*\d{4}[A-Za-z]?)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 PREREQUISITES_INTENT_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:pre[-\s]?requisites?|requisites?)\b",
+    r"\b(?:pre[-\s]?(?:requisites?|reqs?)|requisites?)\b",
     re.IGNORECASE,
 )
 ACADEMIC_YEAR_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?<!\d)((?:19|20)\d{2})(?!\d)"
 )
+
+
+def prerequisite_target_course_codes(question: str) -> tuple[str, ...]:
+    """Return Course codes explicitly targeted by the final 'prerequisites for' clause.
+
+    Course codes elsewhere in the user's text can be claims, examples or
+    competing information and must not automatically become lookup targets.
+
+    If the actual target clause names multiple Courses, all remain visible so
+    ambiguity/comparison behavior is preserved rather than silently selecting one.
+    """
+
+    last_targets: tuple[str, ...] = ()
+
+    for intent_match in PREREQUISITES_INTENT_PATTERN.finditer(question):
+        suffix = question[intent_match.end():]
+
+        for_match = re.match(r"\s+for\b", suffix, re.IGNORECASE)
+        if for_match is None:
+            continue
+
+        clause = suffix[for_match.end():]
+        clause = re.split(r"[?.!]", clause, maxsplit=1)[0]
+
+        codes = tuple(
+            dict.fromkeys(
+                code
+                for match in COURSE_CODE_CANDIDATE_PATTERN.finditer(clause)
+                if (
+                    code := normalize_course_code_reference(
+                        match.group(1)
+                    )
+                ) is not None
+            )
+        )
+
+        if codes:
+            last_targets = codes
+
+    return last_targets
 
 
 @dataclass(frozen=True)
@@ -58,8 +99,13 @@ def classify_course_prerequisites_query(
     normalized_codes = {
         code
         for match in candidate_matches
-        if (code := normalize_course_code(match.group(1))) is not None
+        if (code := normalize_course_code_reference(match.group(1))) is not None
     }
+    targeted_codes = prerequisite_target_course_codes(question)
+    if targeted_codes:
+        targeted_set = set(targeted_codes)
+        normalized_codes = normalized_codes.intersection(targeted_set)
+
     if len(normalized_codes) != 1:
         return None
 

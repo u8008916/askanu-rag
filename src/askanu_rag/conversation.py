@@ -8,9 +8,15 @@ from askanu_rag.course_queries import (
     COURSE_CODE_CANDIDATE_PATTERN,
     PREREQUISITES_INTENT_PATTERN,
 )
-from askanu_rag.models import AskRequest, Clarification, ClarificationOption
+from askanu_rag.models import (
+    AskRequest,
+    Clarification,
+    ClarificationOption,
+    Domain,
+    EntityKind,
+)
 from askanu_rag.retrieval.catalog import CatalogReader, record_code
-from askanu_rag.retrieval.identifiers import normalize_course_code
+from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 
 
 SELECTION_PATTERN = re.compile(
@@ -24,8 +30,17 @@ REFERENCE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 COURSE_FOLLOW_UP_PATTERN = re.compile(
-    r"\b(?:pre[-\s]?requisites?|requisites?|offerings?|offered|sessions?|"
-    r"semesters?|incompatibilit(?:y|ies)|assumed knowledge)\b",
+    r"\b(?:pre[-\s]?(?:requisites?|reqs?)|requisites?|offerings?|offered|sessions?|"
+    r"semesters?|incompatibilit(?:y|ies)|assumed knowledge|"
+    r"lecturers?|convenors?|instructors?|teachers?|teaching staff|"
+    r"who\s+teaches?)\b",
+    re.IGNORECASE,
+)
+
+YEAR_ONLY_REFINEMENT_PATTERN = re.compile(
+    r"^\s*(?:(?:what|how)\s+about|and|(?:no\s*,?\s*)?actually)"
+    r"\s*,?\s*(?P<year>(?:19|20)\d{2})\s*[?.!]?\s*$"
+    r"|^\s*(?P<bare_year>(?:19|20)\d{2})\s*[?.!]?\s*$",
     re.IGNORECASE,
 )
 OTHER_DOMAIN_PATTERN = re.compile(
@@ -59,6 +74,7 @@ class ConversationResolution:
     question: str
     clarification: Clarification | None = None
     clarification_answer: str | None = None
+    selected_record_id: str | None = None
 
 
 def _course_refs(text: str) -> tuple[str, ...]:
@@ -66,7 +82,7 @@ def _course_refs(text: str) -> tuple[str, ...]:
         dict.fromkeys(
             code
             for match in COURSE_CODE_CANDIDATE_PATTERN.finditer(text)
-            if (code := normalize_course_code(match.group(1))) is not None
+            if (code := normalize_course_code_reference(match.group(1))) is not None
         )
     )
 
@@ -92,6 +108,13 @@ def _intent(texts: tuple[str, ...]) -> str:
             return "incompatibilities"
         if re.search(r"\bassumed knowledge\b", text, re.I):
             return "assumed knowledge"
+        if re.search(
+            r"\b(?:lecturers?|convenors?|instructors?|teachers?|"
+            r"teaching staff|who\s+teaches?)\b",
+            text,
+            re.I,
+        ):
+            return "teaching staff"
     return "overview"
 
 
@@ -102,6 +125,8 @@ def _question_for(records, intent: str) -> str:
     )
     if intent == "overview":
         return f"Tell me about {identities}"
+    if intent == "teaching staff":
+        return f"Who teaches {identities}?"
     return f"What are the {intent} for {identities}?"
 
 
@@ -176,18 +201,122 @@ def _guided_card_resolution(
     return ConversationResolution(question, clarification, answer)
 
 
+def _record_for_id(catalog: CatalogReader, record_id: str):
+    # Canonical Course source IDs have the form:
+    # courses:course:COMP1110_2026
+    #
+    # When possible, use the repository's deterministic Course lookup instead
+    # of materialising the entire Course catalogue just to recover one record.
+    prefix = "courses:course:"
+    finder = getattr(catalog, "find_course_by_code", None)
+
+    if finder is not None and record_id.startswith(prefix):
+        identity = record_id[len(prefix):]
+        code, separator, year = identity.rpartition("_")
+
+        if separator and code and len(year) == 4 and year.isdigit():
+            result = finder(code, year)
+
+            candidates = (
+                ()
+                if result is None
+                else result
+                if isinstance(result, tuple)
+                else (result,)
+            )
+
+            exact = next(
+                (
+                    record
+                    for record in candidates
+                    if record.record_id == record_id
+                    and record.metadata_json.entity_type == "course"
+                ),
+                None,
+            )
+
+            if exact is not None:
+                return exact
+
+    # Preserve the historical fallback for non-standard source IDs and
+    # catalogue implementations used by older tests.
+    return next(
+        (
+            record
+            for record in catalog.all_records()
+            if record.record_id == record_id
+            and record.metadata_json.entity_type == "course"
+        ),
+        None,
+    )
+
+
 def _records_for_codes(catalog: CatalogReader, codes, years=()):
     code_set = set(codes)
     year_set = set(years)
+
+    # A uniquely retained Course identity can use the deterministic repository
+    # lookup directly rather than materialising the complete Course catalogue.
+    if len(code_set) == 1 and len(year_set) <= 1:
+        finder = getattr(
+            catalog,
+            "find_course_by_code",
+            None,
+        )
+
+        if finder is not None:
+            code = next(
+                iter(code_set)
+            )
+
+            year = next(
+                iter(year_set),
+                None,
+            )
+
+            result = finder(
+                code,
+                year,
+            )
+
+            values = (
+                ()
+                if result is None
+                else result
+                if isinstance(
+                    result,
+                    tuple,
+                )
+                else (result,)
+            )
+
+            return tuple(
+                record
+                for record in values
+                if (
+                    record.metadata_json.entity_type
+                    == "course"
+                    and record_code(record)
+                    == code
+                    and (
+                        not year_set
+                        or record.metadata_json.academic_year
+                        in year_set
+                    )
+                )
+            )
+
     return tuple(
         record
         for record in catalog.all_records()
         if record.metadata_json.entity_type == "course"
         and record_code(record) in code_set
-        and (not year_set or record.metadata_json.academic_year in year_set)
+        and (
+            not year_set
+            or record.metadata_json.academic_year
+            in year_set
+        )
     )
-
-
 def _resolve_pending(payload: AskRequest, catalog: CatalogReader):
     pending = payload.conversation_state.pending_clarification
     if pending is None or pending.type != "entity_selection":
@@ -264,11 +393,47 @@ def _resolve_pending(payload: AskRequest, catalog: CatalogReader):
         "clar-guided-study-plan-course",
     }:
         intent = "prerequisites"
-    return ConversationResolution(_question_for(selected, intent))
+    return ConversationResolution(
+        _question_for(selected, intent),
+        selected_record_id=(
+            selected[0].record_id
+            if len(selected) == 1
+            else None
+        ),
+    )
+
+
+def _focused_course_code(payload: AskRequest) -> str | None:
+    """Return the exact focused Course identity retained in semantic state."""
+
+    state = payload.conversation_state
+    focus = state.focus
+
+    if (
+        focus is None
+        or focus.domain != Domain.COURSES
+        or focus.entity_kind != EntityKind.COURSE
+        or focus.canonical_entity_id is None
+    ):
+        return None
+
+    for entity in state.recent_entities:
+        if (
+            entity.domain == Domain.COURSES
+            and entity.kind == EntityKind.COURSE
+            and entity.canonical_id == focus.canonical_entity_id
+        ):
+            return entity.canonical_id
+
+    return None
 
 
 def resolve_current_session(
-    payload: AskRequest, catalog: CatalogReader
+    payload: AskRequest,
+    catalog: CatalogReader,
+    *,
+    resolved_course_code: str | None = None,
+    resolved_course_record_id: str | None = None,
 ) -> ConversationResolution:
     """Resolve only entity/constraint meaning; facts always come from retrieval."""
 
@@ -277,18 +442,18 @@ def resolve_current_session(
     current_years = _years(question)
     pending_clarification = payload.conversation_state.pending_clarification
 
-    # A guided-card option may itself include a course code (for example,
-    # ``COMP1110 (2026)``). Treat an exact option selection as the answer to
-    # the outstanding card clarification before applying the general rule that
-    # an explicit current-turn course code starts a new lookup.
-    if current_codes and pending_clarification is not None and pending_clarification.id in {
-        "clar-guided-degree-program",
-        "clar-guided-prerequisite-course",
-        "clar-guided-study-plan-course",
-    }:
-        guided_pending = _resolve_pending(payload, catalog)
-        if guided_pending is not None:
-            return guided_pending
+    # A clarification option label may itself contain a course code, for
+    # example ``COMP1100 (2026) — Programming as Problem Solving``. Give the
+    # existing pending resolver one opportunity to recognize an exact current
+    # option before treating that code as an unrelated explicit new request.
+    #
+    # `_resolve_pending` returns None for ordinary explicit requests that do
+    # not exactly select a pending option, so a genuine correction such as
+    # ``Actually, tell me about COMP1110`` still supersedes stale clarification.
+    if current_codes and pending_clarification is not None:
+        pending_selection = _resolve_pending(payload, catalog)
+        if pending_selection is not None:
+            return pending_selection
 
     guided_resolution = _guided_card_resolution(question, catalog)
     if guided_resolution is not None:
@@ -313,6 +478,123 @@ def resolve_current_session(
     pending = _resolve_pending(payload, catalog)
     if pending is not None:
         return pending
+
+    year_refinement = YEAR_ONLY_REFINEMENT_PATTERN.fullmatch(question)
+    if year_refinement is not None and len(current_years) == 1:
+        retained_code = (
+            resolved_course_code
+            or _focused_course_code(payload)
+        )
+
+        if retained_code is not None:
+            target_year = current_years[0]
+            records = _records_for_codes(
+                catalog,
+                (retained_code,),
+                (target_year,),
+            )
+
+            clarification = _clarification(
+                records,
+                allow_multiple=False,
+            )
+            if clarification is not None:
+                return ConversationResolution(
+                    question,
+                    clarification,
+                    "Which matching course record do you mean?",
+                )
+
+            history_text = tuple(
+                turn.content
+                for turn in reversed(payload.history)
+                if turn.role == "user"
+            )
+            intent = _intent((question,) + history_text)
+
+            if len(records) == 1:
+                return ConversationResolution(
+                    _question_for(records, intent),
+                    selected_record_id=records[0].record_id,
+                )
+
+            # Preserve the explicit Course/year scope even when no matching
+            # record exists, so retrieval can return grounded insufficiency
+            # instead of dropping the refinement as off-topic.
+            if intent == "overview":
+                rewritten = (
+                    f"Tell me about {retained_code} in {target_year}"
+                )
+            elif intent == "teaching staff":
+                rewritten = (
+                    f"Who teaches {retained_code} in {target_year}?"
+                )
+            else:
+                rewritten = (
+                    f"What are the {intent} for "
+                    f"{retained_code} in {target_year}?"
+                )
+
+            return ConversationResolution(rewritten)
+
+    # A previously clarified exact source record outranks expansion of the
+    # bare course code back to every academic year. State supplies identity
+    # only; every fact is still re-read from the approved repository record.
+    if resolved_course_record_id is not None and (
+        REFERENCE_PATTERN.search(question)
+        or COURSE_FOLLOW_UP_PATTERN.search(question)
+    ):
+        selected_record = _record_for_id(catalog, resolved_course_record_id)
+        if (
+            selected_record is not None
+            and (
+                resolved_course_code is None
+                or record_code(selected_record) == resolved_course_code
+            )
+        ):
+            history_text = tuple(
+                turn.content
+                for turn in reversed(payload.history)
+                if turn.role == "user"
+            )
+            return ConversationResolution(
+                _question_for(
+                    (selected_record,),
+                    _intent((question,) + history_text),
+                ),
+                selected_record_id=selected_record.record_id,
+            )
+
+    # If no exact record selection exists, the retained course identity still
+    # supplies the bounded code-level reference introduced by Acceptance Fix 01.
+    if resolved_course_code is not None and (
+        REFERENCE_PATTERN.search(question)
+        or COURSE_FOLLOW_UP_PATTERN.search(question)
+    ):
+        records = _records_for_codes(
+            catalog,
+            (resolved_course_code,),
+            current_years,
+        )
+        clarification = _clarification(records, allow_multiple=False)
+        if clarification:
+            return ConversationResolution(
+                question,
+                clarification,
+                "Which academic year do you mean?",
+            )
+        if len(records) == 1:
+            history_text = tuple(
+                turn.content
+                for turn in reversed(payload.history)
+                if turn.role == "user"
+            )
+            return ConversationResolution(
+                _question_for(
+                    records,
+                    _intent((question,) + history_text),
+                )
+            )
 
     if not (
         REFERENCE_PATTERN.search(question) or COURSE_FOLLOW_UP_PATTERN.search(question)

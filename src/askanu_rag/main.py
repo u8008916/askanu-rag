@@ -46,7 +46,8 @@ from askanu_rag.resource_queries import (
     DomainResourceQueryService,
     is_plausible_resource_question,
 )
-from askanu_rag.retrieval.catalog import CatalogReader
+from askanu_rag.result_paging import ResultPageResolutionError
+from askanu_rag.retrieval.catalog import CatalogReader, record_code
 from askanu_rag.retrieval.semantic import LocalBm25Retriever
 from askanu_rag.retrieval.embeddings import GeminiEmbeddingProvider
 from askanu_rag.retrieval.reranking import CohereReranker
@@ -59,14 +60,17 @@ from askanu_rag.models import (
     ClarificationOption,
     CurrentJobsResponse,
     Domain,
+    EntityKind,
+    EntityResolutionBasis,
     ErrorResponse,
     HealthResponse,
     InsufficientEvidenceResponse,
     NeedsClarificationResponse,
     OffTopicResponse,
+    SemanticFocus,
     UpcomingEventsResponse,
 )
-from askanu_rag.models.conversation_state import ConversationState
+from askanu_rag.models.conversation_state import ConversationState, ResolvedEntity
 from askanu_rag.retrieval import (
     CourseProgramReader,
     CourseProgramRepository,
@@ -85,7 +89,11 @@ from askanu_rag.scholarship_queries import (
     is_plausible_scholarship_question,
 )
 from askanu_rag.state_transitions import (
+    ResultReferenceResolution,
     pending_from_public_clarification,
+    remember_entity,
+    select_result,
+    set_semantic_focus,
     set_pending_clarification,
 )
 from askanu_rag.transport_limits import (
@@ -124,9 +132,79 @@ def controlled_error_response(
         conversation_state=safe_state,
     )
     content = payload.model_dump(mode="json")
+    if content.get("result_page") is None:
+        content.pop("result_page", None)
     if not include_conversation_state:
         content.pop("conversation_state")
     return JSONResponse(status_code=status_code, content=content)
+
+
+def _course_record_for_source_id(
+    repository,
+    record_id: str,
+    *,
+    expected_code: str | None = None,
+):
+    """Resolve one canonical Course source record without a catalogue scan."""
+
+    prefix = "courses:course:"
+    finder = getattr(repository, "find_course_by_code", None)
+
+    if finder is not None and record_id.startswith(prefix):
+        identity = record_id[len(prefix):]
+        code, separator, year = identity.rpartition("_")
+
+        if (
+            separator
+            and code
+            and len(year) == 4
+            and year.isdigit()
+            and (
+                expected_code is None
+                or code == expected_code
+            )
+        ):
+            result = finder(code, year)
+
+            candidates = (
+                ()
+                if result is None
+                else result
+                if isinstance(result, tuple)
+                else (result,)
+            )
+
+            exact = next(
+                (
+                    record
+                    for record in candidates
+                    if record.record_id == record_id
+                    and record.metadata_json.entity_type == "course"
+                    and (
+                        expected_code is None
+                        or record_code(record) == expected_code
+                    )
+                ),
+                None,
+            )
+
+            if exact is not None:
+                return exact
+
+    # Compatibility fallback for non-standard source IDs / repositories.
+    return next(
+        (
+            record
+            for record in repository.all_records()
+            if record.record_id == record_id
+            and record.metadata_json.entity_type == "course"
+            and (
+                expected_code is None
+                or record_code(record) == expected_code
+            )
+        ),
+        None,
+    )
 
 
 def _request_id(request: Request) -> str:
@@ -142,6 +220,98 @@ def _validated_upstream_request_id(request: Request) -> str:
     if UPSTREAM_REQUEST_ID_PATTERN.fullmatch(value):
         return value
     return "invalid"
+
+
+def _state_with_verified_result_selection(
+    payload: AskRequest,
+    repository: CourseProgramReader,
+) -> ConversationState:
+    """Re-resolve untrusted clicked-result context against approved records."""
+
+    selection = payload.selected_result
+    state = payload.conversation_state
+    if selection is None:
+        return state
+    result_set = next(
+        item
+        for item in state.result_sets
+        if item.result_set_id == selection.result_set_id
+    )
+    if (
+        result_set.domain not in {Domain.ACCOMMODATION, Domain.SUPPORT}
+        or not isinstance(repository, ResourceReader)
+    ):
+        raise StarletteHTTPException(status_code=400)
+    records = repository.all_domain_records(result_set.domain.value)
+    record = next(
+        (
+            item
+            for item in records
+            if item.entity_id == selection.canonical_id
+        ),
+        None,
+    )
+    if record is None:
+        raise StarletteHTTPException(status_code=400)
+    entity = ResolvedEntity(
+        domain=result_set.domain,
+        kind=result_set.entity_kind,
+        canonical_id=record.entity_id,
+        canonical_name=record.title,
+        source_record_id=record.record_id,
+        resolution_basis=EntityResolutionBasis.RETAINED_STATE,
+        mentioned_turn=state.turn_index,
+    )
+    state = remember_entity(state, entity, focus=False)
+    state = select_result(
+        state,
+        ResultReferenceResolution(
+            result_set=result_set,
+            canonical_ids=(record.entity_id,),
+            clarification_required=False,
+        ),
+    )
+    return set_semantic_focus(
+        state,
+        SemanticFocus(
+            domain=result_set.domain,
+            entity_kind=result_set.entity_kind,
+            canonical_entity_id=record.entity_id,
+            result_set_id=result_set.result_set_id,
+            intent_name=result_set.intent.name,
+        ),
+    )
+
+
+def _verify_structured_result_page(
+    payload: AskRequest,
+    repository: CourseProgramReader,
+) -> None:
+    """Re-resolve the requested slice; client state never supplies records."""
+
+    page = payload.result_page
+    if page is None:
+        return
+    result_set = next(
+        item
+        for item in payload.conversation_state.result_sets
+        if item.result_set_id == page.result_set_id
+    )
+    if (
+        result_set.domain != Domain.ACCOMMODATION
+        or not isinstance(repository, ResourceReader)
+    ):
+        raise StarletteHTTPException(status_code=400)
+    start = page.start_ordinal - 1
+    requested_ids = result_set.ordered_canonical_ids[
+        start : start + page.limit
+    ]
+    current_ids = {
+        record.entity_id
+        for record in repository.all_domain_records(result_set.domain.value)
+    }
+    if any(canonical_id not in current_ids for canonical_id in requested_ids):
+        raise StarletteHTTPException(status_code=400)
 
 
 def _mark_response(request: Request, response: AskResponse) -> AskResponse:
@@ -206,6 +376,7 @@ def create_app(
     entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
     entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
     problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    resource_trace_sink: Callable[[Any], None] | None = None,
 ) -> FastAPI:
     """Inject providers explicitly; omission preserves the deterministic test path."""
     app = FastAPI(title="AskANU RAG", version="0.1.0", debug=False)
@@ -428,13 +599,21 @@ def create_app(
         # The client carries this bounded, untrusted structure between turns.
         # RAG validates it and returns the authoritative next state; no server
         # session or factual evidence is created from it.
+        request_state = _state_with_verified_result_selection(payload, repository)
+        _verify_structured_result_page(payload, repository)
+        clarification_option_ids = (
+            tuple(payload.clarification_selection.option_ids)
+            if payload.clarification_selection is not None
+            else ()
+        )
         conversation_turn = orchestrate_turn(
             payload.question,
             payload.history,
-            payload.conversation_state,
+            request_state,
             entity_catalogue=entity_catalogue,
             entity_aliases=entity_aliases,
             problem_domain_resolver=problem_domain_resolver,
+            clarification_option_ids=clarification_option_ids,
         )
         request.state.conversation_state = conversation_turn.state
         request.state.query_interpretation = conversation_turn.interpretation
@@ -463,7 +642,58 @@ def create_app(
 
         request_id = _request_id(request)
         if isinstance(repository, CatalogReader):
-            resolution = resolve_current_session(payload, repository)
+            resolved_entity = conversation_turn.interpretation.entity
+            resolved_course_code = (
+                resolved_entity.canonical_id
+                if (
+                    resolved_entity is not None
+                    and resolved_entity.domain == Domain.COURSES
+                    and resolved_entity.kind == EntityKind.COURSE
+                    and not conversation_turn.interpretation.requires_clarification
+                )
+                else None
+            )
+            resolved_course_record_id = (
+                resolved_entity.source_record_id
+                if resolved_course_code is not None
+                and resolved_entity is not None
+                else None
+            )
+            resolution = resolve_current_session(
+                payload,
+                repository,
+                resolved_course_code=resolved_course_code,
+                resolved_course_record_id=resolved_course_record_id,
+            )
+
+            # A completed entity-selection clarification may identify one exact
+            # stored Course record. Persist that source identity in semantic
+            # state so later references keep the selected academic year.
+            if resolution.selected_record_id is not None:
+                selected_record = _course_record_for_source_id(
+                    repository,
+                    resolution.selected_record_id,
+                )
+                if selected_record is not None:
+                    selected_entity = ResolvedEntity(
+                        domain=Domain.COURSES,
+                        kind=EntityKind.COURSE,
+                        canonical_id=record_code(selected_record),
+                        canonical_name=selected_record.title,
+                        source_record_id=selected_record.record_id,
+                        resolution_basis=(
+                            resolved_entity.resolution_basis
+                            if resolved_entity is not None
+                            and resolved_entity.canonical_id
+                            == record_code(selected_record)
+                            else EntityResolutionBasis.RETAINED_STATE
+                        ),
+                        mentioned_turn=conversation_turn.state.turn_index,
+                    )
+                    request.state.conversation_state = remember_entity(
+                        request.state.conversation_state,
+                        selected_entity,
+                    )
             if resolution.clarification is not None:
                 return _mark_response(
                     request,
@@ -478,14 +708,14 @@ def create_app(
         else:
             resolved_question = payload.question
 
-        pending = payload.conversation_state.pending_clarification
+        pending = request_state.pending_clarification
         if job_queries is not None and is_plausible_job_question(
             resolved_question, pending
         ):
             job_response = await job_queries.answer(
                 resolved_question,
                 request_id,
-                payload.conversation_state.pending_clarification,
+                request_state.pending_clarification,
                 payload.history,
             )
             if job_response is not None:
@@ -497,22 +727,61 @@ def create_app(
             scholarship_response = await scholarship_queries.answer(
                 resolved_question,
                 request_id,
-                payload.conversation_state.pending_clarification,
+                request_state.pending_clarification,
             )
             if scholarship_response is not None:
                 return _mark_response(request, scholarship_response)
 
-        if accommodation_queries is not None and is_plausible_resource_question(
-            resolved_question, "accommodation", pending, payload.history
-        ):
-            accommodation_response = await accommodation_queries.answer(
-                resolved_question,
-                request_id,
-                payload.conversation_state.pending_clarification,
-                payload.history,
+        structured_accommodation_page = bool(
+            payload.result_page is not None
+            and any(
+                item.result_set_id == payload.result_page.result_set_id
+                and item.domain == Domain.ACCOMMODATION
+                for item in conversation_turn.state.result_sets
             )
+        )
+        accommodation_domain_resolved = structured_accommodation_page or (
+            conversation_turn.interpretation.domain == Domain.ACCOMMODATION
+            and not conversation_turn.interpretation.requires_clarification
+            and (
+                conversation_turn.interpretation.entity is not None
+                or conversation_turn.interpretation.referenced_result_set_id is not None
+            )
+        )
+        if accommodation_queries is not None and (
+            accommodation_domain_resolved
+            or is_plausible_resource_question(
+                resolved_question, "accommodation", pending, payload.history
+            )
+        ):
+            try:
+                accommodation_response = await accommodation_queries.answer(
+                    resolved_question,
+                    request_id,
+                    request_state.pending_clarification,
+                    payload.history,
+                    resolved_domain=accommodation_domain_resolved,
+                    interpretation=conversation_turn.interpretation,
+                    selected_canonical_ids=conversation_turn.selected_canonical_ids,
+                    conversation_state=conversation_turn.state,
+                    clarification_option_ids=clarification_option_ids,
+                    result_page=payload.result_page,
+                )
+            except ResultPageResolutionError as exc:
+                raise StarletteHTTPException(status_code=400) from exc
             if accommodation_response is not None:
-                return _mark_response(request, accommodation_response)
+                outcome = accommodation_queries.integrate_conversation(
+                    accommodation_response,
+                    resolved_question,
+                    conversation_turn.state,
+                    conversation_turn.interpretation,
+                    payload.result_page,
+                )
+                request.state.conversation_state = outcome.state
+                request.state.resource_query_trace = outcome.trace
+                if resource_trace_sink is not None and outcome.trace is not None:
+                    resource_trace_sink(outcome.trace)
+                return _mark_response(request, outcome.response)
 
         support_domain_resolved = (
             conversation_turn.interpretation.domain == Domain.SUPPORT
@@ -527,9 +796,10 @@ def create_app(
             support_response = await support_queries.answer(
                 resolved_question,
                 request_id,
-                payload.conversation_state.pending_clarification,
+                request_state.pending_clarification,
                 payload.history,
                 resolved_domain=support_domain_resolved,
+                clarification_option_ids=clarification_option_ids,
             )
             if support_response is not None:
                 return _mark_response(request, support_response)
@@ -542,8 +812,69 @@ def create_app(
                 await event_queries.answer(resolved_question, request_id),
             )
 
-        course_response = await course_queries.answer(resolved_question, request_id)
+        # Safe aliases are resolved only by the bounded V7 understanding
+        # catalogue. Retrieval must consume that canonical identity on the same
+        # turn rather than trying to independently fuzzy-match the user's text.
+        #
+        # Preserve the original wording so fact intent (for example
+        # "prerequisites") is still planned normally; append only the approved
+        # canonical course identifier.
+        course_question = resolved_question
+        course_entity = conversation_turn.interpretation.entity
+        if (
+            course_entity is not None
+            and course_entity.domain == Domain.COURSES
+            and course_entity.kind == EntityKind.COURSE
+            and course_entity.resolution_basis == EntityResolutionBasis.SAFE_ALIAS
+            and not conversation_turn.interpretation.requires_clarification
+            and COURSE_CODE_CANDIDATE_PATTERN.search(course_question) is None
+        ):
+            course_question = (
+                f"{course_question.rstrip()} {course_entity.canonical_id}"
+            )
+
+        course_response = await course_queries.answer(course_question, request_id)
         if course_response is not None:
+            # When retrieval itself proves that this Course lookup resolved to
+            # exactly one approved source record, preserve that record identity
+            # for later conversational references. State remembers identity
+            # only; institutional facts continue to come from repository data.
+            response_sources = tuple(
+                getattr(course_response, "sources", ()) or ()
+            )
+            if (
+                isinstance(repository, CatalogReader)
+                and course_entity is not None
+                and course_entity.domain == Domain.COURSES
+                and course_entity.kind == EntityKind.COURSE
+                and len(response_sources) == 1
+            ):
+                source_record_id = getattr(
+                    response_sources[0],
+                    "record_id",
+                    None,
+                )
+                if source_record_id is not None:
+                    exact_record = _course_record_for_source_id(
+                        repository,
+                        source_record_id,
+                        expected_code=course_entity.canonical_id,
+                    )
+                    if exact_record is not None:
+                        exact_entity = course_entity.model_copy(
+                            update={
+                                "canonical_name": exact_record.title,
+                                "source_record_id": exact_record.record_id,
+                                "mentioned_turn": (
+                                    request.state.conversation_state.turn_index
+                                ),
+                            }
+                        )
+                        request.state.conversation_state = remember_entity(
+                            request.state.conversation_state,
+                            exact_entity,
+                        )
+
             return _mark_response(request, course_response)
 
         # Unsupported ANU/follow-up questions abstain rather than claiming facts.
@@ -557,7 +888,7 @@ def create_app(
                 payload.question,
                 re.IGNORECASE,
             )
-            or payload.conversation_state.pending_clarification is not None
+            or request_state.pending_clarification is not None
         ):
             return _mark_response(
                 request,

@@ -39,6 +39,7 @@ from askanu_rag.retrieval.vector import (
     InMemoryVectorRepository,
     PersistedEmbedding,
     PersistedSemanticRetriever,
+    effective_embedding_version,
 )
 from askanu_rag.synthesis import SynthesisError, assemble_context
 from test_grounded_synthesis import QUESTION, record
@@ -89,6 +90,10 @@ def test_frozen_production_configuration_values():
     assert (settings.rrf_k, settings.rerank_model, settings.rerank_top_n) == (60, "rerank-v4.0-fast", 5)
     assert (settings.model, settings.generation_thinking_level) == ("gemini-3.8-flash", "low")
     assert (settings.max_output_tokens, settings.timeout_seconds, settings.generation_max_retries) == (4096, 20, 2)
+    assert effective_embedding_version(
+        "gemini-embedding-2:768:retrieval-format-v1",
+        RetrievalUnitBuilder().policy_version,
+    ) == settings.embedding_version
     with pytest.raises(ValidationError):
         Settings(embedding_dimension=1_536)
 

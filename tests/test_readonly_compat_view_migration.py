@@ -31,6 +31,12 @@ EXPECTED_COLUMNS = (
     "metadata_json",
 )
 
+def frozen_migration_sha256(path: Path) -> str:
+    """Hash frozen migration bytes using their deployed CRLF representation."""
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    deployed_bytes = data.replace(b"\n", b"\r\n")
+    return hashlib.sha256(deployed_bytes).hexdigest()
+
 
 def load_revision():
     spec = importlib.util.spec_from_file_location("readonly_view_revision", READ_ONLY_VIEW)
@@ -45,10 +51,10 @@ def test_revision_is_additive_after_day9_without_editing_deployed_migrations():
 
     assert revision.revision == "20260914_0003"
     assert revision.down_revision == "20260913_0002"
-    assert hashlib.sha256(DAY7.read_bytes()).hexdigest() == (
+    assert frozen_migration_sha256(DAY7) == (
         "80836b03d4484a33626121655355263202839f715e07ebcf1a7e5dcdee28c74c"
     )
-    assert hashlib.sha256(DAY9.read_bytes()).hexdigest() == (
+    assert frozen_migration_sha256(DAY9) == (
         "45186d09b822626bb7d7ea61a78761ea43ee3f859967a4ffba7b4f344f983026"
     )
 

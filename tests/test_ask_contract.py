@@ -61,6 +61,8 @@ def test_valid_frozen_request_returns_complete_contract_envelope() -> None:
         "status",
         "answer",
         "items",
+        "answer_state",
+        "actions",
         "sources",
         "clarification",
         "request_id",
@@ -68,6 +70,8 @@ def test_valid_frozen_request_returns_complete_contract_envelope() -> None:
     }
     assert body["status"] == "insufficient_evidence"
     assert body["clarification"] is None
+    assert body["answer_state"] is None
+    assert body["actions"] == []
     assert body["sources"][0]["record_id"] == "courses:course:COMP1110_2026"
     assert body["request_id"].startswith("req_")
     assert body["conversation_state"]["schema_version"] == 1

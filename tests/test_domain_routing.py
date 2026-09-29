@@ -27,6 +27,10 @@ class ReadSpyRepository(CourseProgramRepository):
         self.reads["courses"] += 1
         return super().all_records()
 
+    def find_course_by_code(self, identifier, academic_year=None):
+        self.reads["courses"] += 1
+        return super().find_course_by_code(identifier, academic_year)
+
     def all_scholarships(self):
         self.reads["scholarships"] += 1
         return super().all_scholarships()

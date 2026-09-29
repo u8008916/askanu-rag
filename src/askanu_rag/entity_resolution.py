@@ -16,10 +16,15 @@ from askanu_rag.models import (
     EntityResolutionBasis,
     ResolvedEntity,
 )
+from askanu_rag.course_queries import prerequisite_target_course_codes
 from askanu_rag.models.conversation_state import ENTITY_DOMAIN
+from askanu_rag.retrieval.identifiers import normalize_course_code_reference
 
 _SPACE_RE = re.compile(r"\s+")
-_COURSE_CODE_RE = re.compile(r"\bCOMP\s*(\d{4}[A-Z]?)\b", re.IGNORECASE)
+_COURSE_CODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z]{4}\s*-?\s*\d{4}[A-Za-z]?)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 
 
 def normalise_entity_text(value: str) -> str:
@@ -141,10 +146,32 @@ def resolve_explicit_entity(
     ]
     course_codes = tuple(
         dict.fromkeys(
-            f"COMP{match.group(1).upper()}"
+            code
             for match in _COURSE_CODE_RE.finditer(question)
+            if (
+                code := normalize_course_code_reference(match.group(1))
+            ) is not None
         )
     )
+    targeted_course_codes = prerequisite_target_course_codes(
+        question
+    )
+    if len(targeted_course_codes) == 1:
+        target_code = targeted_course_codes[0]
+
+        identifiers = [
+            entity
+            for entity in identifiers
+            if (
+                entity.kind != EntityKind.COURSE
+                or entity.canonical_id.casefold()
+                == target_code.casefold()
+            )
+        ]
+
+        if target_code in course_codes:
+            course_codes = (target_code,)
+
     if identifiers or course_codes:
         matches = list(identifiers)
         matches.extend(

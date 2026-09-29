@@ -21,8 +21,12 @@ Request:
     "constraints":{"items":[]},
     "result_sets":[],
     "selected_result":null,
+    "result_page":null,
     "pending_clarification":null
-  }
+  },
+  "selected_result":null,
+  "clarification_selection":null,
+  "result_page":null
 }
 ```
 
@@ -37,6 +41,24 @@ History and state have different roles: `history` is bounded recent language
 context; `conversation_state` is bounded structured semantic context. Neither
 is institutional factual evidence. There is no server session ID/store,
 persistent profile, account memory, Redis/cache or sticky-session requirement.
+
+`selected_result` is an optional generic clicked-result input containing
+`result_set_id`, `canonical_id`, and one-based `ordinal`. All three values must
+agree with a retained ResultSet and RAG re-resolves the identity against current
+approved repository evidence before use. `clarification_selection` is an
+optional generic structured response containing the current `clarification_id`
+and one or more `option_ids`. IDs must belong to the current pending option set;
+multiple IDs additionally require `allow_multiple: true`. Both inputs are
+untrusted context and cannot supply institutional facts, URLs, or arbitrary
+record identities.
+
+`result_page` is an optional generic presentation request containing a retained
+`result_set_id`, one-based `start_ordinal`, and `limit` from 1 through 5. The
+start ordinal must equal the server cursor in `conversation_state`, and the set
+must be the current focused `RESULTS` set. Unknown, stale, foreign, skipped or
+oversized page requests are rejected. RAG slices the immutable ResultSet order
+and re-resolves the returned identities against current approved repository
+evidence; continuation never retrieves, reranks or accepts client-created IDs.
 
 Frozen request transport limits:
 
@@ -98,6 +120,8 @@ Error responses use controlled JSON with the existing `error` status and respons
   "status":"error",
   "answer":"The request could not be completed.",
   "items":[],
+  "answer_state":null,
+  "actions":[],
   "sources":[],
   "clarification":null,
   "request_id":"req_...",
@@ -105,9 +129,14 @@ Error responses use controlled JSON with the existing `error` status and respons
 }
 ```
 
-The additive `conversation_state` response field is present for every Ask
-status. Existing response status, answer, item, source, clarification and
-request-ID semantics are unchanged.
+The additive `conversation_state`, `answer_state`, and `actions` response fields
+are present for every Ask status. `answer_state` is null when the route does not
+produce a shared evidence state; otherwise it is `CONFIRMED`, `DERIVED`,
+`PARTIAL`, or `UNKNOWN`. `actions` contains only validated backend projections,
+never links parsed from generated prose, history, or user input.
+The additive `result_page` response object is emitted only for a paged result
+presentation. It contains `result_set_id`, `start_ordinal`, `returned`,
+`has_more`, and nullable `next_ordinal`.
 
 The answer may provide a safe, user-facing explanation. Never return stack traces, credentials, secrets, prompts or internal dependency diagnostics. The exact 5xx code depends on the failure; this contract does not prescribe a separate code for each dependency.
 
@@ -117,6 +146,8 @@ The answer may provide a safe, user-facing explanation. Never return stack trace
   "status":"ok",
   "answer":"...",
   "items":[],
+  "answer_state":null,
+  "actions":[],
   "sources":[
     {
       "record_id":"course:COMP1110:2026",
@@ -132,6 +163,88 @@ The answer may provide a safe, user-facing explanation. Never return stack trace
 }
 ```
 
+The Ask response `items` field is a discriminated `PublicItem` union. Its
+currently supported members are `PublicResultItem` (`type: "result"`),
+`PublicComparisonItem` (`type: "comparison"`) and the backwards-compatible
+chat Jobs shape `PublicJobItem` (`type: "job"`). Arbitrary dictionaries are not
+valid response items.
+
+Accommodation and later verticals reuse `items` for shared structured results.
+A result item has `type: "result"`, stored provenance (`record_id`, `source_id`,
+`url`, `domain`), stable `canonical_id`, title, optional ResultSet identity and
+ordinal, and a `fields` object containing only source-backed display values. A
+backend-authored comparison uses `type: "comparison"`, ordered record
+identities, and named fields whose per-record values explicitly state
+`published` or `not_published`. The App does not reconstruct comparisons from
+answer prose or compare cards itself.
+
+When—and only when—a named room's explicit AUD weekly rate established a
+numeric Accommodation price match, the result also contains typed
+`qualifying_evidence`:
+
+```json
+{
+  "type":"room_rate",
+  "room_name":"Standard",
+  "rate":"$380.00",
+  "cost_period":"2027 Indicative costs",
+  "contract":"44 weeks",
+  "inclusions":"Internet included",
+  "other_fees":"Refundable Deposit: $1,300"
+}
+```
+
+This object proves only that exact named room passed the active bound. It does
+not state that every room or the residence is affordable, that the room is
+cheapest or vacant, that the student can obtain it, or any derived total cost.
+Without a deterministic room-price match the field is null.
+
+Example continuation request:
+
+```json
+{
+  "question":"Show more",
+  "history":[],
+  "conversation_state":{"schema_version":1,"...":"authoritative prior state"},
+  "result_page":{"result_set_id":"rs:accommodation:1","start_ordinal":6,"limit":5}
+}
+```
+
+Example page metadata:
+
+```json
+{
+  "result_page":{
+    "result_set_id":"rs:accommodation:1",
+    "start_ordinal":6,
+    "returned":5,
+    "has_more":true,
+    "next_ordinal":11
+  }
+}
+```
+
+Initial discovery presents ordinals 1–5. Natural `show more`, `show me more`,
+and `what else?` use the same retained cursor. A refined child ResultSet gets
+its own cursor, so later continuation cannot silently page the parent. A final
+or repeated terminal page returns no duplicate identities, `has_more: false`,
+and `next_ordinal: null`.
+
+A structured action currently uses this reusable shape:
+
+```json
+{
+  "type":"application",
+  "label":"Apply now",
+  "url":"https://anu.starrezhousing.com/StarRezPortalX",
+  "record_id":"accommodation:residence:example-hall",
+  "source_id":"accommodation_anu_study"
+}
+```
+
+Only a stored, model-validated approved `application_url` may populate this
+action.
+
 ### Source object identifiers
 
 Every source object contains `record_id`, `source_id`, `title`, `url`, and `domain`.
@@ -146,6 +259,8 @@ Every source object contains `record_id`, `source_id`, `title`, `url`, and `doma
   "status":"needs_clarification",
   "answer":"Do you mean COMP1110 or COMP1600?",
   "items":[],
+  "answer_state":null,
+  "actions":[],
   "sources":[],
   "clarification":{
     "id":"clar-42",
@@ -183,6 +298,7 @@ are:
 | `constraints.items` | typed scoped constraint array | 16 |
 | `result_sets` | typed ResultSet array | 6 |
 | `selected_result` | stable ResultSet selection or null | one |
+| `result_page` | next presentation ordinal for one retained ResultSet or null | one |
 | `pending_clarification` | resumable clarification or null | one |
 
 Each ResultSet contains at most 20 ordered canonical identities. Clarification
@@ -234,6 +350,20 @@ Preserve option order for `first`/`second`; `allow_multiple` supports `both`.
 Clear pending clarification when resolved, corrected, switched to a new topic,
 or cleared with Clear Chat. This is untrusted current-session context, not
 factual evidence.
+
+The equivalent structured multi-selection request is:
+
+```json
+{
+  "question":"Use those options",
+  "history":[],
+  "conversation_state":{"pending_clarification":{"id":"clar-42","type":"entity_selection","options":[{"id":"record-a","label":"A"},{"id":"record-b","label":"B"}],"allow_multiple":true}},
+  "clarification_selection":{"clarification_id":"clar-42","option_ids":["record-a","record-b"]}
+}
+```
+
+Every selected ID is checked against both the pending options and current
+approved repository evidence. Foreign or stale values cannot produce facts.
 
 ## GET /api/v1/events/upcoming?limit=5
 Deterministic; `Australia/Canberra`; upcoming only; ascending start time; default 5.
