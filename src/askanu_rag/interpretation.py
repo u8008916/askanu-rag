@@ -70,7 +70,7 @@ _LOCATION_CONSTRAINT_RE = re.compile(
     r"[^?.!]{0,48}?\b(?:available|located|based|held)?\s*(?:in|at)\s+"
     r"(?:the\s+)?(?P<value>[a-z][a-z0-9 /,&'-]{0,60}?)"
     r"(?=\s+(?:today|tomorrow|this\s+(?:friday|week|weekend)|next\s+week|"
-    r"after|before|between|under|below|with|that|which|who)\b|[?.!]|$)",
+    r"after|before|between|under|below|with|that|which|who|are|is)\b|[?.!]|$)",
     re.IGNORECASE,
 )
 _JOB_MODIFIER_RE = re.compile(
@@ -83,6 +83,12 @@ _NON_CONSTRAINT_JOB_MODIFIERS = {
     "available",
     "current",
     "open",
+    "all",
+    "find",
+    "list",
+    "me",
+    "show",
+    "there",
     "what",
     "which",
     # Existing semantic topic/title words are not work-arrangement filters.

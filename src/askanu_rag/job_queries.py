@@ -338,7 +338,18 @@ def _job_filters(
     if employment_types:
         filters["employment_types"] = tuple(sorted(employment_types))
 
-    locations = values(ConstraintSemanticType.LOCATION)
+    requested_locations = values(ConstraintSemanticType.LOCATION)
+    category_values = {
+        record.metadata_json.category
+        for record in records
+        if record.metadata_json.category is not None
+    }
+    category_locations = {
+        value
+        for value in requested_locations
+        if any(_normalize(value) == _normalize(category) for category in category_values)
+    }
+    locations = requested_locations - category_locations
     for record in records:
         value = record.metadata_json.location
         if value is None:
@@ -373,6 +384,11 @@ def _job_filters(
             )
         )
     }
+    categories.update(
+        category
+        for category in category_values
+        if any(_normalize(value) == _normalize(category) for value in category_locations)
+    )
     if categories:
         filters["category"] = tuple(sorted(categories))
 
