@@ -35,7 +35,15 @@ def _error_payload(kind: str, discovered: dict) -> dict:
         "conversation_state": state,
     }
     if kind == "stale_cursor":
-        state["result_page"] = None
+        older = deepcopy(active)
+        older["result_set_id"] = "rs:accommodation:stale-cursor"
+        older["created_turn"] = 0
+        older["last_refined_turn"] = 0
+        state["result_sets"].append(older)
+        state["result_page"] = {
+            "result_set_id": older["result_set_id"],
+            "next_ordinal": 6,
+        }
         return base
     if kind == "older_resultset":
         older = deepcopy(active)
