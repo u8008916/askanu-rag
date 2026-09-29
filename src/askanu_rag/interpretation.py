@@ -65,6 +65,42 @@ _BETWEEN_RE = re.compile(
     r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
     re.IGNORECASE,
 )
+_LOCATION_CONSTRAINT_RE = re.compile(
+    r"\b(?:jobs?|roles?|events?|accommodation|housing|residences?)\b"
+    r"[^?.!]{0,48}?\b(?:available|located|based|held)?\s*(?:in|at)\s+"
+    r"(?:the\s+)?(?P<value>[a-z][a-z0-9 /,&'-]{0,60}?)"
+    r"(?=\s+(?:today|tomorrow|this\s+(?:friday|week|weekend)|next\s+week|"
+    r"after|before|between|under|below|with|that|which|who)\b|[?.!]|$)",
+    re.IGNORECASE,
+)
+_JOB_MODIFIER_RE = re.compile(
+    r"\b(?P<value>[a-z][a-z0-9-]{1,30})\s+(?:jobs?|roles?)\b",
+    re.IGNORECASE,
+)
+_JOB_CLASSIFICATION_RE = re.compile(r"\b(ANU\d{1,4})\b", re.IGNORECASE)
+_NON_CONSTRAINT_JOB_MODIFIERS = {
+    "anu",
+    "available",
+    "current",
+    "open",
+    "what",
+    "which",
+    # Existing semantic topic/title words are not work-arrangement filters.
+    "technical",
+    "software",
+    "officer",
+    "fellow",
+    "manager",
+    "director",
+    "coordinator",
+    "assistant",
+    "lead",
+    "analyst",
+    "engineer",
+    "developer",
+    "researcher",
+    "administrator",
+}
 
 _TYPED_REFERENCES: tuple[tuple[tuple[str, ...], Domain, EntityKind], ...] = (
     (("course",), Domain.COURSES, EntityKind.COURSE),
@@ -229,6 +265,51 @@ def _explicit_constraints(question: str, domain: Domain | None, turn: int) -> Co
             lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
             introduced_turn=turn,
         ))
+
+    if domain in {Domain.JOBS, Domain.EVENTS, Domain.ACCOMMODATION}:
+        location = _LOCATION_CONSTRAINT_RE.search(question)
+        location_value = (
+            _normalise(location.group("value")).strip(" ,")
+            if location is not None
+            else None
+        )
+        # "at ANU" scopes the institution; it is not a source location value.
+        if location_value is not None and location_value != "anu":
+            found.append(ScopedConstraint(
+                semantic_type=ConstraintSemanticType.LOCATION,
+                value=location_value,
+                scope=ConstraintScope(domain=domain),
+                lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                introduced_turn=turn,
+            ))
+
+    if domain == Domain.JOBS:
+        classification = _JOB_CLASSIFICATION_RE.search(question)
+        if classification is not None:
+            # The frozen schema has one categorical Jobs dimension.  Preserve
+            # the exact classification token there; the Jobs query layer maps
+            # ANU-number values to its source-backed classification field.
+            found.append(ScopedConstraint(
+                semantic_type=ConstraintSemanticType.CATEGORY,
+                value=classification.group(1).upper(),
+                scope=ConstraintScope(domain=domain),
+                lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                introduced_turn=turn,
+            ))
+        modifier = _JOB_MODIFIER_RE.search(question)
+        if modifier is not None:
+            value = _normalise(modifier.group("value"))
+            if (
+                value not in _NON_CONSTRAINT_JOB_MODIFIERS
+                and _JOB_CLASSIFICATION_RE.fullmatch(value) is None
+            ):
+                found.append(ScopedConstraint(
+                    semantic_type=ConstraintSemanticType.EMPLOYMENT_TYPE,
+                    value=value,
+                    scope=ConstraintScope(domain=domain),
+                    lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                    introduced_turn=turn,
+                ))
     return ConstraintSet(items=tuple(found))
 
 

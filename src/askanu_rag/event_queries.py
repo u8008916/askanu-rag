@@ -218,9 +218,30 @@ def _event_candidates(
     time_value = _constraint_value(
         interpretation, ConstraintSemanticType.TIME_OF_DAY_WINDOW
     )
-    return tuple(
+    candidates = tuple(
         record for record in dated if _matches_time_constraint(record, time_value)
-    )[:20]
+    )
+    location = _constraint_value(interpretation, ConstraintSemanticType.LOCATION)
+    if location is not None:
+        wanted = " ".join(location.casefold().split())
+        candidates = tuple(
+            record
+            for record in candidates
+            if any(
+                value is not None
+                and re.search(
+                    r"(?<![a-z0-9])"
+                    + re.escape(wanted)
+                    + r"(?![a-z0-9])",
+                    " ".join(value.casefold().split()),
+                )
+                for value in (
+                    record.metadata_json.venue_name,
+                    record.metadata_json.address,
+                )
+            )
+        )
+    return candidates[:20]
 
 
 def _event_public_item(
@@ -373,8 +394,19 @@ class EventQueryService:
                 )[: self._limit]
 
         if not selected:
+            has_location_constraint = (
+                _constraint_value(
+                    interpretation, ConstraintSemanticType.LOCATION
+                )
+                is not None
+            )
             return InsufficientEvidenceResponse(
-                answer="I could not find persisted Event evidence for that time period.",
+                answer=(
+                    "I could not find persisted Event evidence matching the active "
+                    "source-backed constraints."
+                    if has_location_constraint
+                    else "I could not find persisted Event evidence for that time period."
+                ),
                 request_id=request_id,
             )
 

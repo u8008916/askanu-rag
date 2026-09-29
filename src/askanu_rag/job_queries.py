@@ -14,6 +14,7 @@ from askanu_rag.models import (
     Clarification,
     ClarificationOption,
     ConversationState,
+    ConstraintSemanticType,
     CurrentJobItem,
     Domain,
     EntityKind,
@@ -288,12 +289,30 @@ def _contains_phrase(question: str, value: str) -> bool:
 
 
 def _job_filters(
-    question: str, records: Sequence[JobRecord]
+    question: str,
+    records: Sequence[JobRecord],
+    interpretation: QueryInterpretation | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], bool]:
     """Extract only explicit values already present in current stored Jobs."""
 
     filters: dict[str, tuple[str, ...]] = {}
     normalized = _normalize(question)
+    constraints = (
+        tuple(
+            item
+            for item in interpretation.constraints.items
+            if item.scope.domain == Domain.JOBS
+        )
+        if interpretation is not None
+        else ()
+    )
+
+    def values(semantic_type: ConstraintSemanticType) -> set[str]:
+        return {
+            str(item.value)
+            for item in constraints
+            if item.semantic_type == semantic_type
+        }
 
     employment_types = {
         value
@@ -312,11 +331,14 @@ def _job_filters(
         _normalize(match.group(1)).replace("-", " ").title()
         for match in EMPLOYMENT_TYPE_PATTERN.finditer(question)
     }
+    requested_employment_types.update(
+        values(ConstraintSemanticType.EMPLOYMENT_TYPE)
+    )
     employment_types.update(requested_employment_types)
     if employment_types:
         filters["employment_types"] = tuple(sorted(employment_types))
 
-    locations = set()
+    locations = values(ConstraintSemanticType.LOCATION)
     for record in records:
         value = record.metadata_json.location
         if value is None:
@@ -361,6 +383,11 @@ def _job_filters(
         and _contains_phrase(question, record.metadata_json.classification)
         and re.search(r"\bclassification\b", question, re.I)
     }
+    classifications.update(
+        value
+        for value in values(ConstraintSemanticType.CATEGORY)
+        if re.fullmatch(r"ANU\d{1,4}", value, re.I)
+    )
     if classifications:
         filters["classification"] = tuple(sorted(classifications))
 
@@ -441,6 +468,20 @@ def _matches_job_filters(
                 return False
         elif field == "role_requirements":
             actual = {_normalize(value) for value in metadata.role_requirements or ()}
+            if not all(_normalize(value) in actual for value in expected):
+                return False
+        elif field == "location":
+            actual_value = metadata.location
+            actual = (
+                set()
+                if actual_value is None
+                else {
+                    _normalize(part)
+                    for part in re.split(r"\s*(?:/|,|;|\|)\s*", actual_value)
+                    if part.strip()
+                }
+                | {_normalize(actual_value)}
+            )
             if not all(_normalize(value) in actual for value in expected):
                 return False
         else:
@@ -683,7 +724,9 @@ class JobQueryService:
                 for record in current_records
                 if record.entity_id in parent_ids
             )
-        filters, unmatched_explicit = _job_filters(question, current_records)
+        filters, unmatched_explicit = _job_filters(
+            question, current_records, interpretation
+        )
         closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
         if (
             _is_current_jobs_question(question)
@@ -850,7 +893,7 @@ class JobQueryService:
             SEMANTIC_JOB_PATTERN.search(question)
             or TECHNICAL_DISCOVERY_PATTERN.search(question)
         )
-        filters, unmatched = _job_filters(question, current)
+        filters, unmatched = _job_filters(question, current, interpretation)
         closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
         listing = bool(
             resolved_page is not None

@@ -371,6 +371,33 @@ def _filter_accommodation_population(
                 unknown[record.record_id] = record
         candidates = tuple(matched)
 
+    location: str | None = None
+    if interpretation is not None:
+        location = next(
+            (
+                str(constraint.value)
+                for constraint in interpretation.constraints.items
+                if constraint.scope.domain == Domain.ACCOMMODATION
+                and constraint.semantic_type == ConstraintSemanticType.LOCATION
+            ),
+            None,
+        )
+    if location is not None:
+        wanted = normalize_job_title(location)
+        matched = []
+        for record in candidates:
+            published = record.metadata_json.location
+            if published is None:
+                unknown[record.record_id] = record
+                continue
+            normalized = normalize_job_title(published)
+            if re.search(
+                r"(?<![a-z0-9])" + re.escape(wanted) + r"(?![a-z0-9])",
+                normalized,
+            ):
+                matched.append(record)
+        candidates = tuple(matched)
+
     catering = _requested_catering_preference(question)
     if catering is not None:
         matched = []
