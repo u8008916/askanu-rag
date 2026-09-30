@@ -7,6 +7,7 @@ not rank candidates or treat client state as evidence.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -75,6 +76,48 @@ def canonical_id(record: JourneyRecord) -> str:
     return record_code(record)
 
 
+def course_labeled_content(record: CourseProgramRecord, field: str) -> str | None:
+    """Read a bounded, explicitly labelled Course content section.
+
+    Description and corequisites are present in the producer's canonical content,
+    not in separate frozen metadata fields.  Stop at the next labelled section so
+    unrelated canonical content is never relabelled as the requested fact.
+    """
+
+    label = {
+        "description": "Description",
+        "corequisites": "Corequisites",
+    }.get(field)
+    if label is None:
+        raise ValueError("unsupported canonical Course content field")
+    lines = record.content.splitlines()
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if re.fullmatch(rf"\s*{re.escape(label)}\s*:\s*.*", line, re.I)
+        ),
+        None,
+    )
+    if start is None:
+        return None
+    first = re.sub(
+        rf"^\s*{re.escape(label)}\s*:\s*",
+        "",
+        lines[start],
+        count=1,
+        flags=re.I,
+    ).strip()
+    values = [first] if first else []
+    for line in lines[start + 1 :]:
+        if re.match(r"^\s*[A-Za-z][A-Za-z0-9 /_-]{0,80}\s*:\s*", line):
+            break
+        if line.strip():
+            values.append(line.strip())
+    value = "\n".join(values).strip()
+    return value or None
+
+
 def course_field(record: JourneyRecord, field: str) -> PublicValue:
     if not isinstance(record, CourseProgramRecord):
         raise TypeError("Course projection requires a Course-family record")
@@ -83,8 +126,8 @@ def course_field(record: JourneyRecord, field: str) -> PublicValue:
         return metadata.entity_type
     if field == "code":
         return record_code(record)
-    if field == "description":
-        return metadata.description or record.content
+    if field in {"description", "corequisites"}:
+        return course_labeled_content(record, field)
     if field == "offerings":
         offerings = getattr(metadata, "offerings", None)
         if not offerings:

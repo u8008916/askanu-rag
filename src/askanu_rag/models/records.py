@@ -58,7 +58,7 @@ COURSES_HOST = "programsandcourses.anu.edu.au"
 SUBPLAN_ENTITY_TYPES = ("major", "minor", "specialisation")
 COURSES_PATH_PATTERN = re.compile(
     r"^/\d{4}/(?:course|program|major|minor|specialisation)/"
-    r"[a-z0-9][a-z0-9._-]*$"
+    r"[A-Za-z0-9][A-Za-z0-9._-]*$"
 )
 
 
@@ -492,24 +492,34 @@ class CommonRecord(BaseModel):
                 if isinstance(metadata, dict)
                 else getattr(metadata, "academic_year", None)
             )
-            expected_url = (
-                f"https://{COURSES_HOST}/{academic_year}/{entity_type}/"
-                f"{str(code).lower()}"
-            )
             parsed = urlsplit(canonical_url)
+            path_prefix = f"/{academic_year}/{entity_type}/"
+            path_code = (
+                parsed.path.removeprefix(path_prefix)
+                if parsed.path.startswith(path_prefix)
+                else None
+            )
+            code_matches = bool(
+                isinstance(code, str)
+                and isinstance(path_code, str)
+                and (
+                    path_code.casefold() == code.casefold()
+                    if entity_type == "course"
+                    else path_code == code.lower()
+                )
+            )
             if (
                 parsed.scheme != "https"
                 or parsed.netloc != COURSES_HOST
                 or parsed.query
                 or parsed.fragment
                 or COURSES_PATH_PATTERN.fullmatch(parsed.path) is None
-                or not isinstance(code, str)
                 or not isinstance(academic_year, str)
-                or canonical_url != expected_url
+                or not code_matches
             ):
                 raise ValueError(
                     "Courses-family canonical_url must match year, entity type, "
-                    "and lowercase metadata code"
+                    "and metadata code"
                 )
         elif entity_type == "scholarship":
             entity_id = values.get("entity_id")

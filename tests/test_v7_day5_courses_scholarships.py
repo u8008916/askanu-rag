@@ -78,7 +78,11 @@ def _course_variant(
         record_id=f"courses:course:{code}_{year}",
         entity_id=f"{code}_{year}",
         title=title,
-        content=description or f"Approved overview for {title}.",
+        content=(
+            f"Description: {description}\nOverview: Approved overview for {title}."
+            if description is not None
+            else f"Overview: Approved overview for {title}."
+        ),
         canonical_url=(
             f"https://programsandcourses.anu.edu.au/{year}/course/{code.lower()}"
         ),
@@ -299,7 +303,14 @@ def test_course_comparison_marks_missing_field_not_published() -> None:
     description = next(
         field for field in comparison["fields"] if field["name"] == "description"
     )
-    assert all(value["state"] == "published" for value in description["values"])
+    assert [value["state"] for value in description["values"]] == [
+        "published",
+        "not_published",
+    ]
+    assert description["values"][0]["value"] == (
+        "Structured programming with object-oriented design."
+    )
+    assert description["values"][1]["value"] is None
     corequisites = next(
         field for field in comparison["fields"] if field["name"] == "corequisites"
     )

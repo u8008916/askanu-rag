@@ -208,7 +208,7 @@ def test_session_matching_normalizes_query_and_stored_forms(query_session):
         ),
     ],
 )
-def test_course_and_program_require_lowercase_canonical_path(
+def test_course_accepts_source_preserved_url_casing_without_rewriting(
     entity_type, code, metadata
 ):
     values = make_subplan().model_dump(mode="json")
@@ -223,8 +223,36 @@ def test_course_and_program_require_lowercase_canonical_path(
     values["metadata_json"] = metadata.model_dump(mode="json")
     assert CourseProgramRecord.model_validate(values).entity_id == f"{code}_2026"
 
-    values["canonical_url"] = (
+    source_cased = (
         f"https://programsandcourses.anu.edu.au/2026/{entity_type}/{code}"
+    )
+    values["canonical_url"] = source_cased
+    if entity_type == "course":
+        record = CourseProgramRecord.model_validate(values)
+        assert str(record.canonical_url) == source_cased
+    else:
+        with pytest.raises(ValidationError, match="canonical_url"):
+            CourseProgramRecord.model_validate(values)
+
+
+def test_course_accepts_mixed_source_path_casing_and_rejects_wrong_identity():
+    values = make_subplan().model_dump(mode="json")
+    values.update(
+        record_id="courses:course:COMP2120_2026",
+        entity_id="COMP2120_2026",
+        canonical_url=(
+            "https://programsandcourses.anu.edu.au/2026/course/CoMp2120"
+        ),
+    )
+    values["metadata_json"] = CourseMetadata(
+        entity_type="course", course_code="COMP2120", academic_year="2026"
+    ).model_dump(mode="json")
+
+    record = CourseProgramRecord.model_validate(values)
+
+    assert str(record.canonical_url).endswith("/course/CoMp2120")
+    values["canonical_url"] = (
+        "https://programsandcourses.anu.edu.au/2026/course/COMP9999"
     )
     with pytest.raises(ValidationError, match="canonical_url"):
         CourseProgramRecord.model_validate(values)
@@ -331,7 +359,15 @@ def test_exact_subplan_code_and_course_corequisite_are_deterministic():
         entity_id="COMP1110_2026",
         title="Structured Programming",
         canonical_url="https://programsandcourses.anu.edu.au/2026/course/comp1110",
+        content=(
+            "Description: Structured programming.\n"
+            "Corequisites: MATH1005\n"
+            "Prerequisites: COMP1100"
+        ),
     )
+    course_values["content_hash"] = hashlib.sha256(
+        course_values["content"].encode("utf-8")
+    ).hexdigest()
     course_values["metadata_json"] = CourseMetadata(
         entity_type="course",
         course_code="COMP1110",
@@ -352,6 +388,80 @@ def test_exact_subplan_code_and_course_corequisite_are_deterministic():
     )
     assert answer.status == "ok"
     assert "MATH1005" in answer.answer
+
+
+def test_course_description_and_corequisites_use_only_labeled_content():
+    values = make_subplan().model_dump(mode="json")
+    values.update(
+        record_id="courses:course:COMP2120_2026",
+        entity_id="COMP2120_2026",
+        title="Software Engineering",
+        canonical_url="https://programsandcourses.anu.edu.au/2026/course/COMP2120",
+        content=(
+            "Title: Software Engineering\n"
+            "Description: Source-backed description only.\n"
+            "Learning Outcomes: Unrelated learning outcome.\n"
+            "Corequisites: COMP2100\n"
+            "Prerequisites: COMP1110"
+        ),
+    )
+    values["content_hash"] = hashlib.sha256(
+        values["content"].encode("utf-8")
+    ).hexdigest()
+    values["metadata_json"] = CourseMetadata(
+        entity_type="course",
+        course_code="COMP2120",
+        academic_year="2026",
+        description="Metadata description must not be consumed.",
+        corequisites="Metadata corequisite must not be consumed.",
+    ).model_dump(mode="json")
+    record = CourseProgramRecord.model_validate(values)
+    service = HybridQueryService(CourseProgramRepository((record,)))
+
+    description = asyncio.run(
+        service.answer("What is the description for COMP2120 in 2026?", "desc")
+    )
+    corequisites = asyncio.run(
+        service.answer("What are the corequisites for COMP2120 in 2026?", "coreq")
+    )
+
+    assert description.status == "ok"
+    assert "Source-backed description only." in description.answer
+    assert "Unrelated learning outcome" not in description.answer
+    assert "Metadata description" not in description.answer
+    assert corequisites.status == "ok"
+    assert "COMP2100" in corequisites.answer
+    assert "Metadata corequisite" not in corequisites.answer
+
+
+def test_missing_labeled_course_sections_do_not_fall_back_to_content_or_metadata():
+    values = make_subplan().model_dump(mode="json")
+    values.update(
+        record_id="courses:course:COMP2120_2026",
+        entity_id="COMP2120_2026",
+        canonical_url="https://programsandcourses.anu.edu.au/2026/course/comp2120",
+        content="Prerequisites: COMP1110\nLearning Outcomes: Build software.",
+    )
+    values["content_hash"] = hashlib.sha256(
+        values["content"].encode("utf-8")
+    ).hexdigest()
+    values["metadata_json"] = CourseMetadata(
+        entity_type="course",
+        course_code="COMP2120",
+        academic_year="2026",
+        description="Non-contract metadata description.",
+        corequisites="Non-contract metadata corequisite.",
+    ).model_dump(mode="json")
+    record = CourseProgramRecord.model_validate(values)
+    service = HybridQueryService(CourseProgramRepository((record,)))
+
+    for question in (
+        "What is the description for COMP2120 in 2026?",
+        "What are the corequisites for COMP2120 in 2026?",
+    ):
+        response = asyncio.run(service.answer(question, "missing"))
+        assert response.status == "insufficient_evidence"
+        assert "Non-contract metadata" not in response.answer
 
 
 def test_subplans_share_semantic_and_hybrid_candidate_pipeline():

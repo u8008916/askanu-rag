@@ -7,6 +7,7 @@ from collections import Counter
 
 from askanu_rag.course_queries import CourseQueryService, _source_from_record, classify_course_prerequisites_query
 from askanu_rag.index_lifecycle import index_is_stale
+from askanu_rag.journey_presentation import course_labeled_content
 from askanu_rag.models import Clarification, ClarificationOption, InsufficientEvidenceResponse, NeedsClarificationResponse, OkResponse
 from askanu_rag.query_planner import QueryPlan, plan_query
 from askanu_rag.retrieval.catalog import filter_records, normalize_title, record_code
@@ -323,7 +324,12 @@ class HybridQueryService:
                         if metadata.entity_type == "program"
                         else "requirements"
                     )
-                value = getattr(metadata, fact, None)
+                value = (
+                    course_labeled_content(record, fact)
+                    if metadata.entity_type == "course"
+                    and fact in {"description", "corequisites"}
+                    else getattr(metadata, fact, None)
+                )
                 if isinstance(value, list):
                     clean_values = [item for item in value if isinstance(item, str) and item.strip()]
                     if not clean_values:
