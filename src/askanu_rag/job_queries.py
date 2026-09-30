@@ -164,6 +164,48 @@ def _title_candidate(question: str) -> str | None:
     return None
 
 
+def _exact_title_matches(
+    question: str,
+    repository: JobReader,
+) -> tuple[JobRecord, ...]:
+    candidate = _title_candidate(question)
+    return repository.find_jobs_by_title(candidate) if candidate is not None else ()
+
+
+def _without_exact_title_constraints(
+    interpretation: QueryInterpretation,
+    state: ConversationState,
+    record: JobRecord,
+) -> tuple[QueryInterpretation, ConversationState]:
+    """Protect a uniquely matched title span from generic constraint parsing."""
+
+    def keep(item) -> bool:
+        return not (
+            item.scope.domain == Domain.JOBS
+            and _contains_phrase(record.title, str(item.value))
+        )
+
+    def filtered(constraints):
+        return constraints.model_copy(
+            update={"items": tuple(item for item in constraints.items if keep(item))}
+        )
+
+    return (
+        interpretation.model_copy(
+            update={
+                "explicit_constraints": filtered(
+                    interpretation.explicit_constraints
+                ),
+                "inherited_constraints": filtered(
+                    interpretation.inherited_constraints
+                ),
+                "constraints": filtered(interpretation.constraints),
+            }
+        ),
+        state.model_copy(update={"constraints": filtered(state.constraints)}),
+    )
+
+
 def _is_current_jobs_question(question: str) -> bool:
     return bool(
         LIST_REQUEST_PATTERN.search(question)
@@ -904,6 +946,22 @@ class JobQueryService:
             for source in response.sources
             if source.record_id in by_record_id
         )
+        title_matches = _exact_title_matches(question, self._repository)
+        exact_title = (
+            title_matches[0]
+            if len(title_matches) == 1
+            and any(
+                record.entity_id == title_matches[0].entity_id
+                for record in selected
+            )
+            else None
+        )
+        if exact_title is not None:
+            interpretation, state = _without_exact_title_constraints(
+                interpretation,
+                state,
+                exact_title,
+            )
         resolved_page = resolve_result_page(state, interpretation, result_page)
         parent = (
             resolved_page.result_set
@@ -929,15 +987,18 @@ class JobQueryService:
         filters, unmatched = _job_filters(question, current, interpretation)
         closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
         listing = bool(
-            resolved_page is not None
-            or interpretation.entity is None
+            exact_title is None
             and (
-                _is_current_jobs_question(question)
-                or _is_interpreted_job_discovery(interpretation)
-                or semantic
-                or filters
-                or unmatched
-                or closing_this_week
+                resolved_page is not None
+                or interpretation.entity is None
+                and (
+                    _is_current_jobs_question(question)
+                    or _is_interpreted_job_discovery(interpretation)
+                    or semantic
+                    or filters
+                    or unmatched
+                    or closing_this_week
+                )
             )
         )
 
@@ -1042,7 +1103,7 @@ class JobQueryService:
                     resolution_basis=EntityResolutionBasis.RETAINED_STATE,
                     mentioned_turn=state.turn_index,
                 ),
-                focus=active_set is None,
+                focus=active_set is None or exact_title is not None,
             )
 
         public_items = []

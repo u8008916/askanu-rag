@@ -79,6 +79,84 @@ def digit_title_jobs():
     )
 
 
+def assert_exact_job_without_title_constraint(body: dict, record) -> None:
+    assert body["status"] == "ok"
+    assert body["answer_state"] == "CONFIRMED"
+    assert len(body["items"]) == 1
+    assert body["items"][0]["canonical_id"] == record.entity_id
+    assert body["items"][0]["record_id"] == record.record_id
+    assert body["sources"][0]["record_id"] == record.record_id
+    assert body["conversation_state"]["selected_result"] is None
+    assert all(
+        not (
+            item["semantic_type"] == "employment_type"
+            and str(item["value"]).casefold() == "verified"
+        )
+        for item in body["conversation_state"]["constraints"]["items"]
+    )
+
+
+def test_r4_exact_job_title_fresh_returns_structured_item_without_constraint_leak() -> None:
+    records = digit_title_jobs()
+    chat = Conversation(records)
+
+    body = chat.ask(f"Tell me about {records[4].title}")
+
+    assert_exact_job_without_title_constraint(body, records[4])
+
+    discovery = chat.ask("Show me jobs")
+    assert [item["canonical_id"] for item in discovery["items"]] == [
+        record.entity_id for record in records[:5]
+    ]
+    assert discovery["conversation_state"]["constraints"]["items"] == []
+
+
+def test_r4_exact_job_title_after_resultset_returns_structured_item() -> None:
+    records = digit_title_jobs()
+    chat = Conversation(records)
+    chat.ask("What jobs are available at ANU?")
+
+    body = chat.ask(f"Tell me about {records[4].title}")
+
+    assert_exact_job_without_title_constraint(body, records[4])
+
+
+def test_r4_exact_job_title_after_selection_overrides_selected_job() -> None:
+    records = digit_title_jobs()
+    chat = Conversation(records)
+    discovered = chat.ask("What jobs are available at ANU?")
+    selected = chat.ask(
+        "Tell me about it",
+        selected_result=selection(discovered, 1),
+    )
+    assert selected["items"][0]["canonical_id"] == records[1].entity_id
+
+    body = chat.ask(f"Tell me about {records[4].title}")
+
+    assert_exact_job_without_title_constraint(body, records[4])
+    assert body["items"][0]["canonical_id"] != records[1].entity_id
+
+
+def test_r4_exact_job_title_after_continuation_returns_structured_item() -> None:
+    records = digit_title_jobs()
+    chat = Conversation(records)
+    discovered = chat.ask("What jobs are available at ANU?")
+    result_set_id = discovered["result_page"]["result_set_id"]
+    continued = chat.ask(
+        "Show More",
+        result_page={
+            "result_set_id": result_set_id,
+            "start_ordinal": 6,
+            "limit": 5,
+        },
+    )
+    assert [item["ordinal"] for item in continued["items"]] == [6, 7]
+
+    body = chat.ask(f"Tell me more about {records[4].title}")
+
+    assert_exact_job_without_title_constraint(body, records[4])
+
+
 @pytest.mark.parametrize("title_index", (2, 3))
 @pytest.mark.parametrize(
     "wording", ("Tell me about {title}", "Tell me more about {title}")
@@ -97,6 +175,10 @@ def test_r4_exact_job_title_with_digit_beats_numeric_id(
 
     assert body["status"] == "ok"
     assert body["items"][0]["canonical_id"] == records[title_index - 1].entity_id
+    assert all(
+        str(item["value"]).casefold() != "verified"
+        for item in body["conversation_state"]["constraints"]["items"]
+    )
 
 
 def test_r4_real_numeric_job_reference_still_resolves() -> None:
@@ -105,8 +187,7 @@ def test_r4_real_numeric_job_reference_still_resolves() -> None:
 
     body = chat.ask(f"Tell me about job {records[2].entity_id}")
 
-    assert body["status"] == "ok"
-    assert body["items"][0]["canonical_id"] == records[2].entity_id
+    assert_exact_job_without_title_constraint(body, records[2])
 
 
 def test_r4_different_exact_job_title_overrides_retained_selection() -> None:
@@ -119,7 +200,7 @@ def test_r4_different_exact_job_title_overrides_retained_selection() -> None:
         selected_result=selection(discovered, 1),
     )
 
-    assert body["items"][0]["canonical_id"] == records[2].entity_id
+    assert_exact_job_without_title_constraint(body, records[2])
 
 
 ORDINALS = (
