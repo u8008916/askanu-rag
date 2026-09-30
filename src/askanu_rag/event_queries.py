@@ -34,7 +34,7 @@ from askanu_rag.models import (
     ResultSetStatus,
     UpcomingEventItem,
 )
-from askanu_rag.evidence_selection import build_result_set
+from askanu_rag.evidence_selection import build_result_set, classify_result_set_status
 from askanu_rag.retrieval import EventReader
 from askanu_rag.retrieval_planning import build_retrieval_plan
 from askanu_rag.result_paging import (
@@ -58,6 +58,9 @@ PERIOD_PATTERNS = (
     (re.compile(r"\btomorrow\b", re.IGNORECASE), "tomorrow"),
     (re.compile(r"\btoday\b", re.IGNORECASE), "today"),
 )
+# Current audited source health has not closed either population gate:
+# official Events are 29/30 and the Rubric live denominator is unresolved.
+EVENT_POPULATION_COMPLETE = False
 
 
 @dataclass(frozen=True)
@@ -402,10 +405,14 @@ class EventQueryService:
             )
             return InsufficientEvidenceResponse(
                 answer=(
-                    "I could not find persisted Event evidence matching the active "
-                    "source-backed constraints."
+                    "The current supported Event population is incomplete. I could "
+                    "not find persisted Event evidence matching the active "
+                    "source-backed constraints; this does not establish that no "
+                    "such events exist."
                     if has_location_constraint
-                    else "I could not find persisted Event evidence for that time period."
+                    else "The current supported Event population is incomplete. I "
+                    "could not find persisted Event evidence for that time period; "
+                    "this does not establish that no such events exist."
                 ),
                 request_id=request_id,
             )
@@ -513,10 +520,9 @@ class EventQueryService:
                         result_set_id=f"rs:events:{state.turn_index}",
                         ordered_canonical_ids=identities,
                         constraints=interpretation.constraints,
-                        status=(
-                            ResultSetStatus.RESULTS
-                            if identities
-                            else ResultSetStatus.EMPTY
+                        status=classify_result_set_status(
+                            identities,
+                            population_complete=EVENT_POPULATION_COMPLETE,
                         ),
                         turn=state.turn_index,
                         originating_query=question,
@@ -529,7 +535,7 @@ class EventQueryService:
                         ordered_canonical_ids=identities,
                         originating_query=question,
                         created_turn=state.turn_index,
-                        population_complete=True,
+                        population_complete=EVENT_POPULATION_COMPLETE,
                     )
                 updated = remember_result_set(updated, result_set)
 

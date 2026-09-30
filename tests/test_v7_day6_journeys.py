@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 
 from fastapi.testclient import TestClient
 
+from askanu_rag.event_queries import EVENT_POPULATION_COMPLETE
 from askanu_rag.event_time import CANBERRA
 from askanu_rag.main import create_app
 from askanu_rag.models import (
@@ -356,6 +357,47 @@ def test_events_items_provenance_selection_and_continuation():
         )
         assert community["source_id"] == "rubric_unified_search"
         assert community["fields"]["provenance_class"] == "approved_community"
+
+
+def test_event_population_stays_incomplete_until_both_source_gates_close():
+    records = [
+        event(f"official-{index}", day=14, hour=10 + index % 10)
+        for index in range(1, 30)
+    ]
+    records.append(
+        event(
+            "rubric-source-control",
+            day=14,
+            hour=19,
+            source_id="rubric_unified_search",
+        )
+    )
+
+    with TestClient(
+        create_app(CourseProgramRepository(records), events_now_provider=lambda: NOW)
+    ) as client:
+        broad = post(client, "What events are on at ANU today?")
+        no_match = post(
+            client,
+            "What events are in Antarctica?",
+            broad["conversation_state"],
+        )
+
+    assert EVENT_POPULATION_COMPLETE is False
+    assert broad["status"] == "ok"
+    assert broad["items"]
+    assert {record.source_id for record in records} == {
+        "events_anu_official",
+        "rubric_unified_search",
+    }
+    assert no_match["status"] == "insufficient_evidence"
+    assert no_match["items"] == []
+    assert no_match["conversation_state"]["result_sets"][0]["status"] == (
+        "INCOMPLETE"
+    )
+    assert "population is incomplete" in no_match["answer"]
+    assert "does not establish that no such events exist" in no_match["answer"]
+    assert "no events" not in no_match["answer"].casefold()
 
 
 def test_support_natural_routing_structured_item_and_pronoun_followups():
