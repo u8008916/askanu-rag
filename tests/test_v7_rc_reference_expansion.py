@@ -79,6 +79,20 @@ def digit_title_jobs():
     )
 
 
+def selected_title_jobs():
+    return tuple(
+        job(
+            str(700000 + index),
+            title=(
+                "Software Engineer"
+                if index == 1
+                else f"Verified Role {index}"
+            ),
+        )
+        for index in range(1, 8)
+    )
+
+
 def assert_exact_job_without_title_constraint(body: dict, record) -> None:
     assert body["status"] == "ok"
     assert body["answer_state"] == "CONFIRMED"
@@ -109,6 +123,73 @@ def test_r4_exact_job_title_fresh_returns_structured_item_without_constraint_lea
         record.entity_id for record in records[:5]
     ]
     assert discovery["conversation_state"]["constraints"]["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("title_index", "wording"),
+    (
+        (0, "Tell me more about {title}"),
+        (0, "Tell me about {title}"),
+        (1, "Tell me more about {title}"),
+        (1, "Tell me about {title}"),
+        (2, "Tell me more about {title}"),
+        (2, "Tell me about {title}"),
+    ),
+)
+def test_r4_same_exact_job_title_preserves_selected_result_state(
+    title_index: int,
+    wording: str,
+) -> None:
+    records = selected_title_jobs()
+    chat = Conversation(records)
+    discovered = chat.ask("What jobs are available at ANU?")
+    original_selection = selection(discovered, title_index)
+    selected = chat.ask(
+        "Tell me about it",
+        selected_result=original_selection,
+    )
+    selected_state = selected["conversation_state"]
+
+    body = chat.ask(wording.format(title=records[title_index].title))
+
+    assert body["status"] == "ok"
+    assert body["answer_state"] == "CONFIRMED"
+    assert len(body["items"]) == 1
+    assert body["items"][0]["canonical_id"] == records[title_index].entity_id
+    assert body["items"][0]["result_set_id"] == original_selection["result_set_id"]
+    assert body["items"][0]["ordinal"] == original_selection["ordinal"]
+    state = body["conversation_state"]
+    assert state["selected_result"] == original_selection
+    assert state["selected_result"]["canonical_id"] == records[title_index].entity_id
+    assert state["selected_result"]["result_set_id"] == original_selection["result_set_id"]
+    assert state["selected_result"]["ordinal"] == original_selection["ordinal"]
+    assert state["focus"]["result_set_id"] == original_selection["result_set_id"]
+    assert state["focus"] == selected_state["focus"]
+    assert state["constraints"]["items"] == []
+
+
+def test_r4_show_more_after_same_exact_job_title_uses_original_resultset() -> None:
+    records = selected_title_jobs()
+    chat = Conversation(records)
+    discovered = chat.ask("What jobs are available at ANU?")
+    result_set_id = discovered["result_page"]["result_set_id"]
+    chat.ask(
+        "Tell me about it",
+        selected_result=selection(discovered, 1),
+    )
+    same = chat.ask(f"Tell me about {records[1].title}")
+    assert same["conversation_state"]["selected_result"] is not None
+
+    more = chat.ask(
+        "Show More",
+        result_page={
+            "result_set_id": result_set_id,
+            "start_ordinal": 6,
+            "limit": 5,
+        },
+    )
+
+    assert [item["ordinal"] for item in more["items"]] == [6, 7]
 
 
 def test_r4_exact_job_title_after_resultset_returns_structured_item() -> None:

@@ -31,6 +31,7 @@ from askanu_rag.models import (
     ResultPageRequest,
     ResultSet,
     ResultSetStatus,
+    SemanticFocus,
 )
 from askanu_rag.evidence_selection import build_result_set, classify_result_set_status
 from askanu_rag.retrieval import JobReader
@@ -52,6 +53,7 @@ from askanu_rag.state_transitions import (
     remember_result_page,
     remember_result_set,
     set_pending_clarification,
+    set_semantic_focus,
 )
 
 CANBERRA = ZoneInfo("Australia/Canberra")
@@ -962,6 +964,11 @@ class JobQueryService:
                 state,
                 exact_title,
             )
+        preserve_selected_exact_title = bool(
+            exact_title is not None
+            and state.selected_result is not None
+            and state.selected_result.canonical_id == exact_title.entity_id
+        )
         resolved_page = resolve_result_page(state, interpretation, result_page)
         parent = (
             resolved_page.result_set
@@ -1092,6 +1099,22 @@ class JobQueryService:
 
         if len(selected) == 1:
             record = selected[0]
+            if preserve_selected_exact_title and state.selected_result is not None:
+                selected_set = next(
+                    item
+                    for item in state.result_sets
+                    if item.result_set_id == state.selected_result.result_set_id
+                )
+                updated = set_semantic_focus(
+                    updated,
+                    SemanticFocus(
+                        domain=selected_set.domain,
+                        entity_kind=selected_set.entity_kind,
+                        canonical_entity_id=record.entity_id,
+                        intent_name=selected_set.intent.name,
+                        result_set_id=selected_set.result_set_id,
+                    ),
+                )
             updated = remember_entity(
                 updated,
                 ResolvedEntity(
@@ -1103,7 +1126,10 @@ class JobQueryService:
                     resolution_basis=EntityResolutionBasis.RETAINED_STATE,
                     mentioned_turn=state.turn_index,
                 ),
-                focus=active_set is None or exact_title is not None,
+                focus=(
+                    not preserve_selected_exact_title
+                    and (active_set is None or exact_title is not None)
+                ),
             )
 
         public_items = []
