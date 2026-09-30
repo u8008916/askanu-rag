@@ -131,7 +131,6 @@ def test_r6_conversational_job_requests_route_to_discovery(
     (
         ("Any casual jobs in Canberra?", "casual", "canberra", []),
         ("Show me full-time jobs in Canberra", "full-time", "canberra", []),
-        ("Remote jobs in Sydney", "remote", "sydney", []),
         (
             "What jobs are available at ANU in Canberra?",
             None,
@@ -338,13 +337,6 @@ def test_r6_shared_location_parser_rejects_cross_domain_query_words(
             "APPLIED_NO_SUPPORTED_MATCH",
         ),
         (
-            "What remote jobs are available?",
-            ConstraintSemanticType.EMPLOYMENT_TYPE,
-            "remote",
-            None,
-            "APPLIED_NO_SUPPORTED_MATCH",
-        ),
-        (
             "What ANU99 jobs are available?",
             ConstraintSemanticType.CATEGORY,
             "ANU99",
@@ -382,6 +374,105 @@ def test_r6_accommodation_impossible_location_is_not_silently_discarded() -> Non
     assert body["status"] == "insufficient_evidence"
     assert body["items"] == []
     assert "cannot truthfully report no matches" in body["answer"]
+
+
+def test_remote_jobs_are_unverifiable_not_an_employment_type_or_zero_match() -> None:
+    body = _ask(JOBS, "What remote jobs are available?")
+
+    assert body["status"] == "insufficient_evidence"
+    assert body["items"] == []
+    assert all(
+        not (
+            item["semantic_type"] == "employment_type"
+            and str(item["value"]).casefold() == "remote"
+        )
+        for item in body["conversation_state"]["constraints"]["items"]
+    )
+    assert "cannot reliably apply or verify" in body["answer"]
+    assert "population is incomplete" in body["answer"]
+    assert "does not establish that no remote ANU jobs exist" in body["answer"]
+
+
+def test_missing_job_locations_make_location_constraint_unreliable() -> None:
+    records = tuple(
+        record.model_copy(
+            update={
+                "metadata_json": record.metadata_json.model_copy(
+                    update={"location": None}
+                )
+            }
+        )
+        for record in JOBS
+    )
+
+    body = _ask(records, "What jobs are available in Canberra?")
+
+    assert body["status"] == "insufficient_evidence"
+    assert body["items"] == []
+    assert "cannot reliably evaluate that location" in body["answer"]
+    assert "population is incomplete" in body["answer"]
+    assert "does not establish that no such ANU jobs exist" in body["answer"]
+    assert body["conversation_state"]["result_sets"][-1]["status"] == "INCOMPLETE"
+
+
+def test_source_backed_job_location_still_matches_with_missing_peer_values() -> None:
+    located = JOBS[0].model_copy(
+        update={
+            "metadata_json": JOBS[0].metadata_json.model_copy(
+                update={"location": "Canberra / ACT, ACT, Australia, 2601"}
+            )
+        }
+    )
+    missing = JOBS[1].model_copy(
+        update={
+            "metadata_json": JOBS[1].metadata_json.model_copy(
+                update={"location": None}
+            )
+        }
+    )
+
+    body = _ask((located, missing), "What jobs are available in Canberra?")
+
+    assert body["status"] == "ok"
+    assert [item["canonical_id"] for item in body["items"]] == [located.entity_id]
+    assert body["items"][0]["location"] == (
+        "Canberra / ACT, ACT, Australia, 2601"
+    )
+    assert "population is incomplete" in body["answer"]
+
+
+def test_job_classification_shorthand_maps_only_to_matching_officer_level() -> None:
+    anu08 = JOBS[0].model_copy(
+        update={
+            "metadata_json": JOBS[0].metadata_json.model_copy(
+                update={"classification": "ANU Officer 8 (Administration)"}
+            )
+        }
+    )
+    anu09 = JOBS[1].model_copy(
+        update={
+            "metadata_json": JOBS[1].metadata_json.model_copy(
+                update={"classification": "ANU Officer 9 (Administration)"}
+            )
+        }
+    )
+
+    shorthand = _ask((anu08, anu09), "What ANU08 jobs are available?")
+    adjacent = _ask((anu08, anu09), "What ANU09 jobs are available?")
+    direct = _ask(
+        (anu08, anu09),
+        "What jobs have classification ANU Officer 8 (Administration)?",
+    )
+    invalid = _ask((anu08, anu09), "What ANU8X jobs are available?")
+
+    assert [item["canonical_id"] for item in shorthand["items"]] == [anu08.entity_id]
+    assert shorthand["items"][0]["classification"] == (
+        "ANU Officer 8 (Administration)"
+    )
+    assert [item["canonical_id"] for item in adjacent["items"]] == [anu09.entity_id]
+    assert [item["canonical_id"] for item in direct["items"]] == [anu08.entity_id]
+    assert invalid["status"] == "insufficient_evidence"
+    assert invalid["items"] == []
 
 
 def test_r6_event_impossible_location_is_not_silently_discarded() -> None:

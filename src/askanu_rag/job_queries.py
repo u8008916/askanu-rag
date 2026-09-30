@@ -73,6 +73,17 @@ FIXED_TERM_PATTERN = re.compile(r"\bfixed[-\s]term\b", re.IGNORECASE)
 EMPLOYMENT_TYPE_PATTERN = re.compile(
     r"\b(fixed[-\s]term|continuing|casual)\b", re.IGNORECASE
 )
+UNSUPPORTED_WORK_ARRANGEMENT_PATTERN = re.compile(
+    r"\b(?:remote|work(?:ing)?\s+from\s+home|work\s+arrangement)\b",
+    re.IGNORECASE,
+)
+INVALID_CLASSIFICATION_SHORTHAND_PATTERN = re.compile(
+    r"\bANU\d+[A-Za-z]+\b", re.IGNORECASE
+)
+CLASSIFICATION_SHORTHAND_PATTERN = re.compile(r"^ANU0*(\d+)$", re.IGNORECASE)
+CLASSIFICATION_SOURCE_PATTERN = re.compile(
+    r"^ANU\s+Officer\s+0*(\d+)(?:\s*\([^)]*\))?$", re.IGNORECASE
+)
 ROLE_REFERENCE_PATTERN = re.compile(
     r"\b(?:this|that)\s+(?:ANU\s+)?(?:job|role)\b", re.I
 )
@@ -348,6 +359,48 @@ def _contains_phrase(question: str, value: str) -> bool:
     ) is not None
 
 
+def _classification_level(value: str) -> int | None:
+    normalized = " ".join(value.strip().split())
+    match = CLASSIFICATION_SHORTHAND_PATTERN.fullmatch(normalized)
+    if match is None:
+        match = CLASSIFICATION_SOURCE_PATTERN.fullmatch(normalized)
+    return int(match.group(1)) if match is not None else None
+
+
+def _without_unsupported_work_arrangement(
+    interpretation: QueryInterpretation,
+    state: ConversationState,
+) -> tuple[QueryInterpretation, ConversationState]:
+    """Remove a non-contract remote constraint without weakening real job filters."""
+
+    def keep(item) -> bool:
+        return not (
+            item.scope.domain == Domain.JOBS
+            and item.semantic_type == ConstraintSemanticType.EMPLOYMENT_TYPE
+            and _normalize(str(item.value)) == "remote"
+        )
+
+    def filtered(constraints):
+        return constraints.model_copy(
+            update={"items": tuple(item for item in constraints.items if keep(item))}
+        )
+
+    return (
+        interpretation.model_copy(
+            update={
+                "explicit_constraints": filtered(
+                    interpretation.explicit_constraints
+                ),
+                "inherited_constraints": filtered(
+                    interpretation.inherited_constraints
+                ),
+                "constraints": filtered(interpretation.constraints),
+            }
+        ),
+        state.model_copy(update={"constraints": filtered(state.constraints)}),
+    )
+
+
 def _job_filters(
     question: str,
     records: Sequence[JobRecord],
@@ -515,6 +568,7 @@ def _job_filters(
             re.search(r"\brequir(?:e|es|ed|ing)\b", question, re.I)
             and not requirements
         )
+        or INVALID_CLASSIFICATION_SHORTHAND_PATTERN.search(question) is not None
     )
     return filters, unmatched_explicit
 
@@ -559,6 +613,22 @@ def _matches_job_filters(
                 | {_normalize(actual_value)}
             )
             if not all(_normalize(value) in actual for value in expected):
+                return False
+        elif field == "classification":
+            actual_value = metadata.classification
+            actual_level = (
+                _classification_level(actual_value)
+                if actual_value is not None
+                else None
+            )
+            if actual_value is None or not all(
+                (
+                    _classification_level(value) == actual_level
+                    if _classification_level(value) is not None
+                    else _normalize(value) == _normalize(actual_value)
+                )
+                for value in expected
+            ):
                 return False
         else:
             actual_value = getattr(metadata, field)
@@ -776,6 +846,17 @@ class JobQueryService:
                 request_id=request_id,
             )
 
+        if UNSUPPORTED_WORK_ARRANGEMENT_PATTERN.search(question):
+            return InsufficientEvidenceResponse(
+                answer=(
+                    "The current supported Jobs population is incomplete, and the "
+                    "source contract does not publish remote or work-arrangement "
+                    "evidence. I cannot reliably apply or verify that constraint, "
+                    "and this does not establish that no remote ANU jobs exist."
+                ),
+                request_id=request_id,
+            )
+
         semantic_intent = bool(
             candidate is None
             and (
@@ -902,9 +983,23 @@ class JobQueryService:
             else:
                 records = records[:20]
             if not records:
+                has_location_constraint = bool(
+                    interpretation is not None
+                    and any(
+                        item.scope.domain == Domain.JOBS
+                        and item.semantic_type == ConstraintSemanticType.LOCATION
+                        for item in interpretation.constraints.items
+                    )
+                )
                 return InsufficientEvidenceResponse(
                     answer=(
-                        "The current supported Jobs population is incomplete. "
+                        "The current supported Jobs population is incomplete, and "
+                        "location is optional in the source contract. I cannot "
+                        "reliably evaluate that location across the population. "
+                        "I found no verified match in the supported data, which "
+                        "does not establish that no such ANU jobs exist."
+                        if has_location_constraint
+                        else "The current supported Jobs population is incomplete. "
                         "I could not find a verified match in the supported data, "
                         "so this does not establish that no such ANU jobs exist."
                     ),
@@ -963,6 +1058,19 @@ class JobQueryService:
                 interpretation,
                 state,
                 exact_title,
+            )
+        if (
+            exact_title is None
+            and UNSUPPORTED_WORK_ARRANGEMENT_PATTERN.search(question)
+        ):
+            interpretation, state = _without_unsupported_work_arrangement(
+                interpretation, state
+            )
+            return JobQueryOutcome(
+                response=response.model_copy(
+                    update={"items": [], "answer_state": AnswerState.UNKNOWN}
+                ),
+                state=state,
             )
         preserve_selected_exact_title = bool(
             exact_title is not None
