@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from askanu_rag.interpretation import interpret_turn
 from askanu_rag.main import create_app
-from askanu_rag.models import ConstraintSemanticType, ConversationState
+from askanu_rag.models import ConstraintSemanticType, ConversationState, Domain
 from askanu_rag.retrieval import CourseProgramRepository
 from test_v7_day4_accommodation_vertical import ALPHA, BRAVO
 from test_v7_day6_journeys import NOW, TODAY, event, job
@@ -85,6 +85,106 @@ def _explicit_values(
         for item in interpretation.explicit_constraints.items
         if item.semantic_type == semantic_type
     ]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_location", "expected_ids"),
+    (
+        ("Are there jobs around Canberra?", "canberra", ["810001"]),
+        ("Do you have jobs in Canberra?", "canberra", ["810001"]),
+        ("Do you know about jobs in Canberra?", "canberra", ["810001"]),
+        ("What about jobs in Canberra?", "canberra", ["810001"]),
+        ("Show me jobs", None, ["810001", "810002"]),
+        ("Show me jobs at ANU", None, ["810001", "810002"]),
+        ("Show me any jobs at ANU", None, ["810001", "810002"]),
+    ),
+)
+def test_r6_conversational_job_requests_route_to_discovery(
+    question: str,
+    expected_location: str | None,
+    expected_ids: list[str],
+) -> None:
+    interpretation = interpret_turn(question, (), ConversationState())
+
+    assert interpretation.domain == Domain.JOBS
+    assert interpretation.intent is not None
+    assert interpretation.intent.name == "discover"
+    assert interpretation.intent.operation == "initial_discovery"
+    assert _explicit_values(question, ConstraintSemanticType.LOCATION) == (
+        [expected_location] if expected_location is not None else []
+    )
+    assert _explicit_values(question, ConstraintSemanticType.EMPLOYMENT_TYPE) == []
+
+    body = _ask(JOBS, question)
+
+    assert body["status"] == "ok"
+    assert body["answer_state"] == "PARTIAL"
+    assert [item["canonical_id"] for item in body["items"]] == expected_ids
+    result_set = body["conversation_state"]["result_sets"][-1]
+    assert result_set["domain"] == Domain.JOBS.value
+    assert result_set["status"] == "RESULTS"
+    assert result_set["ordered_canonical_ids"] == expected_ids
+
+
+@pytest.mark.parametrize(
+    ("question", "employment_type", "location", "expected_ids"),
+    (
+        ("Any casual jobs in Canberra?", "casual", "canberra", []),
+        ("Show me full-time jobs in Canberra", "full-time", "canberra", []),
+        ("Remote jobs in Sydney", "remote", "sydney", []),
+        (
+            "What jobs are available at ANU in Canberra?",
+            None,
+            "canberra",
+            ["810001"],
+        ),
+    ),
+)
+def test_r6_conversational_routing_preserves_real_job_constraints(
+    question: str,
+    employment_type: str | None,
+    location: str,
+    expected_ids: list[str],
+) -> None:
+    assert _explicit_values(question, ConstraintSemanticType.EMPLOYMENT_TYPE) == (
+        [employment_type] if employment_type is not None else []
+    )
+    assert _explicit_values(question, ConstraintSemanticType.LOCATION) == [location]
+
+    body = _ask(JOBS, question)
+
+    assert [item["canonical_id"] for item in body["items"]] == expected_ids
+    if expected_ids:
+        assert body["status"] == "ok"
+    else:
+        assert body["status"] == "insufficient_evidence"
+        assert "population is incomplete" in body["answer"]
+    result_set = body["conversation_state"]["result_sets"][-1]
+    assert result_set["domain"] == Domain.JOBS.value
+    assert result_set["status"] == ("RESULTS" if expected_ids else "INCOMPLETE")
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_domain", "expected_location"),
+    (
+        ("Tell me about accommodation", Domain.ACCOMMODATION, None),
+        ("What about events in Canberra?", Domain.EVENTS, "canberra"),
+        ("Show me scholarships", Domain.SCHOLARSHIPS, None),
+        ("Do you know about COMP1110?", Domain.COURSES, None),
+    ),
+)
+def test_r6_conversational_job_routing_does_not_hijack_other_domains(
+    question: str,
+    expected_domain: Domain,
+    expected_location: str | None,
+) -> None:
+    interpretation = interpret_turn(question, (), ConversationState())
+
+    assert interpretation.domain == expected_domain
+    assert _explicit_values(question, ConstraintSemanticType.LOCATION) == (
+        [expected_location] if expected_location is not None else []
+    )
+    assert _explicit_values(question, ConstraintSemanticType.EMPLOYMENT_TYPE) == []
 
 
 @pytest.mark.parametrize(

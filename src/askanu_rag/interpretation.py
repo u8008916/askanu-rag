@@ -67,7 +67,7 @@ _BETWEEN_RE = re.compile(
 )
 _LOCATION_CONSTRAINT_RE = re.compile(
     r"\b(?:jobs?|roles?|events?|accommodation|housing|residences?)\b"
-    r"[^?.!]{0,48}\b(?:available|located|based|held)?\s*(?:in|at)\s+"
+    r"[^?.!]{0,48}\b(?:available|located|based|held)?\s*(?:in|at|around)\s+"
     r"(?:the\s+)?(?P<value>[a-z][a-z0-9 /,&'-]{0,60}?)"
     r"(?=\s+(?:today|tomorrow|this\s+(?:friday|week|weekend)|next\s+week|"
     r"after|before|between|under|below|with|that|which|who|are|is)\b|[?.!]|$)",
@@ -83,6 +83,8 @@ _NON_CONSTRAINT_JOB_MODIFIERS = {
     # Query determiners and discourse prepositions are not job attributes.
     "any",
     "about",
+    "have",
+    "know",
     "available",
     "current",
     "open",

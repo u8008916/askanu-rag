@@ -79,8 +79,9 @@ REQUIREMENTS_PATTERN = re.compile(
     re.I,
 )
 SEMANTIC_JOB_PATTERN = re.compile(
-    r"\b(?:related\s+to|interested\s+in|focus(?:ed)?\s+on|about|"
-    r"involv(?:e|es|ing))\b",
+    r"\b(?:related\s+to|interested\s+in|focus(?:ed)?\s+on|"
+    r"involv(?:e|es|ing))\b|"
+    r"\b(?:jobs?|roles?)\b[^?.!]{0,40}\babout\b",
     re.I,
 )
 TECHNICAL_DISCOVERY_PATTERN = re.compile(
@@ -168,6 +169,21 @@ def _is_current_jobs_question(question: str) -> bool:
         LIST_REQUEST_PATTERN.search(question)
         and JOB_WORD_PATTERN.search(question)
         and CURRENT_WORD_PATTERN.search(question)
+    )
+
+
+def _is_interpreted_job_discovery(
+    interpretation: QueryInterpretation | None,
+) -> bool:
+    """Recognize an already-resolved, entity-free Jobs listing request."""
+
+    return bool(
+        interpretation is not None
+        and interpretation.domain == Domain.JOBS
+        and interpretation.entity is None
+        and interpretation.intent is not None
+        and interpretation.intent.name == "discover"
+        and interpretation.intent.operation == "initial_discovery"
     )
 
 
@@ -746,6 +762,7 @@ class JobQueryService:
         closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
         if (
             _is_current_jobs_question(question)
+            or _is_interpreted_job_discovery(interpretation)
             or semantic_intent
             or filters
             or unmatched_explicit
@@ -916,6 +933,7 @@ class JobQueryService:
             or interpretation.entity is None
             and (
                 _is_current_jobs_question(question)
+                or _is_interpreted_job_discovery(interpretation)
                 or semantic
                 or filters
                 or unmatched
