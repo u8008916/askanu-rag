@@ -1268,6 +1268,11 @@ class DomainResourceQueryService:
                 selected[: self.evidence_top_k],
                 request_id,
                 qualifying_rooms=qualifying_rooms,
+                default_overview=bool(
+                    interpretation is not None
+                    and interpretation.reference_origin == "prior_result_set"
+                    and selected_canonical_ids
+                ),
             )
         return self._support_answer(question, selected, request_id)
 
@@ -1483,6 +1488,7 @@ class DomainResourceQueryService:
                     population_complete=population_complete,
                 )
             updated = remember_result_set(updated, result_set)
+            updated = set_pending_clarification(updated, None)
 
         public_page: ResultPage | None = None
         if result_set is not None and result_set.status == ResultSetStatus.RESULTS:
@@ -1660,6 +1666,7 @@ class DomainResourceQueryService:
         request_id: str,
         *,
         qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = (),
+        default_overview: bool = False,
     ) -> AskResponse:
         accommodations = tuple(
             record for record in records if isinstance(record, AccommodationRecord)
@@ -1891,6 +1898,7 @@ class DomainResourceQueryService:
                 OVERVIEW_PATTERN.search(question)
                 or RETURN_ACCOMMODATION_PATTERN.search(question)
                 or _is_broad_resource_request(question, self.domain)
+                or (default_overview and not has_specific_intent)
             ):
                 for label, value in (
                     ("Category", metadata.category),
