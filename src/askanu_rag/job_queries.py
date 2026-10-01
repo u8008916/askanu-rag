@@ -3,22 +3,35 @@
 import math
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from askanu_rag.course_queries import _source_from_record
 from askanu_rag.models import (
     AskResponse,
+    AnswerState,
     Clarification,
     ClarificationOption,
+    ConversationState,
     CurrentJobItem,
+    Domain,
+    EntityKind,
+    EntityResolutionBasis,
     HistoryTurn,
     InsufficientEvidenceResponse,
     JobRecord,
     NeedsClarificationResponse,
     OkResponse,
     PublicJobItem,
+    QueryInterpretation,
+    ResolvedEntity,
+    ResultPage,
+    ResultPageRequest,
+    ResultSet,
+    ResultSetStatus,
 )
+from askanu_rag.evidence_selection import build_result_set, classify_result_set_status
 from askanu_rag.retrieval import JobReader
 from askanu_rag.retrieval.hybrid import SharedHybridRetriever
 from askanu_rag.retrieval.semantic import (
@@ -26,6 +39,19 @@ from askanu_rag.retrieval.semantic import (
     sparse_score_is_usable,
 )
 from askanu_rag.synthesis import SynthesisError, UNSAFE_EVIDENCE
+from askanu_rag.retrieval_planning import build_retrieval_plan
+from askanu_rag.result_paging import (
+    ResultPageResolutionError,
+    resolve_result_page,
+    result_page_metadata,
+)
+from askanu_rag.state_transitions import (
+    refine_result_set,
+    remember_entity,
+    remember_result_page,
+    remember_result_set,
+    set_pending_clarification,
+)
 
 CANBERRA = ZoneInfo("Australia/Canberra")
 JOB_ID_PATTERN = re.compile(
@@ -56,6 +82,14 @@ SEMANTIC_JOB_PATTERN = re.compile(
     r"involv(?:e|es|ing))\b",
     re.I,
 )
+TECHNICAL_DISCOVERY_PATTERN = re.compile(
+    r"\b(?:technical|software)\s*(?:/|or|and)?\s*(?:jobs?|roles?)\b|"
+    r"\b(?:jobs?|roles?)\b[^?.!]{0,40}\b(?:technical|software)\b",
+    re.I,
+)
+CLOSE_THIS_WEEK_PATTERN = re.compile(
+    r"\bclos(?:e|es|ing)\s+(?:by\s+)?this\s+week\b", re.I
+)
 JOB_TITLE_SHAPE_PATTERN = re.compile(
     r"\b(?:officer|fellow|manager|director|coordinator|assistant|lead|"
     r"analyst|engineer|developer|researcher|administrator|role)\b",
@@ -69,6 +103,12 @@ TITLE_PATTERNS = (
         re.I,
     ),
 )
+
+
+@dataclass(frozen=True)
+class JobQueryOutcome:
+    response: AskResponse
+    state: ConversationState
 
 
 def canberra_today() -> date:
@@ -458,9 +498,97 @@ class JobQueryService:
         request_id: str,
         pending: Clarification | None = None,
         history: Sequence[HistoryTurn] = (),
+        *,
+        interpretation: QueryInterpretation | None = None,
+        selected_canonical_ids: tuple[str, ...] = (),
+        conversation_state: ConversationState | None = None,
+        result_page: ResultPageRequest | None = None,
     ) -> AskResponse | None:
         today = self._today_provider()
+        if interpretation is not None and conversation_state is not None:
+            resolved_page = resolve_result_page(
+                conversation_state, interpretation, result_page
+            )
+            continuing = bool(
+                result_page is not None
+                or (
+                    interpretation.intent is not None
+                    and interpretation.intent.operation == "continue_results"
+                )
+            )
+            if continuing:
+                if (
+                    resolved_page is None
+                    or resolved_page.result_set.domain != Domain.JOBS
+                ):
+                    raise ResultPageResolutionError(
+                        "Jobs result page is stale or foreign"
+                    )
+                start = resolved_page.start_ordinal - 1
+                identities = resolved_page.result_set.ordered_canonical_ids[
+                    start : start + resolved_page.limit
+                ]
+                page_records = tuple(
+                    record
+                    for identity in identities
+                    if (
+                        record := self._repository.find_job_by_entity_id(identity)
+                    )
+                    is not None
+                    and _is_current(record, today)
+                )
+                if len(page_records) != len(identities):
+                    raise ResultPageResolutionError(
+                        "Jobs result identity is not current approved evidence"
+                    )
+                if not page_records:
+                    return OkResponse(
+                        answer="There are no more verified results in this retained Job result set.",
+                        request_id=request_id,
+                    )
+                return OkResponse(
+                    answer=(
+                        "The current supported Jobs population is incomplete; "
+                        "these are verified available results from the supported data.\n"
+                        + "\n".join(
+                            _job_answer(record, today) for record in page_records
+                        )
+                    ),
+                    items=[
+                        PublicJobItem(
+                            **current_job_item(record).model_dump(mode="python"),
+                            canonical_id=record.entity_id,
+                        )
+                        for record in page_records
+                    ],
+                    sources=[
+                        _source_from_record(record) for record in page_records
+                    ],
+                    request_id=request_id,
+                )
+
         selected = _pending_job(question, pending, self._repository)
+        structured_ids = list(selected_canonical_ids)
+        if (
+            interpretation is not None
+            and interpretation.entity is not None
+            and interpretation.entity.domain == Domain.JOBS
+            and interpretation.entity.canonical_id not in structured_ids
+        ):
+            structured_ids.append(interpretation.entity.canonical_id)
+        if selected is None and structured_ids:
+            structured = tuple(
+                record
+                for identity in structured_ids
+                if (record := self._repository.find_job_by_entity_id(identity))
+                is not None
+            )
+            if len(structured) != len(structured_ids):
+                raise ResultPageResolutionError(
+                    "Selected Job is not current approved evidence"
+                )
+            if len(structured) == 1:
+                selected = structured[0]
         numeric = JOB_ID_PATTERN.search(question)
         if numeric is not None:
             selected = self._repository.find_job_by_entity_id(numeric.group(1))
@@ -526,15 +654,37 @@ class JobQueryService:
                 )
 
         semantic_intent = bool(
-            candidate is None and SEMANTIC_JOB_PATTERN.search(question)
+            candidate is None
+            and (
+                SEMANTIC_JOB_PATTERN.search(question)
+                or TECHNICAL_DISCOVERY_PATTERN.search(question)
+            )
         )
         current_records = self._repository.current_job_candidates(today)
+        if (
+            semantic_intent
+            and conversation_state is not None
+            and any(item.domain == Domain.JOBS for item in conversation_state.result_sets)
+        ):
+            parent = next(
+                item
+                for item in reversed(conversation_state.result_sets)
+                if item.domain == Domain.JOBS
+            )
+            parent_ids = set(parent.ordered_canonical_ids)
+            current_records = tuple(
+                record
+                for record in current_records
+                if record.entity_id in parent_ids
+            )
         filters, unmatched_explicit = _job_filters(question, current_records)
+        closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
         if (
             _is_current_jobs_question(question)
             or semantic_intent
             or filters
             or unmatched_explicit
+            or closing_this_week
         ):
             records = (
                 ()
@@ -545,6 +695,17 @@ class JobQueryService:
                     if _matches_job_filters(record, filters)
                 )
             )
+            if closing_this_week and not unmatched_explicit:
+                days_until_sunday = 6 - today.weekday()
+                week_end = date.fromordinal(today.toordinal() + days_until_sunday)
+                records = tuple(
+                    record
+                    for record in records
+                    if record.metadata_json.closing_date is not None
+                    and today
+                    <= date.fromisoformat(record.metadata_json.closing_date)
+                    <= week_end
+                )
             if semantic_intent:
                 if not records:
                     return InsufficientEvidenceResponse(
@@ -616,14 +777,23 @@ class JobQueryService:
                 records = records[:20]
             if not records:
                 return InsufficientEvidenceResponse(
-                    answer="I could not find stored current Jobs evidence.",
+                    answer=(
+                        "The current supported Jobs population is incomplete. "
+                        "I could not find a verified match in the supported data, "
+                        "so this does not establish that no such ANU jobs exist."
+                    ),
                     request_id=request_id,
                 )
             return OkResponse(
-                answer="\n".join(_job_answer(record, today) for record in records),
+                answer=(
+                    "The current supported Jobs population is incomplete; these "
+                    "are verified available results from the supported data.\n"
+                    + "\n".join(_job_answer(record, today) for record in records)
+                ),
                 items=[
                     PublicJobItem(
-                        **current_job_item(record).model_dump(mode="python")
+                        **current_job_item(record).model_dump(mode="python"),
+                        canonical_id=record.entity_id,
                     )
                     for record in records
                 ],
@@ -631,3 +801,208 @@ class JobQueryService:
                 request_id=request_id,
             )
         return None
+
+    def integrate_conversation(
+        self,
+        response: AskResponse,
+        *,
+        question: str,
+        state: ConversationState,
+        interpretation: QueryInterpretation,
+        result_page: ResultPageRequest | None = None,
+    ) -> JobQueryOutcome:
+        """Project Jobs through the shared ResultSet and selection contracts."""
+
+        today = self._today_provider()
+        current = self._repository.current_job_candidates(today)
+        by_id = {record.entity_id: record for record in current}
+        by_record_id = {record.record_id: record for record in current}
+        selected = tuple(
+            by_record_id[source.record_id]
+            for source in response.sources
+            if source.record_id in by_record_id
+        )
+        resolved_page = resolve_result_page(state, interpretation, result_page)
+        parent = (
+            resolved_page.result_set
+            if resolved_page is not None
+            else next(
+                (
+                    item
+                    for item in reversed(state.result_sets)
+                    if item.domain == Domain.JOBS
+                    and (
+                        interpretation.referenced_result_set_id is None
+                        or item.result_set_id
+                        == interpretation.referenced_result_set_id
+                    )
+                ),
+                None,
+            )
+        )
+        semantic = bool(
+            SEMANTIC_JOB_PATTERN.search(question)
+            or TECHNICAL_DISCOVERY_PATTERN.search(question)
+        )
+        filters, unmatched = _job_filters(question, current)
+        closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
+        listing = bool(
+            resolved_page is not None
+            or interpretation.entity is None
+            and (
+                _is_current_jobs_question(question)
+                or semantic
+                or filters
+                or unmatched
+                or closing_this_week
+            )
+        )
+
+        ordered = selected
+        if listing and resolved_page is None:
+            if semantic:
+                # Retrieval already established this ranked order; do not rerank
+                # during state/presentation projection.
+                ordered = selected
+            else:
+                ordered = tuple(
+                    record
+                    for record in current
+                    if not unmatched and _matches_job_filters(record, filters)
+                )
+                if closing_this_week:
+                    week_end = date.fromordinal(
+                        today.toordinal() + 6 - today.weekday()
+                    )
+                    ordered = tuple(
+                        record
+                        for record in ordered
+                        if record.metadata_json.closing_date is not None
+                        and today
+                        <= date.fromisoformat(record.metadata_json.closing_date)
+                        <= week_end
+                    )
+            ordered = ordered[:20]
+
+        result_set: ResultSet | None = None
+        updated = state
+        if listing and resolved_page is None:
+            plan = build_retrieval_plan(
+                interpretation,
+                plan_id=f"plan:jobs:{state.turn_index}",
+            )
+            if plan is not None:
+                identities = tuple(record.entity_id for record in ordered)
+                if parent is not None and (
+                    semantic
+                    or closing_this_week
+                    or bool(filters)
+                    or unmatched
+                    or (
+                        interpretation.intent is not None
+                        and interpretation.intent.operation == "refine_results"
+                    )
+                ):
+                    result_set = refine_result_set(
+                        parent,
+                        result_set_id=f"rs:jobs:{state.turn_index}",
+                        ordered_canonical_ids=identities,
+                        constraints=interpretation.constraints,
+                        status=classify_result_set_status(
+                            identities, population_complete=False
+                        ),
+                        turn=state.turn_index,
+                        originating_query=question,
+                    )
+                else:
+                    result_set = build_result_set(
+                        plan,
+                        result_set_id=f"rs:jobs:{state.turn_index}",
+                        entity_kind=EntityKind.JOB,
+                        ordered_canonical_ids=identities,
+                        originating_query=question,
+                        created_turn=state.turn_index,
+                        population_complete=False,
+                    )
+                updated = remember_result_set(updated, result_set)
+                updated = set_pending_clarification(updated, None)
+
+        active_set = result_set or (resolved_page.result_set if resolved_page else parent)
+        if listing and resolved_page is None:
+            selected = ordered[:5]
+        public_page: ResultPage | None = None
+        if active_set is not None and listing and active_set.status == ResultSetStatus.RESULTS:
+            start_ordinal = (
+                resolved_page.start_ordinal if resolved_page is not None else 1
+            )
+            public_page, continuation = result_page_metadata(
+                active_set,
+                start_ordinal=start_ordinal,
+                returned=len(selected),
+            )
+            updated = remember_result_page(
+                updated,
+                result_set_id=active_set.result_set_id,
+                next_ordinal=continuation,
+            )
+
+        if len(selected) == 1:
+            record = selected[0]
+            updated = remember_entity(
+                updated,
+                ResolvedEntity(
+                    domain=Domain.JOBS,
+                    kind=EntityKind.JOB,
+                    canonical_id=record.entity_id,
+                    canonical_name=record.title,
+                    source_record_id=record.record_id,
+                    resolution_basis=EntityResolutionBasis.RETAINED_STATE,
+                    mentioned_turn=state.turn_index,
+                ),
+                focus=active_set is None,
+            )
+
+        public_items = []
+        for record in selected:
+            ordinal = None
+            if active_set is not None and record.entity_id in active_set.ordered_canonical_ids:
+                ordinal = active_set.ordered_canonical_ids.index(record.entity_id) + 1
+            public_items.append(
+                PublicJobItem(
+                    **current_job_item(record).model_dump(mode="python"),
+                    canonical_id=record.entity_id,
+                    result_set_id=(
+                        active_set.result_set_id if active_set is not None else None
+                    ),
+                    ordinal=ordinal,
+                )
+            )
+
+        if listing and selected:
+            answer = (
+                "The current supported Jobs population is incomplete; these "
+                "are verified available results from the supported data.\n"
+                + "\n".join(_job_answer(record, today) for record in selected)
+            )
+            sources = [_source_from_record(record) for record in selected]
+        else:
+            answer = response.answer
+            sources = response.sources
+        updates: dict[str, object] = {
+            "answer": answer,
+            "items": public_items,
+            "sources": sources,
+            "answer_state": (
+                AnswerState.PARTIAL
+                if listing
+                else AnswerState.CONFIRMED
+                if response.status == "ok"
+                else AnswerState.UNKNOWN
+            ),
+        }
+        if public_page is not None and (
+            public_page.has_more or resolved_page is not None
+        ):
+            updates["result_page"] = public_page
+        projected = response.model_copy(update=updates)
+        return JobQueryOutcome(response=projected, state=updated)

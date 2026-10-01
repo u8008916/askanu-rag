@@ -131,15 +131,21 @@ def _typed_reference(question: str) -> tuple[Domain, EntityKind] | None:
 def _domain_from_words(question: str) -> Domain | None:
     normalised = _normalise(question)
     mapping = (
-        (("course", "prerequisite", "prereq", "units"), Domain.COURSES),
-        (("scholarship",), Domain.SCHOLARSHIPS),
-        (("job", "role"), Domain.JOBS),
-        (("accommodation", "housing", "residence", "hall", "lodge", "catered", "vacancy", "rooms available", "place to live", "places to live", "somewhere to live"), Domain.ACCOMMODATION),
-        (("event",), Domain.EVENTS),
-        (("support", "service"), Domain.SUPPORT),
+        (("course", "courses", "prerequisite", "prerequisites", "prereq", "units"), Domain.COURSES),
+        (("scholarship", "scholarships"), Domain.SCHOLARSHIPS),
+        (("job", "jobs", "role", "roles"), Domain.JOBS),
+        (("accommodation", "housing", "residence", "residences", "hall", "halls", "lodge", "lodges", "catered", "vacancy", "vacancies", "rooms available", "place to live", "places to live", "somewhere to live"), Domain.ACCOMMODATION),
+        (("event", "events"), Domain.EVENTS),
+        (("support", "service", "services"), Domain.SUPPORT),
     )
     for words, domain in mapping:
-        if any(word in normalised for word in words):
+        if any(
+            re.search(
+                r"(?<![a-z0-9])" + re.escape(word) + r"(?![a-z0-9])",
+                normalised,
+            )
+            for word in words
+        ):
             return domain
     return None
 
@@ -179,7 +185,21 @@ def _explicit_constraints(question: str, domain: Domain | None, turn: int) -> Co
             introduced_turn=turn,
         ))
 
-    date_value = next((value for value in ("today", "tomorrow", "this friday", "next week", "this weekend") if value in normalised), None)
+    date_value = next(
+        (
+            value
+            for value in (
+                "today",
+                "tomorrow",
+                "this friday",
+                "this week",
+                "next week",
+                "this weekend",
+            )
+            if value in normalised
+        ),
+        None,
+    )
     if date_value:
         found.append(ScopedConstraint(
             semantic_type=ConstraintSemanticType.DATE_WINDOW,
@@ -391,12 +411,13 @@ def interpret_turn(
         and any(
         token in normalised
         for token in (
-            "after ", "before ", "today", "tomorrow", "any more",
+            "after ", "before ", "today", "tomorrow", "this week", "any more",
             "show more", "show me more", "what else",
             "cost", "apply", "available", "availability", "vacancy",
-            "prerequisite", "prereq", "units",
-            "where", "when", "close", "catered", "catering", "meal", "application",
+            "prerequisite", "prereq", "units", "requirements", "qualifications",
+            "where", "when", "close", "contact", "organis", "catered", "catering", "meal", "application",
             "price", "rate", "room", "is it", "its ",
+            " them", "their ",
             "under ", "below ", "less than", "no more than", "up to ",
             "budget", "maximum", " max",
         )
@@ -465,7 +486,9 @@ def interpret_turn(
             for word in (
                 " it", "its ", "is it", "cost", "apply", "available",
                 "availability",
-                "vacancy", "prerequisite", "prereq", "units", "catered", "catering",
+                "vacancy", "prerequisite", "prereq", "units", "requirements",
+                "qualifications", "contact", "where", "organis", " them", "their ",
+                "catered", "catering",
                 "meal", "application", "price", "rate", "room", "how much",
             )
         )

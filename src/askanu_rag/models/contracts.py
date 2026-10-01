@@ -277,6 +277,9 @@ class PublicJobItem(CurrentJobItem):
     """Typed Jobs shape used only inside the shared Ask response."""
 
     type: Literal["job"] = "job"
+    canonical_id: str
+    result_set_id: str | None = None
+    ordinal: int | None = Field(default=None, strict=True, ge=1)
 
 
 PublicItem = Annotated[
