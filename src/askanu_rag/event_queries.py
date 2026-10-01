@@ -34,7 +34,7 @@ from askanu_rag.models import (
     ResultSetStatus,
     UpcomingEventItem,
 )
-from askanu_rag.evidence_selection import build_result_set
+from askanu_rag.evidence_selection import build_result_set, classify_result_set_status
 from askanu_rag.retrieval import EventReader
 from askanu_rag.retrieval_planning import build_retrieval_plan
 from askanu_rag.result_paging import (
@@ -58,6 +58,9 @@ PERIOD_PATTERNS = (
     (re.compile(r"\btomorrow\b", re.IGNORECASE), "tomorrow"),
     (re.compile(r"\btoday\b", re.IGNORECASE), "today"),
 )
+# Current audited source health has not closed either population gate:
+# official Events are 29/30 and the Rubric live denominator is unresolved.
+EVENT_POPULATION_COMPLETE = False
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,34 @@ def upcoming_event_item(record: EventRecord) -> UpcomingEventItem:
 
 def is_plausible_event_question(question: str) -> bool:
     return EVENT_WORD_PATTERN.search(question) is not None
+
+
+def _contains_identity(question: str, value: str) -> bool:
+    normalized = " ".join(question.casefold().split())
+    identity = " ".join(value.casefold().split())
+    return bool(identity) and re.search(
+        r"(?<![a-z0-9])" + re.escape(identity) + r"(?![a-z0-9])",
+        normalized,
+    ) is not None
+
+
+def _event_identity_matches(
+    question: str, records: tuple[EventRecord, ...]
+) -> tuple[EventRecord, ...]:
+    """Resolve only exact stored Event names or identifiers, never aliases."""
+
+    return tuple(
+        record
+        for record in records
+        if any(
+            _contains_identity(question, identity)
+            for identity in (
+                record.entity_id,
+                record.title,
+                record.metadata_json.source_event_id,
+            )
+        )
+    )
 
 
 def _requested_period(question: str):
@@ -190,9 +221,30 @@ def _event_candidates(
     time_value = _constraint_value(
         interpretation, ConstraintSemanticType.TIME_OF_DAY_WINDOW
     )
-    return tuple(
+    candidates = tuple(
         record for record in dated if _matches_time_constraint(record, time_value)
-    )[:20]
+    )
+    location = _constraint_value(interpretation, ConstraintSemanticType.LOCATION)
+    if location is not None:
+        wanted = " ".join(location.casefold().split())
+        candidates = tuple(
+            record
+            for record in candidates
+            if any(
+                value is not None
+                and re.search(
+                    r"(?<![a-z0-9])"
+                    + re.escape(wanted)
+                    + r"(?![a-z0-9])",
+                    " ".join(value.casefold().split()),
+                )
+                for value in (
+                    record.metadata_json.venue_name,
+                    record.metadata_json.address,
+                )
+            )
+        )
+    return candidates[:20]
 
 
 def _event_public_item(
@@ -299,8 +351,27 @@ class EventQueryService:
                     "Event result identity is not current approved evidence"
                 )
         else:
-            structured_ids = list(selected_canonical_ids)
+            explicit_identities = _event_identity_matches(question, records)
+            if len(explicit_identities) > 1:
+                return InsufficientEvidenceResponse(
+                    answer=(
+                        "I found multiple stored Events matching that identity. "
+                        "Please name one exact Event."
+                    ),
+                    sources=[
+                        _source_from_record(record)
+                        for record in explicit_identities[:5]
+                    ],
+                    request_id=request_id,
+                )
+            structured_ids = (
+                [explicit_identities[0].entity_id]
+                if explicit_identities
+                else list(selected_canonical_ids)
+            )
             if (
+                not explicit_identities
+                and
                 interpretation is not None
                 and interpretation.entity is not None
                 and interpretation.entity.domain == Domain.EVENTS
@@ -326,8 +397,23 @@ class EventQueryService:
                 )[: self._limit]
 
         if not selected:
+            has_location_constraint = (
+                _constraint_value(
+                    interpretation, ConstraintSemanticType.LOCATION
+                )
+                is not None
+            )
             return InsufficientEvidenceResponse(
-                answer="I could not find persisted Event evidence for that time period.",
+                answer=(
+                    "The current supported Event population is incomplete. I could "
+                    "not find persisted Event evidence matching the active "
+                    "source-backed constraints; this does not establish that no "
+                    "such events exist."
+                    if has_location_constraint
+                    else "The current supported Event population is incomplete. I "
+                    "could not find persisted Event evidence for that time period; "
+                    "this does not establish that no such events exist."
+                ),
                 request_id=request_id,
             )
 
@@ -403,6 +489,7 @@ class EventQueryService:
         listing = bool(
             resolved_page is not None
             or not interpretation.entity
+            and not _event_identity_matches(question, records)
             and not interpretation.requires_clarification
         )
         ordered = selected
@@ -433,10 +520,9 @@ class EventQueryService:
                         result_set_id=f"rs:events:{state.turn_index}",
                         ordered_canonical_ids=identities,
                         constraints=interpretation.constraints,
-                        status=(
-                            ResultSetStatus.RESULTS
-                            if identities
-                            else ResultSetStatus.EMPTY
+                        status=classify_result_set_status(
+                            identities,
+                            population_complete=EVENT_POPULATION_COMPLETE,
                         ),
                         turn=state.turn_index,
                         originating_query=question,
@@ -449,7 +535,7 @@ class EventQueryService:
                         ordered_canonical_ids=identities,
                         originating_query=question,
                         created_turn=state.turn_index,
-                        population_complete=True,
+                        population_complete=EVENT_POPULATION_COMPLETE,
                     )
                 updated = remember_result_set(updated, result_set)
 

@@ -581,6 +581,68 @@ def test_second_result_stays_stable_and_drives_fact_followups() -> None:
     assert vector.calls == 0, "retained ordinals must not rerun ranking"
 
 
+@pytest.mark.parametrize(
+    ("wording", "ordinal"),
+    (
+        ("first", 1),
+        ("second", 2),
+        ("third", 3),
+        ("fourth", 4),
+        ("1st", 1),
+        ("2nd", 2),
+        ("3rd", 3),
+        ("number 1", 1),
+        ("number 2", 2),
+        ("number 3", 3),
+    ),
+)
+def test_bare_accommodation_ordinals_select_from_retained_resultset(
+    wording: str,
+    ordinal: int,
+) -> None:
+    class MustNotRerank:
+        calls = 0
+
+        def search(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("retained accommodation ordinals must not rerank")
+
+    records = (ALPHA, BRAVO, CHARLIE, MYSTERY)
+    vector = MustNotRerank()
+    conversation = Conversation(records, vector=vector)
+    discovered = conversation.ask("Show me the accommodation options at ANU")
+    result_set = _latest_result(discovered)
+    result_set_id = result_set["result_set_id"]
+    expected = records[ordinal - 1]
+
+    assert discovered["conversation_state"]["pending_clarification"] is None
+
+    body = conversation.ask(wording)
+
+    assert body["status"] == "ok"
+    assert body["answer_state"] == "CONFIRMED"
+    assert len(body["items"]) == 1
+    assert body["items"][0]["canonical_id"] == expected.entity_id
+    assert body["items"][0]["result_set_id"] == result_set_id
+    assert body["items"][0]["ordinal"] == ordinal
+    assert body["sources"][0]["record_id"] == expected.record_id
+    assert expected.title in body["answer"]
+    state = body["conversation_state"]
+    assert state["selected_result"] == {
+        "result_set_id": result_set_id,
+        "canonical_id": expected.entity_id,
+        "ordinal": ordinal,
+    }
+    assert state["focus"]["result_set_id"] == result_set_id
+    assert [item["result_set_id"] for item in state["result_sets"]] == [
+        result_set_id
+    ]
+    trace = conversation.traces[-1]
+    assert trace.selected_canonical_ids == (expected.entity_id,)
+    assert trace.canonical_sources == (str(expected.canonical_url),)
+    assert vector.calls == 0
+
+
 def test_current_availability_is_partial_unknown_with_official_next_action() -> None:
     conversation = Conversation((ALPHA, BRAVO))
     conversation.ask("Show accommodation options")

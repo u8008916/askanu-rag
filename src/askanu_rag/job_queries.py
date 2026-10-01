@@ -14,6 +14,7 @@ from askanu_rag.models import (
     Clarification,
     ClarificationOption,
     ConversationState,
+    ConstraintSemanticType,
     CurrentJobItem,
     Domain,
     EntityKind,
@@ -30,6 +31,7 @@ from askanu_rag.models import (
     ResultPageRequest,
     ResultSet,
     ResultSetStatus,
+    SemanticFocus,
 )
 from askanu_rag.evidence_selection import build_result_set, classify_result_set_status
 from askanu_rag.retrieval import JobReader
@@ -51,6 +53,7 @@ from askanu_rag.state_transitions import (
     remember_result_page,
     remember_result_set,
     set_pending_clarification,
+    set_semantic_focus,
 )
 
 CANBERRA = ZoneInfo("Australia/Canberra")
@@ -70,6 +73,17 @@ FIXED_TERM_PATTERN = re.compile(r"\bfixed[-\s]term\b", re.IGNORECASE)
 EMPLOYMENT_TYPE_PATTERN = re.compile(
     r"\b(fixed[-\s]term|continuing|casual)\b", re.IGNORECASE
 )
+UNSUPPORTED_WORK_ARRANGEMENT_PATTERN = re.compile(
+    r"\b(?:remote|work(?:ing)?\s+from\s+home|work\s+arrangement)\b",
+    re.IGNORECASE,
+)
+INVALID_CLASSIFICATION_SHORTHAND_PATTERN = re.compile(
+    r"\bANU\d+[A-Za-z]+\b", re.IGNORECASE
+)
+CLASSIFICATION_SHORTHAND_PATTERN = re.compile(r"^ANU0*(\d+)$", re.IGNORECASE)
+CLASSIFICATION_SOURCE_PATTERN = re.compile(
+    r"^ANU\s+Officer\s+0*(\d+)(?:\s*\([^)]*\))?$", re.IGNORECASE
+)
 ROLE_REFERENCE_PATTERN = re.compile(
     r"\b(?:this|that)\s+(?:ANU\s+)?(?:job|role)\b", re.I
 )
@@ -78,8 +92,9 @@ REQUIREMENTS_PATTERN = re.compile(
     re.I,
 )
 SEMANTIC_JOB_PATTERN = re.compile(
-    r"\b(?:related\s+to|interested\s+in|focus(?:ed)?\s+on|about|"
-    r"involv(?:e|es|ing))\b",
+    r"\b(?:related\s+to|interested\s+in|focus(?:ed)?\s+on|"
+    r"involv(?:e|es|ing))\b|"
+    r"\b(?:jobs?|roles?)\b[^?.!]{0,40}\babout\b",
     re.I,
 )
 TECHNICAL_DISCOVERY_PATTERN = re.compile(
@@ -96,7 +111,11 @@ JOB_TITLE_SHAPE_PATTERN = re.compile(
     re.I,
 )
 TITLE_PATTERNS = (
-    re.compile(r"^\s*tell me about\s+(.+?)\s*[?.!]*\s*$", re.I),
+    re.compile(
+        r"^\s*(?:tell me(?: more)? about|give me(?: more)? information about)"
+        r"\s+(.+?)\s*[?.!]*\s*$",
+        re.I,
+    ),
     re.compile(r"^\s*when does\s+(.+?)\s+close\s*[?.!]*\s*$", re.I),
     re.compile(
         r"^\s*is\s+(.+?)\s+(?:still\s+)?(?:current|open)\s*[?.!]*\s*$",
@@ -158,11 +177,68 @@ def _title_candidate(question: str) -> str | None:
     return None
 
 
+def _exact_title_matches(
+    question: str,
+    repository: JobReader,
+) -> tuple[JobRecord, ...]:
+    candidate = _title_candidate(question)
+    return repository.find_jobs_by_title(candidate) if candidate is not None else ()
+
+
+def _without_exact_title_constraints(
+    interpretation: QueryInterpretation,
+    state: ConversationState,
+    record: JobRecord,
+) -> tuple[QueryInterpretation, ConversationState]:
+    """Protect a uniquely matched title span from generic constraint parsing."""
+
+    def keep(item) -> bool:
+        return not (
+            item.scope.domain == Domain.JOBS
+            and _contains_phrase(record.title, str(item.value))
+        )
+
+    def filtered(constraints):
+        return constraints.model_copy(
+            update={"items": tuple(item for item in constraints.items if keep(item))}
+        )
+
+    return (
+        interpretation.model_copy(
+            update={
+                "explicit_constraints": filtered(
+                    interpretation.explicit_constraints
+                ),
+                "inherited_constraints": filtered(
+                    interpretation.inherited_constraints
+                ),
+                "constraints": filtered(interpretation.constraints),
+            }
+        ),
+        state.model_copy(update={"constraints": filtered(state.constraints)}),
+    )
+
+
 def _is_current_jobs_question(question: str) -> bool:
     return bool(
         LIST_REQUEST_PATTERN.search(question)
         and JOB_WORD_PATTERN.search(question)
         and CURRENT_WORD_PATTERN.search(question)
+    )
+
+
+def _is_interpreted_job_discovery(
+    interpretation: QueryInterpretation | None,
+) -> bool:
+    """Recognize an already-resolved, entity-free Jobs listing request."""
+
+    return bool(
+        interpretation is not None
+        and interpretation.domain == Domain.JOBS
+        and interpretation.entity is None
+        and interpretation.intent is not None
+        and interpretation.intent.name == "discover"
+        and interpretation.intent.operation == "initial_discovery"
     )
 
 
@@ -283,13 +359,73 @@ def _contains_phrase(question: str, value: str) -> bool:
     ) is not None
 
 
+def _classification_level(value: str) -> int | None:
+    normalized = " ".join(value.strip().split())
+    match = CLASSIFICATION_SHORTHAND_PATTERN.fullmatch(normalized)
+    if match is None:
+        match = CLASSIFICATION_SOURCE_PATTERN.fullmatch(normalized)
+    return int(match.group(1)) if match is not None else None
+
+
+def _without_unsupported_work_arrangement(
+    interpretation: QueryInterpretation,
+    state: ConversationState,
+) -> tuple[QueryInterpretation, ConversationState]:
+    """Remove a non-contract remote constraint without weakening real job filters."""
+
+    def keep(item) -> bool:
+        return not (
+            item.scope.domain == Domain.JOBS
+            and item.semantic_type == ConstraintSemanticType.EMPLOYMENT_TYPE
+            and _normalize(str(item.value)) == "remote"
+        )
+
+    def filtered(constraints):
+        return constraints.model_copy(
+            update={"items": tuple(item for item in constraints.items if keep(item))}
+        )
+
+    return (
+        interpretation.model_copy(
+            update={
+                "explicit_constraints": filtered(
+                    interpretation.explicit_constraints
+                ),
+                "inherited_constraints": filtered(
+                    interpretation.inherited_constraints
+                ),
+                "constraints": filtered(interpretation.constraints),
+            }
+        ),
+        state.model_copy(update={"constraints": filtered(state.constraints)}),
+    )
+
+
 def _job_filters(
-    question: str, records: Sequence[JobRecord]
+    question: str,
+    records: Sequence[JobRecord],
+    interpretation: QueryInterpretation | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], bool]:
     """Extract only explicit values already present in current stored Jobs."""
 
     filters: dict[str, tuple[str, ...]] = {}
     normalized = _normalize(question)
+    constraints = (
+        tuple(
+            item
+            for item in interpretation.constraints.items
+            if item.scope.domain == Domain.JOBS
+        )
+        if interpretation is not None
+        else ()
+    )
+
+    def values(semantic_type: ConstraintSemanticType) -> set[str]:
+        return {
+            str(item.value)
+            for item in constraints
+            if item.semantic_type == semantic_type
+        }
 
     employment_types = {
         value
@@ -308,11 +444,25 @@ def _job_filters(
         _normalize(match.group(1)).replace("-", " ").title()
         for match in EMPLOYMENT_TYPE_PATTERN.finditer(question)
     }
+    requested_employment_types.update(
+        values(ConstraintSemanticType.EMPLOYMENT_TYPE)
+    )
     employment_types.update(requested_employment_types)
     if employment_types:
         filters["employment_types"] = tuple(sorted(employment_types))
 
-    locations = set()
+    requested_locations = values(ConstraintSemanticType.LOCATION)
+    category_values = {
+        record.metadata_json.category
+        for record in records
+        if record.metadata_json.category is not None
+    }
+    category_locations = {
+        value
+        for value in requested_locations
+        if any(_normalize(value) == _normalize(category) for category in category_values)
+    }
+    locations = requested_locations - category_locations
     for record in records:
         value = record.metadata_json.location
         if value is None:
@@ -347,6 +497,11 @@ def _job_filters(
             )
         )
     }
+    categories.update(
+        category
+        for category in category_values
+        if any(_normalize(value) == _normalize(category) for value in category_locations)
+    )
     if categories:
         filters["category"] = tuple(sorted(categories))
 
@@ -357,6 +512,11 @@ def _job_filters(
         and _contains_phrase(question, record.metadata_json.classification)
         and re.search(r"\bclassification\b", question, re.I)
     }
+    classifications.update(
+        value
+        for value in values(ConstraintSemanticType.CATEGORY)
+        if re.fullmatch(r"ANU\d{1,4}", value, re.I)
+    )
     if classifications:
         filters["classification"] = tuple(sorted(classifications))
 
@@ -408,6 +568,7 @@ def _job_filters(
             re.search(r"\brequir(?:e|es|ed|ing)\b", question, re.I)
             and not requirements
         )
+        or INVALID_CLASSIFICATION_SHORTHAND_PATTERN.search(question) is not None
     )
     return filters, unmatched_explicit
 
@@ -438,6 +599,36 @@ def _matches_job_filters(
         elif field == "role_requirements":
             actual = {_normalize(value) for value in metadata.role_requirements or ()}
             if not all(_normalize(value) in actual for value in expected):
+                return False
+        elif field == "location":
+            actual_value = metadata.location
+            actual = (
+                set()
+                if actual_value is None
+                else {
+                    _normalize(part)
+                    for part in re.split(r"\s*(?:/|,|;|\|)\s*", actual_value)
+                    if part.strip()
+                }
+                | {_normalize(actual_value)}
+            )
+            if not all(_normalize(value) in actual for value in expected):
+                return False
+        elif field == "classification":
+            actual_value = metadata.classification
+            actual_level = (
+                _classification_level(actual_value)
+                if actual_value is not None
+                else None
+            )
+            if actual_value is None or not all(
+                (
+                    _classification_level(value) == actual_level
+                    if _classification_level(value) is not None
+                    else _normalize(value) == _normalize(actual_value)
+                )
+                for value in expected
+            ):
                 return False
         else:
             actual_value = getattr(metadata, field)
@@ -589,8 +780,22 @@ class JobQueryService:
                 )
             if len(structured) == 1:
                 selected = structured[0]
+        candidate = _title_candidate(question)
+        title_matches = (
+            self._repository.find_jobs_by_title(candidate)
+            if candidate is not None
+            else ()
+        )
+        if len(title_matches) > 1:
+            return _job_clarification(title_matches, request_id)
+        if len(title_matches) == 1:
+            # An exact stored title is stronger than a number embedded inside
+            # that title (for example "Verified Role 2").  A real Job ID still
+            # resolves below when the complete title did not match.
+            selected = title_matches[0]
+
         numeric = JOB_ID_PATTERN.search(question)
-        if numeric is not None:
+        if numeric is not None and not title_matches:
             selected = self._repository.find_job_by_entity_id(numeric.group(1))
             if selected is None:
                 return InsufficientEvidenceResponse(
@@ -641,17 +846,16 @@ class JobQueryService:
                 request_id=request_id,
             )
 
-        candidate = _title_candidate(question)
-        if candidate is not None:
-            matches = self._repository.find_jobs_by_title(candidate)
-            if len(matches) > 1:
-                return _job_clarification(matches, request_id)
-            if len(matches) == 1:
-                return OkResponse(
-                    answer=_job_answer(matches[0], today),
-                    sources=[_source_from_record(matches[0])],
-                    request_id=request_id,
-                )
+        if UNSUPPORTED_WORK_ARRANGEMENT_PATTERN.search(question):
+            return InsufficientEvidenceResponse(
+                answer=(
+                    "The current supported Jobs population is incomplete, and the "
+                    "source contract does not publish remote or work-arrangement "
+                    "evidence. I cannot reliably apply or verify that constraint, "
+                    "and this does not establish that no remote ANU jobs exist."
+                ),
+                request_id=request_id,
+            )
 
         semantic_intent = bool(
             candidate is None
@@ -677,10 +881,13 @@ class JobQueryService:
                 for record in current_records
                 if record.entity_id in parent_ids
             )
-        filters, unmatched_explicit = _job_filters(question, current_records)
+        filters, unmatched_explicit = _job_filters(
+            question, current_records, interpretation
+        )
         closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
         if (
             _is_current_jobs_question(question)
+            or _is_interpreted_job_discovery(interpretation)
             or semantic_intent
             or filters
             or unmatched_explicit
@@ -776,9 +983,23 @@ class JobQueryService:
             else:
                 records = records[:20]
             if not records:
+                has_location_constraint = bool(
+                    interpretation is not None
+                    and any(
+                        item.scope.domain == Domain.JOBS
+                        and item.semantic_type == ConstraintSemanticType.LOCATION
+                        for item in interpretation.constraints.items
+                    )
+                )
                 return InsufficientEvidenceResponse(
                     answer=(
-                        "The current supported Jobs population is incomplete. "
+                        "The current supported Jobs population is incomplete, and "
+                        "location is optional in the source contract. I cannot "
+                        "reliably evaluate that location across the population. "
+                        "I found no verified match in the supported data, which "
+                        "does not establish that no such ANU jobs exist."
+                        if has_location_constraint
+                        else "The current supported Jobs population is incomplete. "
                         "I could not find a verified match in the supported data, "
                         "so this does not establish that no such ANU jobs exist."
                     ),
@@ -822,6 +1043,40 @@ class JobQueryService:
             for source in response.sources
             if source.record_id in by_record_id
         )
+        title_matches = _exact_title_matches(question, self._repository)
+        exact_title = (
+            title_matches[0]
+            if len(title_matches) == 1
+            and any(
+                record.entity_id == title_matches[0].entity_id
+                for record in selected
+            )
+            else None
+        )
+        if exact_title is not None:
+            interpretation, state = _without_exact_title_constraints(
+                interpretation,
+                state,
+                exact_title,
+            )
+        if (
+            exact_title is None
+            and UNSUPPORTED_WORK_ARRANGEMENT_PATTERN.search(question)
+        ):
+            interpretation, state = _without_unsupported_work_arrangement(
+                interpretation, state
+            )
+            return JobQueryOutcome(
+                response=response.model_copy(
+                    update={"items": [], "answer_state": AnswerState.UNKNOWN}
+                ),
+                state=state,
+            )
+        preserve_selected_exact_title = bool(
+            exact_title is not None
+            and state.selected_result is not None
+            and state.selected_result.canonical_id == exact_title.entity_id
+        )
         resolved_page = resolve_result_page(state, interpretation, result_page)
         parent = (
             resolved_page.result_set
@@ -844,17 +1099,21 @@ class JobQueryService:
             SEMANTIC_JOB_PATTERN.search(question)
             or TECHNICAL_DISCOVERY_PATTERN.search(question)
         )
-        filters, unmatched = _job_filters(question, current)
+        filters, unmatched = _job_filters(question, current, interpretation)
         closing_this_week = CLOSE_THIS_WEEK_PATTERN.search(question) is not None
         listing = bool(
-            resolved_page is not None
-            or interpretation.entity is None
+            exact_title is None
             and (
-                _is_current_jobs_question(question)
-                or semantic
-                or filters
-                or unmatched
-                or closing_this_week
+                resolved_page is not None
+                or interpretation.entity is None
+                and (
+                    _is_current_jobs_question(question)
+                    or _is_interpreted_job_discovery(interpretation)
+                    or semantic
+                    or filters
+                    or unmatched
+                    or closing_this_week
+                )
             )
         )
 
@@ -948,6 +1207,22 @@ class JobQueryService:
 
         if len(selected) == 1:
             record = selected[0]
+            if preserve_selected_exact_title and state.selected_result is not None:
+                selected_set = next(
+                    item
+                    for item in state.result_sets
+                    if item.result_set_id == state.selected_result.result_set_id
+                )
+                updated = set_semantic_focus(
+                    updated,
+                    SemanticFocus(
+                        domain=selected_set.domain,
+                        entity_kind=selected_set.entity_kind,
+                        canonical_entity_id=record.entity_id,
+                        intent_name=selected_set.intent.name,
+                        result_set_id=selected_set.result_set_id,
+                    ),
+                )
             updated = remember_entity(
                 updated,
                 ResolvedEntity(
@@ -959,7 +1234,10 @@ class JobQueryService:
                     resolution_basis=EntityResolutionBasis.RETAINED_STATE,
                     mentioned_turn=state.turn_index,
                 ),
-                focus=active_set is None,
+                focus=(
+                    not preserve_selected_exact_title
+                    and (active_set is None or exact_title is not None)
+                ),
             )
 
         public_items = []

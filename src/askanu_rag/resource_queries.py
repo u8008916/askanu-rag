@@ -125,7 +125,11 @@ LOCATION_PATTERN = re.compile(r"\b(?:where is|located|location)\b", re.I)
 AUDIENCE_PATTERN = re.compile(
     r"\b(?:audience|who can live|who can use|undergraduate|postgraduate)\b", re.I
 )
-OVERVIEW_PATTERN = re.compile(r"\b(?:overview|describe|tell me about)\b", re.I)
+OVERVIEW_PATTERN = re.compile(
+    r"\b(?:overview|describe|tell me(?: more)? about|"
+    r"give me(?: more)? information about)\b",
+    re.I,
+)
 RETURN_ACCOMMODATION_PATTERN = re.compile(
     r"\b(?:back|return|go back) to (?:the )?(?:accommodation|residences?)\b",
     re.I,
@@ -365,6 +369,33 @@ def _filter_accommodation_population(
                 qualifying_rooms.extend(qualifying)
             elif not rooms_are_complete:
                 unknown[record.record_id] = record
+        candidates = tuple(matched)
+
+    location: str | None = None
+    if interpretation is not None:
+        location = next(
+            (
+                str(constraint.value)
+                for constraint in interpretation.constraints.items
+                if constraint.scope.domain == Domain.ACCOMMODATION
+                and constraint.semantic_type == ConstraintSemanticType.LOCATION
+            ),
+            None,
+        )
+    if location is not None:
+        wanted = normalize_job_title(location)
+        matched = []
+        for record in candidates:
+            published = record.metadata_json.location
+            if published is None:
+                unknown[record.record_id] = record
+                continue
+            normalized = normalize_job_title(published)
+            if re.search(
+                r"(?<![a-z0-9])" + re.escape(wanted) + r"(?![a-z0-9])",
+                normalized,
+            ):
+                matched.append(record)
         candidates = tuple(matched)
 
     catering = _requested_catering_preference(question)
@@ -1237,6 +1268,11 @@ class DomainResourceQueryService:
                 selected[: self.evidence_top_k],
                 request_id,
                 qualifying_rooms=qualifying_rooms,
+                default_overview=bool(
+                    interpretation is not None
+                    and interpretation.reference_origin == "prior_result_set"
+                    and selected_canonical_ids
+                ),
             )
         return self._support_answer(question, selected, request_id)
 
@@ -1452,6 +1488,7 @@ class DomainResourceQueryService:
                     population_complete=population_complete,
                 )
             updated = remember_result_set(updated, result_set)
+            updated = set_pending_clarification(updated, None)
 
         public_page: ResultPage | None = None
         if result_set is not None and result_set.status == ResultSetStatus.RESULTS:
@@ -1629,6 +1666,7 @@ class DomainResourceQueryService:
         request_id: str,
         *,
         qualifying_rooms: tuple[QualifyingRoomEvidence, ...] = (),
+        default_overview: bool = False,
     ) -> AskResponse:
         accommodations = tuple(
             record for record in records if isinstance(record, AccommodationRecord)
@@ -1860,6 +1898,7 @@ class DomainResourceQueryService:
                 OVERVIEW_PATTERN.search(question)
                 or RETURN_ACCOMMODATION_PATTERN.search(question)
                 or _is_broad_resource_request(question, self.domain)
+                or (default_overview and not has_specific_intent)
             ):
                 for label, value in (
                     ("Category", metadata.category),

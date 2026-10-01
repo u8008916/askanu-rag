@@ -144,6 +144,21 @@ def controlled_error_response(
     return JSONResponse(status_code=status_code, content=content)
 
 
+def _valid_inbound_state_from_validation_error(
+    exc: RequestValidationError,
+) -> ConversationState | None:
+    """Recover only a separately valid, bounded state from a rejected Ask body."""
+
+    body = exc.body
+    if not isinstance(body, dict) or "conversation_state" not in body:
+        return None
+    try:
+        state = ConversationState.model_validate(body["conversation_state"])
+    except (TypeError, ValueError):
+        return None
+    return state if state_fits_transport(state) else None
+
+
 def _course_record_for_source_id(
     repository,
     record_id: str,
@@ -531,9 +546,15 @@ def create_app(
     ) -> JSONResponse:
         status_code = 413 if _is_oversized_input(exc.errors()) else 400
         _request.state.response_status = "error"
+        validated_state = (
+            _valid_inbound_state_from_validation_error(exc)
+            if _request.url.path == "/api/v1/ask"
+            else None
+        )
         return controlled_error_response(
             status_code,
             _request_id(_request),
+            validated_state,
             include_conversation_state=_request.url.path == "/api/v1/ask",
         )
 
@@ -545,6 +566,11 @@ def create_app(
         return controlled_error_response(
             exc.status_code,
             _request_id(_request),
+            getattr(
+                _request.state,
+                "validated_inbound_conversation_state",
+                None,
+            ),
             include_conversation_state=_request.url.path == "/api/v1/ask",
         )
 
@@ -624,6 +650,13 @@ def create_app(
         # The client carries this bounded, untrusted structure between turns.
         # RAG validates it and returns the authoritative next state; no server
         # session or factual evidence is created from it.
+        # Once the request model has validated, keep its inbound state solely
+        # for controlled semantic-rejection envelopes.  Such a rejected
+        # operation must not behave like Clear Chat or expose a half-applied
+        # turn transition.
+        request.state.validated_inbound_conversation_state = (
+            payload.conversation_state
+        )
         request_state = _state_with_verified_result_selection(payload, repository)
         _verify_structured_result_page(payload, repository)
         clarification_option_ids = (
@@ -639,6 +672,7 @@ def create_app(
             entity_aliases=entity_aliases,
             problem_domain_resolver=problem_domain_resolver,
             clarification_option_ids=clarification_option_ids,
+            prefer_selected_result=payload.selected_result is not None,
         )
         request.state.conversation_state = conversation_turn.state
         request.state.query_interpretation = conversation_turn.interpretation

@@ -65,6 +65,53 @@ _BETWEEN_RE = re.compile(
     r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
     re.IGNORECASE,
 )
+_LOCATION_CONSTRAINT_RE = re.compile(
+    r"\b(?:jobs?|roles?|events?|accommodation|housing|residences?)\b"
+    r"[^?.!]{0,48}\b(?:available|located|based|held)?\s*(?:in|at|around)\s+"
+    r"(?:the\s+)?(?P<value>[a-z][a-z0-9 /,&'-]{0,60}?)"
+    r"(?=\s+(?:today|tomorrow|this\s+(?:friday|week|weekend)|next\s+week|"
+    r"after|before|between|under|below|with|that|which|who|are|is)\b|[?.!]|$)",
+    re.IGNORECASE,
+)
+_JOB_MODIFIER_RE = re.compile(
+    r"\b(?P<value>[a-z][a-z0-9-]{1,30})\s+(?:jobs?|roles?)\b",
+    re.IGNORECASE,
+)
+_JOB_CLASSIFICATION_RE = re.compile(r"\b(ANU\d{1,4})\b", re.IGNORECASE)
+_NON_CONSTRAINT_JOB_MODIFIERS = {
+    "anu",
+    # Query determiners and discourse prepositions are not job attributes.
+    "any",
+    "about",
+    "have",
+    "know",
+    "available",
+    "current",
+    "open",
+    "all",
+    "find",
+    "list",
+    "me",
+    "show",
+    "there",
+    "what",
+    "which",
+    # Existing semantic topic/title words are not work-arrangement filters.
+    "technical",
+    "software",
+    "officer",
+    "fellow",
+    "manager",
+    "director",
+    "coordinator",
+    "assistant",
+    "lead",
+    "analyst",
+    "engineer",
+    "developer",
+    "researcher",
+    "administrator",
+}
 
 _TYPED_REFERENCES: tuple[tuple[tuple[str, ...], Domain, EntityKind], ...] = (
     (("course",), Domain.COURSES, EntityKind.COURSE),
@@ -229,6 +276,51 @@ def _explicit_constraints(question: str, domain: Domain | None, turn: int) -> Co
             lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
             introduced_turn=turn,
         ))
+
+    if domain in {Domain.JOBS, Domain.EVENTS, Domain.ACCOMMODATION}:
+        location = _LOCATION_CONSTRAINT_RE.search(question)
+        location_value = (
+            _normalise(location.group("value")).strip(" ,")
+            if location is not None
+            else None
+        )
+        # "at ANU" scopes the institution; it is not a source location value.
+        if location_value is not None and location_value != "anu":
+            found.append(ScopedConstraint(
+                semantic_type=ConstraintSemanticType.LOCATION,
+                value=location_value,
+                scope=ConstraintScope(domain=domain),
+                lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                introduced_turn=turn,
+            ))
+
+    if domain == Domain.JOBS:
+        classification = _JOB_CLASSIFICATION_RE.search(question)
+        if classification is not None:
+            # The frozen schema has one categorical Jobs dimension.  Preserve
+            # the exact classification token there; the Jobs query layer maps
+            # ANU-number values to its source-backed classification field.
+            found.append(ScopedConstraint(
+                semantic_type=ConstraintSemanticType.CATEGORY,
+                value=classification.group(1).upper(),
+                scope=ConstraintScope(domain=domain),
+                lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                introduced_turn=turn,
+            ))
+        modifier = _JOB_MODIFIER_RE.search(question)
+        if modifier is not None:
+            value = _normalise(modifier.group("value"))
+            if (
+                value not in _NON_CONSTRAINT_JOB_MODIFIERS
+                and _JOB_CLASSIFICATION_RE.fullmatch(value) is None
+            ):
+                found.append(ScopedConstraint(
+                    semantic_type=ConstraintSemanticType.EMPLOYMENT_TYPE,
+                    value=value,
+                    scope=ConstraintScope(domain=domain),
+                    lifecycle=ConstraintLifecycle.UNTIL_REPLACED,
+                    introduced_turn=turn,
+                ))
     return ConstraintSet(items=tuple(found))
 
 
@@ -275,14 +367,34 @@ def _merge_constraints(
     return merged, replaced, surviving_types
 
 
-def _result_reference(question: str) -> str | None:
+_ORDINAL_WORDS = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+}
+_NUMERIC_ORDINAL_RE = re.compile(r"\b([1-4])(?:st|nd|rd|th)\b")
+_NUMBER_REFERENCE_RE = re.compile(r"\bnumber\s+([1-4])\b")
+
+
+def _result_reference(question: str) -> str | int | None:
     normalised = _normalise(question)
     if re.search(r"\b(?:the )?first (?:two|2)\b", normalised):
         return "first_two"
-    if "second" in normalised:
-        return "second"
-    if "first" in normalised:
-        return "first"
+    numeric = _NUMERIC_ORDINAL_RE.search(normalised)
+    numbered = _NUMBER_REFERENCE_RE.search(normalised)
+    candidates = [
+        (match.start(), int(match.group(1)))
+        for match in (numeric, numbered)
+        if match is not None
+    ]
+    candidates.extend(
+        (match.start(), ordinal)
+        for word, ordinal in _ORDINAL_WORDS.items()
+        if (match := re.search(rf"\b{word}\b", normalised)) is not None
+    )
+    if candidates:
+        return min(candidates)[1]
     if "other" in normalised:
         return "other"
     if "those" in normalised:
@@ -314,7 +426,7 @@ def _intent(
     question: str,
     *,
     explicit_entity: bool,
-    result_reference: str | None,
+    result_reference: str | int | None,
     pending: bool,
     has_constraints: bool,
     refining: bool,
@@ -370,6 +482,7 @@ def interpret_turn(
     entity_catalogue: EntityCatalogue = DEFAULT_ENTITY_CATALOGUE,
     entity_aliases: Sequence[SafeEntityAlias] = DEFAULT_SAFE_ENTITY_ALIASES,
     problem_domain_resolver: ProblemDomainResolver = DEFAULT_PROBLEM_DOMAIN_RESOLVER,
+    prefer_selected_result: bool = False,
 ) -> QueryInterpretation:
     """Interpret one already-numbered turn without mutating structured state."""
 
@@ -438,6 +551,47 @@ def interpret_turn(
         if explicit_resolution.possible_entities
         else "domain" if possible_domains else "none"
     )
+
+    # A structured selection supplied on this request has already been checked
+    # against the server-authored ResultSet and current repository record.  It
+    # therefore beats generic lexical domain words, but never an explicit
+    # entity or an ordinal reference in the current question.
+    if (
+        prefer_selected_result
+        and explicit is None
+        and not explicit_resolution.possible_entities
+        and result_reference is None
+        and state.selected_result is not None
+    ):
+        selected = state.selected_result
+        selected_set = next(
+            (
+                item
+                for item in state.result_sets
+                if item.result_set_id == selected.result_set_id
+            ),
+            None,
+        )
+        selected_entity = next(
+            (
+                item
+                for item in state.recent_entities
+                if item.canonical_id == selected.canonical_id
+                and selected_set is not None
+                and item.domain == selected_set.domain
+                and item.kind == selected_set.entity_kind
+            ),
+            None,
+        )
+        if selected_set is not None and selected_entity is not None:
+            domain = selected_set.domain
+            possible_domains = ()
+            entity = selected_entity
+            entity_origin = "result_set"
+            reference_origin = "prior_result_set"
+            referenced_result_set_id = selected_set.result_set_id
+            requires_clarification = False
+            ambiguity = "none"
 
     if result_reference is not None:
         expected_kind = typed[1] if typed else None
@@ -623,5 +777,5 @@ def interpret_turn(
     )
 
 
-def result_reference_for(question: str) -> str | None:
+def result_reference_for(question: str) -> str | int | None:
     return _result_reference(question)

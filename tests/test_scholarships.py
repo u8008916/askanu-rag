@@ -382,6 +382,119 @@ def test_open_featured_filter_is_explicit_and_does_not_derive_from_dates(repo):
     assert "Closed" not in body["answer"]
 
 
+@pytest.mark.parametrize(
+    ("query_status", "source_status", "expected_id"),
+    (
+        ("open", "Open for applications", "source-open"),
+        ("closed", "Application closed", "source-closed"),
+    ),
+)
+def test_source_worded_scholarship_status_has_bounded_query_equivalence(
+    scholarships, query_status, source_status, expected_id
+):
+    matching = scholarship_variant(
+        scholarships[0],
+        entity_id=expected_id,
+        title=f"Source {query_status.title()} Scholarship",
+        status=source_status,
+        featured=False,
+    )
+    other = scholarship_variant(
+        scholarships[0],
+        entity_id=f"other-{expected_id}",
+        title="Other Status Scholarship",
+        status=(
+            "Application closed"
+            if query_status == "open"
+            else "Open for applications"
+        ),
+        featured=False,
+    )
+
+    body = ask(
+        CourseProgramRepository((matching, other)),
+        f"Show {query_status} scholarships",
+    )
+
+    assert body["status"] == "ok"
+    assert [item["canonical_id"] for item in body["items"]] == [expected_id]
+    assert body["items"][0]["fields"]["status"] == source_status
+    assert source_status in body["answer"]
+
+
+@pytest.mark.parametrize("query_level", ("Bachelor", "undergraduate"))
+def test_compound_source_study_level_matches_bounded_query_alias(
+    scholarships, query_level
+):
+    matching = scholarship_variant(
+        scholarships[0],
+        entity_id="compound-undergraduate",
+        title="Compound Undergraduate Scholarship",
+        study_level=["Undergraduate/Bachelor"],
+        featured=False,
+    )
+    postgraduate = scholarship_variant(
+        scholarships[0],
+        entity_id="postgraduate-only",
+        title="Postgraduate Only Scholarship",
+        study_level=["Postgraduate"],
+        featured=False,
+    )
+
+    body = ask(
+        CourseProgramRepository((matching, postgraduate)),
+        f"Show scholarships for {query_level} students",
+    )
+
+    assert body["status"] == "ok"
+    assert [item["canonical_id"] for item in body["items"]] == [
+        "compound-undergraduate"
+    ]
+    assert body["items"][0]["fields"]["study_level"] == [
+        "Undergraduate/Bachelor"
+    ]
+
+
+def test_study_level_equivalence_does_not_overmatch_or_hide_missing_evidence(
+    scholarships,
+):
+    compound = scholarship_variant(
+        scholarships[0],
+        entity_id="compound-undergraduate-control",
+        title="Compound Undergraduate Control",
+        study_level=["Undergraduate/Bachelor"],
+        featured=False,
+    )
+    missing = scholarship_variant(
+        scholarships[0],
+        entity_id="missing-study-level-control",
+        title="Missing Study Level Control",
+        study_level=[],
+        featured=False,
+    )
+    postgraduate = scholarship_variant(
+        scholarships[0],
+        entity_id="postgraduate-study-level-control",
+        title="Postgraduate Study Level Control",
+        study_level=["Postgraduate"],
+        featured=False,
+    )
+    repository = CourseProgramRepository((compound, missing, postgraduate))
+
+    unrelated = ask(repository, "Show scholarships for postgraduate students")
+    missing_only = ask(repository, "Show scholarships for Bachelor students")
+
+    assert unrelated["status"] == "ok"
+    assert [item["canonical_id"] for item in unrelated["items"]] == [
+        "postgraduate-study-level-control"
+    ]
+    assert missing_only["status"] == "ok"
+    assert [item["canonical_id"] for item in missing_only["items"]] == [
+        "compound-undergraduate-control"
+    ]
+    assert missing_only["answer_state"] == "PARTIAL"
+
+
 def test_source_supported_list_filter_excludes_missing_lists(repo):
     body = ask(repo, "Show scholarships for Domestic students")
 

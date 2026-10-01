@@ -65,6 +65,13 @@ ELIGIBILITY_PATTERN = re.compile(
 FILTER_FIELDS = ("study_stage", "student_type", "study_level", "area_of_study")
 UNDERGRADUATE_STUDY_LEVELS = frozenset({"undergraduate", "bachelor"})
 UNDERGRADUATE_QUERY_TERMS = ("undergraduate", "undergraduates", "bachelor")
+UNDERGRADUATE_SOURCE_VALUES = frozenset(
+    {"undergraduate", "bachelor", "undergraduate/bachelor"}
+)
+SCHOLARSHIP_STATUS_EQUIVALENCE = {
+    "open": frozenset({"open", "open for applications"}),
+    "closed": frozenset({"closed", "application closed"}),
+}
 OTHER_DOMAIN_PATTERN = re.compile(
     r"\b(?:courses?|programs?|prerequisites?|requisites?|jobs?|events?|"
     r"accommodation)\b",
@@ -209,9 +216,23 @@ def _filter_value(field: str, value: str) -> str:
     """Normalize only the frozen Undergraduate/Bachelor study-level wording."""
 
     normalized = _normalize(value)
-    if field == "study_level" and normalized in UNDERGRADUATE_STUDY_LEVELS:
+    if field == "study_level" and normalized in UNDERGRADUATE_SOURCE_VALUES:
         return "undergraduate"
     return normalized
+
+
+def _scholarship_status(value: str) -> str | None:
+    """Map only approved source wording to one explicit query status."""
+
+    normalized = _normalize(value)
+    return next(
+        (
+            status
+            for status, source_values in SCHOLARSHIP_STATUS_EQUIVALENCE.items()
+            if normalized in source_values
+        ),
+        None,
+    )
 
 
 def _filter_value_is_explicit(question: str, field: str, value: str) -> bool:
@@ -293,7 +314,10 @@ def _matches_filters(record: ScholarshipRecord, filters: dict[str, object]) -> b
             ):
                 return False
         elif field == "status":
-            if not isinstance(actual, str) or _normalize(actual) != expected:
+            if (
+                not isinstance(actual, str)
+                or _scholarship_status(actual) != expected
+            ):
                 return False
         elif actual is not expected:
             return False
@@ -677,7 +701,7 @@ class ScholarshipQueryService:
                 record
                 for record in parent_records
                 if isinstance(record.metadata_json.status, str)
-                and _normalize(record.metadata_json.status) == "open"
+                and _scholarship_status(record.metadata_json.status) == "open"
             )
             unknown = tuple(
                 record
@@ -724,9 +748,24 @@ class ScholarshipQueryService:
                 discovery=True,
             )
 
-        resolved_ids = list(selected_canonical_ids)
+        explicit_identities = _identity_matches(question, records)
+        comparing = COMPARE_PATTERN.search(question) is not None
+        if len(explicit_identities) > 1 and not comparing:
+            return ScholarshipAnswerOutcome(
+                response=_clarification(
+                    explicit_identities,
+                    request_id,
+                    "Which scholarship do you mean?",
+                )
+            )
+        resolved_ids = (
+            [record.entity_id for record in explicit_identities]
+            if explicit_identities
+            else list(selected_canonical_ids)
+        )
         if (
-            interpretation.entity is not None
+            not explicit_identities
+            and interpretation.entity is not None
             and interpretation.entity.domain == Domain.SCHOLARSHIPS
             and interpretation.entity.canonical_id not in resolved_ids
         ):
@@ -767,7 +806,6 @@ class ScholarshipQueryService:
         )
         eligibility = ELIGIBILITY_PATTERN.search(question) is not None
         requested_fact = _requested_fact(question)
-        comparing = COMPARE_PATTERN.search(question) is not None
         if selected:
             if requested_fact is not None and not eligibility and len(selected) == 1:
                 response = _fact_response(selected[0], requested_fact, request_id)
