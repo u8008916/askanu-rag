@@ -394,6 +394,11 @@ def resolve_entity_reference(
             )
         )
         if matches:
+            if (
+                len(matches) > 1
+                and matches[0].mentioned_turn == matches[1].mentioned_turn
+            ):
+                return EntityReferenceResolution(None, "clarification", True)
             return EntityReferenceResolution(
                 matches[0], "explicit_type_or_domain", False
             )
@@ -408,6 +413,11 @@ def resolve_entity_reference(
                 return EntityReferenceResolution(
                     entity, "compatible_focus", False
                 )
+    if (
+        len(retained) > 1
+        and retained[0].mentioned_turn == retained[1].mentioned_turn
+    ):
+        return EntityReferenceResolution(None, "clarification", True)
     if retained:
         return EntityReferenceResolution(
             retained[0], "compatible_recency", False

@@ -113,7 +113,9 @@ def test_required_comp1110_request_uses_real_http_and_repository_path(
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "insufficient_evidence"
-    assert body["items"] == []
+    assert body["items"][0]["type"] == "result"
+    assert body["items"][0]["canonical_id"] == "COMP1110"
+    assert body["answer_state"] == "UNKNOWN"
     assert body["clarification"] is None
     assert body["request_id"].startswith("req_")
     assert "does not establish its prerequisites" in body["answer"]
@@ -153,6 +155,7 @@ def test_unknown_exact_course_returns_no_evidence_without_guessing(
     assert body["status"] == "insufficient_evidence"
     assert body["sources"] == []
     assert body["items"] == []
+    assert body["answer_state"] is None
     assert "ABCD9999" in body["answer"]
 
 
@@ -184,7 +187,9 @@ def test_grounded_success_and_source_fields_come_from_stored_record() -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["answer"].endswith("Source-supported prerequisite text")
-    assert body["items"] == []
+    assert body["items"][0]["type"] == "result"
+    assert body["items"][0]["canonical_id"] == "TEST1234"
+    assert body["answer_state"] == "CONFIRMED"
     assert body["sources"] == [
         {
             "record_id": record.record_id,

@@ -70,7 +70,9 @@ def test_valid_frozen_request_returns_complete_contract_envelope() -> None:
     }
     assert body["status"] == "insufficient_evidence"
     assert body["clarification"] is None
-    assert body["answer_state"] is None
+    assert body["answer_state"] == "UNKNOWN"
+    assert body["items"][0]["type"] == "result"
+    assert body["items"][0]["canonical_id"] == "COMP1110"
     assert body["actions"] == []
     assert body["sources"][0]["record_id"] == "courses:course:COMP1110_2026"
     assert body["request_id"].startswith("req_")

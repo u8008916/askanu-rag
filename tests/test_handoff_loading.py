@@ -319,7 +319,9 @@ def test_api_from_individual_handoff_files(records_directory):
     assert body["status"] == "insufficient_evidence"
     assert "does not establish its prerequisites" in body["answer"]
     assert "no prerequisites" not in body["answer"].lower()
-    assert body["items"] == []
+    assert body["items"][0]["type"] == "result"
+    assert body["items"][0]["canonical_id"] == "COMP1110"
+    assert body["answer_state"] == "UNKNOWN"
     assert body["clarification"] is None
     assert body["request_id"].startswith("req_")
     assert body["sources"] == [{

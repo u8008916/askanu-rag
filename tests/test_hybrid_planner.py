@@ -55,7 +55,11 @@ def post(repo, question, vector=None, gemini=None):
     body = response.json()
     TypeAdapter(AskResponse).validate_python(body)
     assert len(body) == 9 and body["request_id"].startswith("req_")
-    assert body["answer_state"] is None and body["actions"] == []
+    assert body["actions"] == []
+    if body["items"]:
+        assert body["answer_state"] in {"CONFIRMED", "PARTIAL", "UNKNOWN"}
+    else:
+        assert body["answer_state"] is None
     return response
 
 
@@ -223,7 +227,7 @@ def test_no_usable_semantic_evidence_does_not_call_gemini(repo, hits):
     assert not gemini.calls
 
 
-def test_set_shaped_retrieval_and_response_do_not_claim_comparison(repo):
+def test_set_shaped_retrieval_uses_backend_authored_comparison(repo):
     question = "Compare COMP1110 and COMP1100 in 2026"
     plan = plan_query(question, repo)
     assert plan.list_shaped and len(plan.identifiers) == 2
@@ -232,7 +236,11 @@ def test_set_shaped_retrieval_and_response_do_not_claim_comparison(repo):
     assert len(service.retrieve(plan)) == 2
     body = post(repo, question, vector).json()
     assert body["status"] == "ok" and len(body["sources"]) == 2
-    assert body["items"] == []  # No new unagreed comparison/item schema.
+    assert len(body["items"]) == 1
+    assert body["items"][0]["type"] == "comparison"
+    assert [
+        item["canonical_id"] for item in body["items"][0]["records"]
+    ] == ["COMP1110", "COMP1100"]
     assert "Stored excerpt" in body["answer"] and not vector.calls
 
 

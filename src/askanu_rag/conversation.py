@@ -31,9 +31,13 @@ REFERENCE_PATTERN = re.compile(
 )
 COURSE_FOLLOW_UP_PATTERN = re.compile(
     r"\b(?:pre[-\s]?(?:requisites?|reqs?)|requisites?|offerings?|offered|sessions?|"
-    r"semesters?|incompatibilit(?:y|ies)|assumed knowledge|"
+    r"semesters?|incompatibilit(?:y|ies)|assumed knowledge|units?|"
     r"lecturers?|convenors?|instructors?|teachers?|teaching staff|"
     r"who\s+teaches?)\b",
+    re.IGNORECASE,
+)
+RETURN_TOPIC_PATTERN = re.compile(
+    r"\b(?:back to|return to|go back to)\b",
     re.IGNORECASE,
 )
 
@@ -108,6 +112,8 @@ def _intent(texts: tuple[str, ...]) -> str:
             return "incompatibilities"
         if re.search(r"\bassumed knowledge\b", text, re.I):
             return "assumed knowledge"
+        if re.search(r"\bunits?\b", text, re.I):
+            return "units"
         if re.search(
             r"\b(?:lecturers?|convenors?|instructors?|teachers?|"
             r"teaching staff|who\s+teaches?)\b",
@@ -458,6 +464,32 @@ def resolve_current_session(
     guided_resolution = _guided_card_resolution(question, catalog)
     if guided_resolution is not None:
         return guided_resolution
+
+    # "Back to CODE" is an explicit topic return, but the retained exact
+    # source record still supplies the already-resolved academic year.  The
+    # repository is re-read below; state provides identity, never facts.
+    if (
+        current_codes
+        and resolved_course_record_id is not None
+        and RETURN_TOPIC_PATTERN.search(question)
+    ):
+        selected_record = _record_for_id(catalog, resolved_course_record_id)
+        if (
+            selected_record is not None
+            and record_code(selected_record) in current_codes
+        ):
+            history_text = tuple(
+                turn.content
+                for turn in reversed(payload.history)
+                if turn.role == "user"
+            )
+            return ConversationResolution(
+                _question_for(
+                    (selected_record,),
+                    _intent((question,) + history_text),
+                ),
+                selected_record_id=selected_record.record_id,
+            )
 
     # A current explicit entity, correction or topic switch always defeats stale
     # pending/history. Multiple requested years remain visible as clarification.
