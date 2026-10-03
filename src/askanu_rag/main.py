@@ -700,7 +700,9 @@ def create_app(
             )
 
         request_id = _request_id(request)
-        if isinstance(repository, CatalogReader):
+        if isinstance(repository, CatalogReader) and (
+            conversation_turn.interpretation.domain in {None, Domain.COURSES}
+        ):
             resolved_entity = conversation_turn.interpretation.entity
             resolved_course_code = (
                 resolved_entity.canonical_id
