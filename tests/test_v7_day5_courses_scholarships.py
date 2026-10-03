@@ -456,3 +456,42 @@ def test_day5_topic_switches_preserve_typed_accommodation_isolation() -> None:
             "result_sets"
         ]
     )
+
+
+def test_scholarship_followup_after_course_preserves_selection_and_course_return() -> None:
+    conversation = Conversation((*_course_records(), *_scholarship_records()))
+    conversation.ask("Tell me about COMP1110 in 2026")
+    conversation.ask("What are its prerequisites?")
+    conversation.ask(
+        "I'm an international Bachelor of Computing student. "
+        "What scholarships might suit me?"
+    )
+    selected = conversation.ask("Tell me about the second one")
+    scholarship_id = "day5-international-computing-2"
+    scholarship_source = f"scholarships:scholarship:{scholarship_id}"
+    state = selected["conversation_state"]
+    assert state["selected_result"]["canonical_id"] == scholarship_id
+    assert state["selected_result"]["ordinal"] == 2
+    assert state["focus"]["domain"] == "scholarships"
+    assert state["focus"]["result_set_id"] == state["selected_result"]["result_set_id"]
+    assert state["pending_clarification"] is None
+
+    closing = conversation.ask("When does it close?")
+    assert closing["status"] == "ok"
+    assert "2026-10-31" in closing["answer"]
+    assert {source["record_id"] for source in closing["sources"]} == {
+        scholarship_source
+    }
+    assert closing["clarification"] is None
+    closing_state = closing["conversation_state"]
+    assert closing_state["selected_result"] == state["selected_result"]
+    assert closing_state["focus"]["domain"] == "scholarships"
+    assert closing_state["focus"]["result_set_id"] == state["focus"]["result_set_id"]
+    assert closing_state["pending_clarification"] is None
+
+    returned = conversation.ask("Back to COMP1110")
+    assert returned["status"] == "ok"
+    assert {source["record_id"] for source in returned["sources"]} == {
+        "courses:course:COMP1110_2026"
+    }
+    assert returned["conversation_state"]["focus"]["domain"] == "courses"
