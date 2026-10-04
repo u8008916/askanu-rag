@@ -40,6 +40,52 @@ def test_date_only_event_canberra_overlap_has_no_timestamp():
     assert select_event_records([record], now=NOW) == (record,)
     assert select_event_records([record], now=NOW.replace(day=6)) == ()
 
+
+def test_all_events_orders_mixed_precision_by_canberra_date():
+    base = event()
+
+    def variant(key, *, start_at=None, start_date=None):
+        metadata = base.metadata_json.model_copy(
+            update={
+                "start_at": start_at,
+                "end_at": None,
+                "start_date": start_date,
+                "end_date": start_date,
+                "date_precision": "timestamp" if start_at is not None else "date",
+            }
+        )
+        return base.model_copy(
+            update={
+                "record_id": f"events:event:{key}",
+                "entity_id": key,
+                "canonical_url": f"https://www.anu.edu.au/events/{key}",
+                "metadata_json": metadata,
+            }
+        )
+
+    timed_same_day = variant(
+        "z-timed-same-day",
+        start_at="2026-10-03T22:00:00+00:00",
+    )
+    date_only_same_day = variant(
+        "a-date-only-same-day",
+        start_date="2026-10-04",
+    )
+    timed_next_day = variant(
+        "b-timed-next-day",
+        start_at="2026-10-04T22:00:00+00:00",
+    )
+
+    repo = CourseProgramRepository(
+        [date_only_same_day, timed_next_day, timed_same_day]
+    )
+
+    assert [record.entity_id for record in repo.all_events()] == [
+        "z-timed-same-day",
+        "a-date-only-same-day",
+        "b-timed-next-day",
+    ]
+
 def test_missing_excluded_exact_current_event_and_sparse():
     j=job().model_copy(update={"status":"MISSING"})
     e=event().model_copy(update={"status":"MISSING"})

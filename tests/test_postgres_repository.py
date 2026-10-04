@@ -587,3 +587,43 @@ def test_invalid_upstream_request_id_is_not_logged_or_used_as_api_id(caplog):
     assert response.json()["request_id"] != unsafe_header
     assert "upstream_request_id=invalid" in caplog.text
     assert unsafe_header not in caplog.text
+
+
+def test_postgres_all_events_orders_mixed_precision_by_canberra_date():
+    calls = []
+
+    class EmptyCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, parameters=()):
+            calls.append((query, parameters))
+
+        def fetchall(self):
+            return []
+
+    class EmptyConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return EmptyCursor()
+
+    repository = PostgresCourseProgramRepository(lambda: EmptyConnection())
+
+    assert repository.all_events() == ()
+
+    query, parameters = calls[-1]
+    assert parameters == ()
+    assert "ORDER BY COALESCE(" in query
+    assert "AT TIME ZONE 'Australia/Canberra'" in query
+    assert "(metadata_json ->> 'start_date')::date" in query
+    assert "(metadata_json ->> 'start_at') IS NULL" in query
+    assert "(metadata_json ->> 'start_at')::timestamptz" in query
+    assert "record_id" in query

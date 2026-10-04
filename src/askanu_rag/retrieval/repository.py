@@ -472,9 +472,9 @@ class CourseProgramRepository:
         )
 
     def all_events(self) -> tuple[EventRecord, ...]:
-        return tuple(
-            sorted(self._events.values(), key=lambda record: record.record_id)
-        )
+        from askanu_rag.event_time import event_record_order_key
+
+        return tuple(sorted(self._events.values(), key=event_record_order_key))
 
     def upcoming_official_events(
         self, limit: int, now: datetime

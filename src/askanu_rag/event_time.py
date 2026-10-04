@@ -134,6 +134,28 @@ def _start_of_day(value: date) -> datetime:
     return datetime.combine(value, time.min, tzinfo=CANBERRA)
 
 
+def event_record_order_key(record) -> tuple[date, bool, str, str]:
+    """Order mixed timestamp/date-only Event records deterministically."""
+
+    metadata = record.metadata_json
+    if metadata.start_at is not None:
+        start = as_canberra(
+            datetime.fromisoformat(metadata.start_at.replace("Z", "+00:00")),
+            name="start",
+        )
+        return (start.date(), False, start.isoformat(), record.record_id)
+
+    if metadata.start_date is None:
+        raise ValueError("date-only event requires start_date")
+
+    return (
+        date.fromisoformat(metadata.start_date),
+        True,
+        "",
+        record.record_id,
+    )
+
+
 def select_event_records(records, *, now, window=None, limit=None):
     """Timestamp overlap or explicitly date-only Canberra calendar overlap."""
     local_now = as_canberra(now, name="now")
@@ -151,14 +173,12 @@ def select_event_records(records, *, now, window=None, limit=None):
                 include = start < window.end and end > window.start
             else:
                 include = window.start <= start < window.end
-            key = (start.date(), False, start.isoformat(), record.record_id)
         else:
             start = date.fromisoformat(m.start_date)
             end = date.fromisoformat(m.end_date or m.start_date)
             include = end >= local_now.date() if window is None else start < window.end.date() and end >= window.start.date()
             # Unknown times are grouped after timed records on their published date.
-            key = (start, True, "", record.record_id)
         if include:
-            selected.append((key, record))
+            selected.append((event_record_order_key(record), record))
     result = tuple(record for _, record in sorted(selected, key=lambda item: item[0]))
     return result if limit is None else result[:limit]

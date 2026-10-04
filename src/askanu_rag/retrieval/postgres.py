@@ -337,7 +337,14 @@ class PostgresCourseProgramRepository:
             WHERE domain = 'events' AND status <> 'MISSING'
               AND source_id IN ('events_anu_official', 'rubric_unified_search')
               AND metadata_json ->> 'entity_type' = 'event'
-            ORDER BY (metadata_json ->> 'start_at')::timestamptz, record_id
+            ORDER BY COALESCE(
+                       ((metadata_json ->> 'start_at')::timestamptz
+                           AT TIME ZONE 'Australia/Canberra')::date,
+                       (metadata_json ->> 'start_date')::date
+                     ),
+                     (metadata_json ->> 'start_at') IS NULL,
+                     (metadata_json ->> 'start_at')::timestamptz,
+                     record_id
             """,
             model=EventRecord,
         )
