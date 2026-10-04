@@ -1894,10 +1894,24 @@ class DomainResourceQueryService:
                     ),
                 ):
                     facts.append(f"{label}: {value or 'not published'}")
+            elif _is_broad_resource_request(question, self.domain):
+                # Discovery is a bounded presentation. Rich overview/features
+                # remain available in typed items and focused follow-ups.
+                for label, value in (
+                    ("Category", metadata.category),
+                    ("Residence location", metadata.location),
+                    ("Published advertised rate wording", metadata.advertised_rate),
+                    ("Published cost period", metadata.cost_period),
+                ):
+                    if value:
+                        facts.append(f"{label}: {value}")
+                if metadata.catering_options and not CATERING_PATTERN.search(question):
+                    facts.append(f"Catering: {', '.join(metadata.catering_options)}")
+                if metadata.audiences and not AUDIENCE_PATTERN.search(question):
+                    facts.append(f"Audiences: {', '.join(metadata.audiences)}")
             elif (
                 OVERVIEW_PATTERN.search(question)
                 or RETURN_ACCOMMODATION_PATTERN.search(question)
-                or _is_broad_resource_request(question, self.domain)
                 or (default_overview and not has_specific_intent)
             ):
                 for label, value in (
