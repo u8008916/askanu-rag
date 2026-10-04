@@ -45,6 +45,7 @@ AND metadata_json ->> 'entity_type' = 'scholarship'
 JOB_WHERE = """
 source_id = 'jobs_anu_search'
 AND domain = 'jobs'
+AND status <> 'MISSING'
 AND metadata_json ->> 'entity_type' = 'job'
 """
 RESOURCE_SOURCES = {
@@ -120,7 +121,7 @@ class PostgresCourseProgramRepository:
                 with connection.cursor() as cursor:
                     cursor.execute(query, parameters)
                     rows = cursor.fetchall()
-            records = tuple(model.model_validate(dict(row)) for row in rows)
+            records = tuple(record for row in rows if not ((record := model.model_validate(dict(row))).status == "MISSING" and record.domain in {"jobs", "events"}))
         except Exception:
             raise RepositoryUnavailableError() from None
         return records
@@ -210,13 +211,16 @@ class PostgresCourseProgramRepository:
             SELECT {SELECT_COLUMNS}
             FROM source_records
             WHERE {JOB_WHERE}
-              AND entity_id = %s
+              AND (
+                    entity_id = %s
+                    OR metadata_json ->> 'requisition_id' = %s
+                  )
             ORDER BY record_id
             """,
-            (entity_id.strip(),),
+            (entity_id.strip(), entity_id.strip()),
             model=JobRecord,
         )
-        return records[0] if records else None
+        return records[0] if len(records) == 1 else None
 
     def find_jobs_by_title(self, title: str) -> tuple[JobRecord, ...]:
         return self._fetch_records(
@@ -225,7 +229,7 @@ class PostgresCourseProgramRepository:
             FROM source_records
             WHERE {JOB_WHERE}
               AND lower(regexp_replace(btrim(title), '[[:space:]]+', ' ', 'g')) = %s
-            ORDER BY entity_id::numeric
+            ORDER BY CASE WHEN entity_id ~ '^[0-9]+$' THEN 0 ELSE 1 END, CASE WHEN entity_id ~ '^[0-9]+$' THEN length(ltrim(entity_id, '0')) ELSE 0 END, entity_id
             """,
             (normalize_job_title(title),),
             model=JobRecord,
@@ -257,7 +261,7 @@ class PostgresCourseProgramRepository:
             ORDER BY
                 (metadata_json ->> 'closing_date') IS NULL ASC,
                 (metadata_json ->> 'closing_date')::date ASC,
-                entity_id::numeric ASC
+                CASE WHEN entity_id ~ '^[0-9]+$' THEN 0 ELSE 1 END, CASE WHEN entity_id ~ '^[0-9]+$' THEN length(ltrim(entity_id, '0')) ELSE 0 END, entity_id ASC
             LIMIT %s
         """
         parameters.append(limit)
@@ -286,7 +290,7 @@ class PostgresCourseProgramRepository:
             ORDER BY
                 (metadata_json ->> 'closing_date') IS NULL ASC,
                 (metadata_json ->> 'closing_date')::date ASC,
-                entity_id::numeric ASC
+                CASE WHEN entity_id ~ '^[0-9]+$' THEN 0 ELSE 1 END, CASE WHEN entity_id ~ '^[0-9]+$' THEN length(ltrim(entity_id, '0')) ELSE 0 END, entity_id ASC
         """
         return self._fetch_records(
             query,
@@ -330,7 +334,7 @@ class PostgresCourseProgramRepository:
             f"""
             SELECT {SELECT_COLUMNS}
             FROM source_records
-            WHERE domain = 'events'
+            WHERE domain = 'events' AND status <> 'MISSING'
               AND source_id IN ('events_anu_official', 'rubric_unified_search')
               AND metadata_json ->> 'entity_type' = 'event'
             ORDER BY (metadata_json ->> 'start_at')::timestamptz, record_id
@@ -338,30 +342,29 @@ class PostgresCourseProgramRepository:
             model=EventRecord,
         )
 
-    def upcoming_official_events(
-        self, limit: int, now: datetime
-    ) -> tuple[EventRecord, ...]:
+    def upcoming_official_events(self, limit: int, now: datetime) -> tuple[EventRecord, ...]:
         if limit < 1:
             raise ValueError("limit must be positive")
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("now must be timezone-aware")
-        return self._fetch_records(
-            f"""
-            SELECT {SELECT_COLUMNS}
-            FROM source_records
-            WHERE domain = 'events'
-              AND source_id = 'events_anu_official'
+
+        from askanu_rag.event_time import select_event_records
+        records = self._fetch_records(f"""
+            SELECT {SELECT_COLUMNS} FROM source_records
+            WHERE domain = 'events' AND source_id = 'events_anu_official'
+              AND status <> 'MISSING'
               AND metadata_json ->> 'entity_type' = 'event'
-              AND COALESCE(
-                    metadata_json ->> 'end_at',
-                    metadata_json ->> 'start_at'
-                  )::timestamptz >= %s
-            ORDER BY (metadata_json ->> 'start_at')::timestamptz, record_id
+              AND ((metadata_json ->> 'start_at' IS NOT NULL AND
+                    COALESCE(metadata_json ->> 'end_at', metadata_json ->> 'start_at')::timestamptz >= %s)
+                OR (metadata_json ->> 'start_at' IS NULL AND
+                    COALESCE(metadata_json ->> 'end_date', metadata_json ->> 'start_date')::date >= %s))
+            ORDER BY COALESCE(((metadata_json ->> 'start_at')::timestamptz AT TIME ZONE 'Australia/Canberra')::date,
+                              (metadata_json ->> 'start_date')::date),
+                     (metadata_json ->> 'start_at') IS NULL,
+                     (metadata_json ->> 'start_at')::timestamptz, record_id
             LIMIT %s
-            """,
-            (now, limit),
-            model=EventRecord,
-        )
+        """, (now, now.astimezone(__import__('zoneinfo').ZoneInfo('Australia/Canberra')).date(), limit), model=EventRecord)
+        return select_event_records((r for r in records if r.source_id == "events_anu_official"), now=now, limit=limit)
 
 
 class UnavailableCourseProgramRepository:

@@ -132,3 +132,33 @@ def _sorted_events(
 
 def _start_of_day(value: date) -> datetime:
     return datetime.combine(value, time.min, tzinfo=CANBERRA)
+
+
+def select_event_records(records, *, now, window=None, limit=None):
+    """Timestamp overlap or explicitly date-only Canberra calendar overlap."""
+    local_now = as_canberra(now, name="now")
+    selected = []
+    for record in records:
+        if record.status == "MISSING":
+            continue
+        m = record.metadata_json
+        if m.start_at is not None:
+            start = as_canberra(datetime.fromisoformat(m.start_at.replace("Z", "+00:00")), name="start")
+            end = as_canberra(datetime.fromisoformat(m.end_at.replace("Z", "+00:00")), name="end") if m.end_at else start
+            if window is None:
+                include = end >= local_now
+            elif m.end_at is not None:
+                include = start < window.end and end > window.start
+            else:
+                include = window.start <= start < window.end
+            key = (start.date(), False, start.isoformat(), record.record_id)
+        else:
+            start = date.fromisoformat(m.start_date)
+            end = date.fromisoformat(m.end_date or m.start_date)
+            include = end >= local_now.date() if window is None else start < window.end.date() and end >= window.start.date()
+            # Unknown times are grouped after timed records on their published date.
+            key = (start, True, "", record.record_id)
+        if include:
+            selected.append((key, record))
+    result = tuple(record for _, record in sorted(selected, key=lambda item: item[0]))
+    return result if limit is None else result[:limit]

@@ -228,6 +228,8 @@ class CourseProgramRepository:
         self._events: dict[str, EventRecord] = {}
 
         for record in records:
+            if record.status == "MISSING" and record.domain in {"jobs", "events"}:
+                continue
             metadata = record.metadata_json
             if isinstance(metadata, EventMetadata):
                 event = EventRecord.model_validate(record.model_dump(mode="python"))
@@ -384,7 +386,12 @@ class CourseProgramRepository:
     def find_job_by_entity_id(self, entity_id: str) -> JobLookupResult:
         """Return one exact numeric Jobs identity without URL/title inference."""
 
-        return self._jobs.get(entity_id.strip())
+        key = entity_id.strip()
+        direct = self._jobs.get(key)
+        if direct is not None:
+            return direct
+        matches = [r for r in self._jobs.values() if r.metadata_json.requisition_id == key]
+        return matches[0] if len(matches) == 1 else None
 
     def find_jobs_by_title(self, title: str) -> tuple[JobRecord, ...]:
         """Return every normalized exact-title match in numeric ID order."""
@@ -392,7 +399,7 @@ class CourseProgramRepository:
         return tuple(
             sorted(
                 self._jobs_by_title.get(normalize_job_title(title), ()),
-                key=lambda record: int(record.entity_id),
+                key=lambda record: job_identity_order(record.entity_id),
             )
         )
 
@@ -437,7 +444,7 @@ class CourseProgramRepository:
             key=lambda record: (
                 record.metadata_json.closing_date is None,
                 record.metadata_json.closing_date or "",
-                int(record.entity_id),
+                job_identity_order(record.entity_id),
             ),
         )
         return tuple(ordered)
@@ -472,27 +479,19 @@ class CourseProgramRepository:
     def upcoming_official_events(
         self, limit: int, now: datetime
     ) -> tuple[EventRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+
         official = (
             record
             for record in self._events.values()
             if record.source_id == "events_anu_official"
         )
-        return upcoming_events(
-            official,
-            now=now,
-            start_at=lambda record: datetime.fromisoformat(
-                record.metadata_json.start_at.replace("Z", "+00:00")
-            ),
-            end_at=lambda record: (
-                None
-                if record.metadata_json.end_at is None
-                else datetime.fromisoformat(
-                    record.metadata_json.end_at.replace("Z", "+00:00")
-                )
-            ),
-            stable_key=lambda record: record.record_id,
-            limit=limit,
-        )
+        from askanu_rag.event_time import select_event_records
+        return select_event_records(official, now=now, limit=limit)
+
 
 
 def create_default_course_program_repository() -> CourseProgramRepository:
@@ -504,3 +503,8 @@ def create_default_course_program_repository() -> CourseProgramRepository:
         / "day2_course_program_records.json"
     )
     return CourseProgramRepository(load_course_program_records(fixture_path))
+
+
+def job_identity_order(value: str):
+    """Retain legacy numeric order without requiring numeric listing keys."""
+    return (False, len(value.lstrip("0")), value.lstrip("0"), value) if value.isdigit() else (True, 0, value, value)

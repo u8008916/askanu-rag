@@ -51,7 +51,7 @@ def test_alembic_revision_is_single_versioned_head():
         capture_output=True,
         text=True,
     )
-    assert "20260921_0010 (head)" in result.stdout
+    assert "20261004_0011 (head)" in result.stdout
 
 
 def test_offline_upgrade_compiles_postgresql_sql_without_connecting():

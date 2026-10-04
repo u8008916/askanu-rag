@@ -91,6 +91,7 @@ def upcoming_event_item(record: EventRecord) -> UpcomingEventItem:
         source_id=record.source_id,
         title=record.title,
         start_at=metadata.start_at,
+        start_date=metadata.start_date, end_date=metadata.end_date, date_precision=metadata.date_precision,
         end_at=metadata.end_at,
         venue=metadata.venue_name,
         organiser=metadata.organiser_name,
@@ -106,7 +107,7 @@ def is_plausible_event_question(question: str) -> bool:
 
 def _contains_identity(question: str, value: str) -> bool:
     normalized = " ".join(question.casefold().split())
-    identity = " ".join(value.casefold().split())
+    identity = " ".join((value or "").casefold().split())
     return bool(identity) and re.search(
         r"(?<![a-z0-9])" + re.escape(identity) + r"(?![a-z0-9])",
         normalized,
@@ -164,6 +165,8 @@ def _clock_value(value: str) -> time:
 def _matches_time_constraint(record: EventRecord, value: str | None) -> bool:
     if value is None:
         return True
+    if record.metadata_json.start_at is None:
+        return False
     local_time = event_start(record).astimezone(CANBERRA).time().replace(tzinfo=None)
     if value.startswith("after "):
         return local_time > _clock_value(value.removeprefix("after "))
@@ -199,25 +202,11 @@ def _event_candidates(
             if supported_period is None
             else resolve_event_time_window(supported_period, now=now)  # type: ignore[arg-type]
         )
-        dated = (
-            ()
-            if window is None
-            else events_starting_in_window(
-                records,
-                window=window,
-                start_at=event_start,
-                stable_key=lambda record: record.record_id,
-            )
-        )
+        from askanu_rag.event_time import select_event_records
+        dated = () if window is None else select_event_records(records, now=now, window=window)
     else:
-        dated = upcoming_events(
-            records,
-            now=now,
-            start_at=event_start,
-            end_at=event_end,
-            stable_key=lambda record: record.record_id,
-            limit=20,
-        )
+        from askanu_rag.event_time import select_event_records
+        dated = select_event_records(records, now=now, limit=20)
     time_value = _constraint_value(
         interpretation, ConstraintSemanticType.TIME_OF_DAY_WINDOW
     )
@@ -257,6 +246,7 @@ def _event_public_item(
     status = metadata.cancellation_status or metadata.source_status
     fields: dict[str, str | list[str] | None] = {
         "start_at": metadata.start_at,
+        "start_date": metadata.start_date, "end_date": metadata.end_date, "date_precision": metadata.date_precision,
         "end_at": metadata.end_at,
         "timezone": metadata.timezone,
         "venue": metadata.venue_name,
@@ -422,7 +412,9 @@ class EventQueryService:
         sections: list[str] = []
         for record in selected:
             metadata = record.metadata_json
-            facts = [f"Starts: {metadata.start_at}."]
+            facts = [f"Starts: {metadata.start_at}."] if metadata.start_at else [f"Date: {metadata.start_date}. Exact time is not published."]
+            if metadata.end_at is None and metadata.end_date and metadata.end_date != metadata.start_date:
+                facts.append(f"Through: {metadata.end_date}.")
             if metadata.end_at is not None:
                 facts.append(f"Ends: {metadata.end_at}.")
             if metadata.venue_name is not None:

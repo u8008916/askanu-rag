@@ -117,6 +117,7 @@ def test_job_metadata_has_exact_approved_v2_keys_and_missing_values():
     metadata = make_job(closing_date=None, employment_types=()).metadata_json
 
     assert set(metadata.model_dump()) == {
+        "requisition_id",
         "entity_type",
         "job_id",
         "category",

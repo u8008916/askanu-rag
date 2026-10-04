@@ -310,7 +310,7 @@ def test_postgres_read_paths_enforce_official_only_upcoming_in_sql():
     assert "COALESCE(" in query
     assert "metadata_json ->> 'end_at'" in query
     assert ")::timestamptz >= %s" in query
-    assert parameters == (NOW, 5)
+    assert parameters == (NOW, NOW.date(), 5)
 
     assert repository.all_events() == ()
     broad_query, _parameters = calls[-1]

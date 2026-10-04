@@ -290,11 +290,11 @@ def _job_clarification(
             options=[
                 ClarificationOption(
                     id=record.record_id,
-                    label=" — ".join(
+                    label=" | ".join(
                         part
                         for part in (
                             record.title,
-                            f"Job ID {record.entity_id}",
+                            requisition_label(record),
                             record.metadata_json.location,
                             record.metadata_json.classification,
                         )
@@ -311,7 +311,7 @@ def _job_clarification(
 
 def _job_answer(record: JobRecord, today: date) -> str:
     metadata = record.metadata_json
-    facts = [f"{record.title}. Job ID: {record.entity_id}."]
+    facts = [f"{record.title}. {requisition_label(record)}"]
     facts.append(f"Stored status: {metadata.status or 'not provided'}.")
     if metadata.employment_types:
         facts.append(f"Employment types: {', '.join(metadata.employment_types)}.")
@@ -339,7 +339,7 @@ def _requirements_answer(record: JobRecord) -> str | None:
         return None
     answer = (
         f"Official requirements published for {record.title} "
-        f"(Job ID {record.entity_id}):\n- " + "\n- ".join(requirements)
+        f"{requisition_label(record)}:\n- " + "\n- ".join(requirements)
     )
     if len(answer) > 3000 or UNSAFE_EVIDENCE.search(answer):
         raise SynthesisError()
@@ -831,7 +831,7 @@ class JobQueryService:
                 answer=(
                     "The stored Jobs record does not contain direct-page, "
                     "source-backed "
-                    f"requirements for {selected.title} (Job ID {selected.entity_id}). "
+                    f"requirements for {selected.title}. {requisition_label(selected)} "
                     "Please check the official job listing for the authoritative "
                     "requirements."
                 ),
@@ -1284,3 +1284,11 @@ class JobQueryService:
             updates["result_page"] = public_page
         projected = response.model_copy(update=updates)
         return JobQueryOutcome(response=projected, state=updated)
+
+
+def requisition_label(record):
+    metadata = record.metadata_json
+    value = metadata.requisition_id
+    if "requisition_id" not in metadata.model_fields_set and record.entity_id.isdigit():
+        value = record.entity_id
+    return f"Requisition ID: {value}." if value else ""

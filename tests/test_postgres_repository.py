@@ -118,9 +118,15 @@ class FakeCursor:
         self.calls.append((query, parameters))
         if "jobs_anu_search" in query:
             self.results = [row for row in self.rows if row["domain"] == "jobs"]
-            if "AND entity_id = %s" in query:
+            if "metadata_json ->> 'requisition_id' = %s" in query:
                 self.results = [
-                    row for row in self.results if row["entity_id"] == parameters[0]
+                    row
+                    for row in self.results
+                    if (
+                        row["entity_id"] == parameters[0]
+                        or row["metadata_json"].get("requisition_id")
+                        == parameters[1]
+                    )
                 ]
             elif "regexp_replace" in query:
                 self.results = [
@@ -149,14 +155,30 @@ class FakeCursor:
                     key=lambda row: (
                         row["metadata_json"]["closing_date"] is None,
                         row["metadata_json"]["closing_date"] or "",
-                        int(row["entity_id"]),
+                        (
+                            0,
+                            len(row["entity_id"].lstrip("0")),
+                            row["entity_id"],
+                        )
+                        if row["entity_id"].isdigit()
+                        else (1, 0, row["entity_id"]),
                     )
                 )
                 self.results = self.results[: parameters[-1]]
             else:
                 raise AssertionError("Unexpected Jobs query")
             if "metadata_json ->> 'status' = 'current'" not in query:
-                self.results.sort(key=lambda row: int(row["entity_id"]))
+                self.results.sort(
+                    key=lambda row: (
+                        (
+                            0,
+                            len(row["entity_id"].lstrip("0")),
+                            row["entity_id"],
+                        )
+                        if row["entity_id"].isdigit()
+                        else (1, 0, row["entity_id"])
+                    )
+                )
             return
         if "scholarships_anu_finder" in query:
             self.results = [
@@ -388,6 +410,12 @@ def test_postgres_jobs_exact_and_current_queries_are_parameterised_and_bounded()
     repository, calls = fake_repository(records)
 
     assert repository.find_job_by_entity_id("9") == records[1]
+
+    exact_query, exact_parameters = calls[-1]
+    assert "entity_id = %s" in exact_query
+    assert "metadata_json ->> 'requisition_id' = %s" in exact_query
+    assert exact_parameters == ("9", "9")
+
     assert repository.find_jobs_by_title("  research   officer  ") == (
         records[2],
         records[3],
@@ -402,7 +430,8 @@ def test_postgres_jobs_exact_and_current_queries_are_parameterised_and_bounded()
     assert "source_id = 'jobs_anu_search'" in query
     assert "metadata_json ->> 'status' = 'current'" in query
     assert "::date >= %s" in query
-    assert "entity_id::numeric ASC" in query
+    assert "entity_id::numeric" not in query
+    assert "entity_id ASC" in query
     assert "LIMIT %s" in query
     assert parameters == (date(2026, 9, 14), 3)
 
