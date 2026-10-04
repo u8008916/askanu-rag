@@ -141,7 +141,8 @@ class JobMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     entity_type: Literal["job"]
-    job_id: str = Field(pattern=r"^\d+$")
+    job_id: NonBlankString
+    requisition_id: str | None = Field(default=None, pattern=r"^[0-9]+$")
     category: str | None
     employment_types: list[str]
     location: str | None
@@ -192,8 +193,11 @@ class EventMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     entity_type: Literal["event"]
-    source_event_id: NonBlankString
-    start_at: str
+    source_event_id: NonBlankString | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    date_precision: Literal["date", "timestamp"] | None = None
+    start_at: str | None = None
     end_at: str | None = None
     timezone: NonBlankString | None = None
     organiser_name: NonBlankString | None = None
@@ -643,6 +647,8 @@ class CommonRecord(BaseModel):
             expected_domain = "jobs"
             entity_type = "job"
             expected_entity_id = metadata.job_id
+            if not self.entity_id.isdigit() and urlsplit(str(self.canonical_url)).path != f"/jobs/{self.entity_id}":
+                raise ValueError("Job identity must match its canonical path")
             if self.effective_from is not None or self.effective_to is not None:
                 raise ValueError("Job effective_from/effective_to must be null")
         elif isinstance(metadata, AccommodationMetadata):
@@ -669,10 +675,32 @@ class CommonRecord(BaseModel):
             }:
                 raise ValueError("Event source_id is not approved")
             expected_entity_id = (
-                metadata.source_event_id
+                (self.entity_id if not self.entity_id.isdigit() else metadata.source_event_id)
                 if expected_source == "events_anu_official"
                 else f"rubric-{metadata.source_event_id}"
             )
+
+            if expected_source == "rubric_unified_search":
+                if metadata.start_at is None or metadata.source_event_id is None or any(
+                    getattr(metadata, key) is not None for key in ("start_date", "end_date", "date_precision")
+                ):
+                    raise ValueError("Rubric retains its timestamp-only contract")
+            else:
+                if metadata.date_precision is not None and not self.entity_id.isdigit() and urlsplit(str(self.canonical_url)).path != f"/events/{self.entity_id}":
+                    raise ValueError("Official Event identity must match its canonical path")
+                if metadata.date_precision is not None and metadata.source_event_id is not None and not metadata.source_event_id.isdigit():
+                    raise ValueError("Drupal ID must be numeric or null")
+                if metadata.start_at is None:
+                    if metadata.start_date is None or metadata.date_precision != "date" or metadata.end_at is not None:
+                        raise ValueError("Date-only Official Event requires explicit calendar evidence")
+                elif metadata.date_precision not in {None, "timestamp"}:
+                    raise ValueError("Event precision disagrees with timestamp")
+                for field in ("start_date", "end_date"):
+                    value = getattr(metadata, field)
+                    if value is not None and date.fromisoformat(value).isoformat() != value:
+                        raise ValueError("Invalid Event date")
+                if metadata.end_date and (not metadata.start_date or metadata.end_date < metadata.start_date):
+                    raise ValueError("Event end date precedes start")
 
         if self.source_id != expected_source or self.domain != expected_domain:
             raise ValueError("source_id/domain do not match metadata entity_type")

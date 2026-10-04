@@ -38,6 +38,14 @@ class LocalTfidfRetriever:
     uses_persistent_index = False
 
     def search(self, query, candidates, *, top_k, min_score):
+        candidates = tuple(
+            r
+            for r in candidates
+            if not (
+                getattr(r, "status", None) == "MISSING"
+                and getattr(r, "domain", None) in {"jobs", "events"}
+            )
+        )
         if not candidates:
             return ()
         documents = [_tokens(record.title + "\n" + record.content) for record in candidates]
@@ -82,6 +90,14 @@ class LocalBm25Retriever:
         self.b = b
 
     def search(self, query, candidates, *, top_k, min_score):
+        candidates = tuple(
+            r
+            for r in candidates
+            if not (
+                getattr(r, "status", None) == "MISSING"
+                and getattr(r, "domain", None) in {"jobs", "events"}
+            )
+        )
         del min_score  # The evaluated BM25 configuration accepts every score > 0.
         if not candidates or top_k < 1:
             return ()

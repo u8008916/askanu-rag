@@ -398,7 +398,10 @@ class UpcomingEventItem(ContractModel):
     record_id: str
     source_id: Literal["events_anu_official"]
     title: str
-    start_at: str
+    start_at: str | None
+    start_date: str | None = None
+    end_date: str | None = None
+    date_precision: Literal["date", "timestamp"] | None = None
     end_at: str | None
     venue: str | None
     organiser: str | None

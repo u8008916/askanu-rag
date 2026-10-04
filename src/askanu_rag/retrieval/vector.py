@@ -392,6 +392,10 @@ class InMemoryVectorRepository:
             record = self.records.get(row.source_record_id)
             if (
                 record is None
+                or (
+                    record.status == "MISSING"
+                    and record.domain in {"jobs", "events"}
+                )
                 or record.domain != domain
                 or (allowed and record.record_id not in allowed)
                 or record.index_status != "INDEXED"
@@ -647,6 +651,10 @@ class PostgresVectorRepository:
                 FROM source_record_embeddings e
                 JOIN source_records s ON s.record_id = e.source_record_id
                 WHERE s.domain = %s
+                  AND (
+                        s.domain NOT IN ('jobs', 'events')
+                        OR s.status <> 'MISSING'
+                      )
                   AND vector_dims(e.embedding) = vector_dims(%s::vector)
                   AND s.index_status = 'INDEXED'
                   AND s.embedding_version = %s

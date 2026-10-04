@@ -68,6 +68,8 @@ class SharedHybridRetriever:
         by_id: dict[str, RankedCandidate] = {}
 
         def keep(candidate: RankedCandidate) -> None:
+            if candidate.record.status == "MISSING" and candidate.record.domain in {"jobs", "events"}:
+                return
             previous = by_id.get(candidate.record.record_id)
             if previous is not None and (
                 previous.tier == candidate.tier == CandidateTier.DISCOVERY
