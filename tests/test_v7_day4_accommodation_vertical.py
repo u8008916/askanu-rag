@@ -199,6 +199,71 @@ def test_broad_discovery_is_bounded_typed_and_traced() -> None:
     assert all(url.startswith("https://study.anu.edu.au/") for url in trace.canonical_sources)
 
 
+
+def test_broad_discovery_keeps_long_residence_overviews_bounded() -> None:
+    records = []
+
+    for index in range(5):
+        record = _residence(
+            f"long-{index}",
+            f"Long {index} Hall",
+            rate="$380.00",
+            catering=["Self-catered"],
+        )
+        metadata = record.metadata_json.model_copy(
+            update={
+                "overview": (
+                    "Long published residence overview. " * 40
+                ).strip(),
+            }
+        )
+        records.append(
+            record.model_copy(update={"metadata_json": metadata})
+        )
+
+    body = Conversation(tuple(records)).ask(
+        "What ANU accommodation options are available?"
+    )
+
+    assert body["status"] == "ok"
+    assert len(body["items"]) == 5
+    assert len(body["sources"]) == 5
+    assert len(body["answer"]) < 5_000
+    assert "Long published residence overview" not in body["answer"]
+
+
+def test_filtered_discovery_keeps_long_residence_overviews_bounded() -> None:
+    records = []
+
+    for index in range(5):
+        record = _residence(
+            f"self-{index}",
+            f"Self Catered {index} Hall",
+            rate="$380.00",
+            catering=["Self-catered"],
+        )
+        metadata = record.metadata_json.model_copy(
+            update={
+                "overview": (
+                    "Long published residence overview. " * 40
+                ).strip(),
+            }
+        )
+        records.append(
+            record.model_copy(update={"metadata_json": metadata})
+        )
+
+    body = Conversation(tuple(records)).ask(
+        "Which ANU accommodation options are self-catered?"
+    )
+
+    assert body["status"] == "ok"
+    assert len(body["items"]) == 5
+    assert len(body["sources"]) == 5
+    assert len(body["answer"]) < 5_000
+    assert "Long published residence overview" not in body["answer"]
+
+
 def test_source_backed_preference_filter_preserves_unknown_population() -> None:
     conversation = Conversation((ALPHA, BRAVO, CHARLIE, MYSTERY))
 
